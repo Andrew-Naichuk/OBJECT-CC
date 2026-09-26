@@ -5,8 +5,8 @@
 After any change finished always compile and upload to the connected board. Do not wait to be asked.
 
 ```powershell
-arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense "c:\Development\MC\xiao_oled"
-arduino-cli upload -p COM7 --fqbn Seeeduino:nrf52:xiaonRF52840Sense "c:\Development\MC\xiao_oled"
+arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense "c:\Development\object-1\xiao_oled"
+arduino-cli upload -p COM7 --fqbn Seeeduino:nrf52:xiaonRF52840Sense "c:\Development\object-1\xiao_oled"
 ```
 
 - Board: Seeed XIAO nRF52840 Sense (`Seeeduino:nrf52:xiaonRF52840Sense`)

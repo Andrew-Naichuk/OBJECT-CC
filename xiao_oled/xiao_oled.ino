@@ -1,15 +1,18 @@
 /*
- * GME128128-01 1.5" OLED (SH1107, 128x128) on Seeed XIAO nRF52840 Sense.
+ * 3.2" IPS SPI TFT (ILI9341, 240x320) on Seeed XIAO nRF52840 Sense.
  * Cycling computer: reed-switch wheel speed + trip metrics + GPS status.
  *
- * Wiring (display -> XIAO):
- *   VCC -> 3V3
- *   GND -> GND
- *   SCL -> D8 / SCK
- *   SDA -> D10 / MOSI
- *   DC  -> D2
- *   CS  -> D1
- *   RST -> D3
+ * Wiring (display module -> XIAO):
+ *   VCC     -> 3V3
+ *   GND     -> GND
+ *   LCD_CS  -> D1
+ *   LCD_RS  -> D2   (D/C)
+ *   LCD_RST -> 7k -> 3.3V (held out of reset; not a GPIO)
+ *   MOSI    -> D10
+ *   SCK     -> D8
+ *   MISO    -> D9
+ *   LED     -> D3   (backlight PWM: short press cycles bright / dim / off)
+ *   SD_CS   -> D5
  *
  * Reed switch (one pulse per wheel revolution):
  *   One side -> D0, other side -> GND
@@ -22,48 +25,71 @@
  *   GPS 5V  -> 5V
  *   Compass SCL/SDA unused.
  *
- * microSD slot (SPI shared with OLED):
- *   CLK  -> D8 / SCK
- *   MOSI -> D10 / MOSI
- *   MISO -> D9 / MISO
- *   CS   -> D5
- *   VCC  -> 3V3
- *   GND  -> GND
+ * microSD slot on the display module (SPI shared with the TFT):
+ *   CLK/MOSI/MISO are the LCD bus above, CS = SD_CS = D5.
  *
- * Tact button (new ride: hold 4 s while stopped):
+ * Tact button:
  *   One side -> D4, other side -> GND
- *   INPUT_PULLUP; pressed = LOW. Short press unused.
+ *   INPUT_PULLUP; pressed = LOW.
+ *   Short press (release before 2 s): backlight bright -> dim -> off.
+ *   Hold 4 s while stopped: save the ride and start a new one.
  *
  * Libraries (Arduino Library Manager):
- *   Adafruit SH110X, Adafruit GFX Library, Adafruit BusIO
+ *   Adafruit ILI9341, Adafruit GFX Library, Adafruit BusIO
  * SdFat is bundled with the Seeeduino nRF52 core (do not install 2.3.x).
  *
  * Wheel: 700x32C (ISO 32-622) -> circumference 2155 mm.
  *
- * OLED layout (Figma 128x128): DIST/TIME | speed + avg | MOVE/MAX | GPS.
+ * TFT layout (portrait 240x320): DIST/TIME | speed + avg | MOVE/MAX | GPS.
+ * Rotation 0. If the image is upside down relative to the pin header, use 2.
  */
 
 #include <Adafruit_TinyUSB.h>
 #include <SPI.h>
 #include <SdFat.h>
 #include <Adafruit_GFX.h>
-#include <Adafruit_SH110X.h>
+#include <Adafruit_ILI9341.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <stddef.h>
 
-static const int PIN_OLED_CS  = D1;
-static const int PIN_OLED_DC  = D2;
-static const int PIN_OLED_RST = D3;
-static const int PIN_REED     = D0;
-static const int PIN_BTN      = D4;
-static const int PIN_SD_CS    = D5;
+static const int PIN_LCD_CS = D1;
+static const int PIN_LCD_DC = D2;
+static const int PIN_LCD_BL = D3;
+static const int PIN_REED   = D0;
+static const int PIN_BTN    = D4;
+static const int PIN_SD_CS  = D5;
 
-static const int SCREEN_W = 128;
-static const int SCREEN_H = 128;
-static const int PAD      = 4;
+static const int SCREEN_W = 240;
+static const int SCREEN_H = 320;
+static const int PAD      = 12;
+
+static const uint16_t COL_BG   = ILI9341_BLACK;
+static const uint16_t COL_FG   = ILI9341_WHITE;
+static const uint16_t COL_RULE = ILI9341_DARKGREY;
+static const uint16_t COL_LIVE = ILI9341_GREEN;
+static const uint16_t COL_CONN = ILI9341_YELLOW;
+static const uint16_t COL_NOSD = ILI9341_RED;
+
+// Portrait stack. Slots reserve the preferred glyph height so a smaller
+// fallback size does not leave the previous digits behind.
+static const int ROW_LABEL_Y  = 10;
+static const int ROW_VALUE_Y  = 32;
+static const int ROW_VALUE_H  = 24;  // text size 3
+static const int RULE1_Y      = 68;
+static const int SPEED_Y      = 84;
+static const int SPEED_H      = 48;  // text size 6
+static const int AVG_Y        = 148;
+static const int AVG_H        = 24;  // text size 3
+static const int AVG_ICON     = 16;
+static const int RULE2_Y      = 188;
+static const int MOVE_LABEL_Y = 200;
+static const int MOVE_VALUE_Y = 222;
+static const int GPS_Y        = 290;
+static const int GPS_H        = 16;  // text size 2
+static const int UNIT_SIZE    = 2;
 
 // Circumference of 700x32C (32-622), millimetres.
 static const float WHEEL_CIRC_MM = 2155.0f;
@@ -78,6 +104,16 @@ static const unsigned long BTN_DEBOUNCE_MS = 30;
 static const unsigned long BTN_ARM_MS = 2000;
 static const unsigned long BTN_EXEC_MS = 4000;
 static const unsigned long BTN_FLASH_MS = 1500;
+
+enum {
+  BL_BRIGHT = 0,
+  BL_DIM,
+  BL_OFF,
+  BL_MODE_COUNT
+};
+// Dim is ~16% so night use keeps the digits readable and cuts most of the
+// backlight current. Off leaves the panel updating with the LEDs dark.
+static const uint8_t BL_DUTY[BL_MODE_COUNT] = {255, 40, 0};
 
 static const unsigned long GPS_BAUD = 115200;
 static const unsigned long GPS_STALE_MS = 2000;
@@ -107,7 +143,8 @@ static const char GPX_HEADER[] =
     "<trk>\n<name>Ride</name>\n<type>cycling</type>\n<trkseg>\n";
 static const char GPX_FOOTER[] = "</trkseg>\n</trk>\n</gpx>\n";
 
-Adafruit_SH1107 display(SCREEN_W, SCREEN_H, &SPI, PIN_OLED_DC, PIN_OLED_RST, PIN_OLED_CS);
+// RST is tied to 3.3V. Hardware SPI: SCK D8, MOSI D10, MISO D9.
+Adafruit_ILI9341 display(PIN_LCD_CS, PIN_LCD_DC, -1);
 
 SdFat sd;
 File32 gpxFile;
@@ -141,10 +178,36 @@ static bool btnSample = false;
 static bool btnHeld = false;
 static bool btnArmed = false;
 static bool btnDidExec = false;
+static bool btnReleased = false;
+static bool btnReleaseDidExec = false;
 static unsigned long btnDebounceMs = 0;
 static unsigned long btnHoldStartMs = 0;
+static unsigned long btnReleasedHeldMs = 0;
+static uint8_t blMode = BL_BRIGHT;
 static unsigned long overlayFlashUntilMs = 0;
 static const char *overlayFlashMsg = NULL;
+
+struct FieldCache {
+  char text[20];
+  uint8_t size;
+  bool valid;
+};
+
+static FieldCache fldDist;
+static FieldCache fldTime;
+static FieldCache fldSpeed;
+static FieldCache fldAvg;
+static FieldCache fldMove;
+static FieldCache fldMax;
+static FieldCache fldGpsStatus;
+static FieldCache fldGpsSats;
+static FieldCache fldGpsAlt;
+static uint16_t fldGpsColor = 0;
+static bool uiChromeDrawn = false;
+static bool overlayWasShown = false;
+static char overlayDrawnSub[8];
+static const char *overlayDrawnTitle = NULL;
+static int overlayDrawnFilled = -2;
 
 #pragma pack(push, 1)
 struct TripDat {
@@ -280,7 +343,7 @@ static void gpsSetMsgRate(uint8_t cls, uint8_t id, uint8_t rate) {
 
 // Quiet the M100 Pro: 1 Hz, UBX NAV-PVT + NMEA GGA only.
 // Serial1's RX ring is 64 bytes; 10 Hz PVT (~102 B) plus NMEA overruns it
-// during OLED refresh, so we never see another valid frame after the first.
+// during TFT refresh, so we never see another valid frame after the first.
 static void gpsConfigure() {
   const uint8_t rate[] = {0xE8, 0x03, 0x01, 0x00, 0x01, 0x00};  // 1000 ms
   gpsSendUbx(0x06, 0x08, rate, sizeof(rate));
@@ -1103,6 +1166,15 @@ static bool bikeStopped(unsigned long now, unsigned long lastPulseMs) {
   return lastPulseMs == 0 || (now - lastPulseMs) >= STOPPED_MS;
 }
 
+static void backlightApply() {
+  analogWrite(PIN_LCD_BL, BL_DUTY[blMode]);
+}
+
+static void backlightNext() {
+  blMode = (uint8_t)((blMode + 1) % BL_MODE_COUNT);
+  backlightApply();
+}
+
 static void btnPoll(unsigned long now) {
   bool raw = digitalRead(PIN_BTN) == LOW;
   if (raw != btnSample) {
@@ -1118,6 +1190,9 @@ static void btnPoll(unsigned long now) {
     btnDidExec = false;
     btnHoldStartMs = now;
   } else if (!raw && btnHeld) {
+    btnReleased = true;
+    btnReleaseDidExec = btnDidExec;
+    btnReleasedHeldMs = now - btnHoldStartMs;
     btnHeld = false;
     btnArmed = false;
     btnDidExec = false;
@@ -1158,11 +1233,22 @@ static void btnHandle(unsigned long now, unsigned long lastPulseMs) {
       btnFlash("SAVE FAIL", now);
     }
   }
+
+  // Release before the new-ride countdown starts. A cancelled hold, or a
+  // hold that already saved the ride, leaves the backlight alone.
+  if (btnReleased) {
+    bool didExec = btnReleaseDidExec;
+    unsigned long held = btnReleasedHeldMs;
+    btnReleased = false;
+    if (!didExec && held < BTN_ARM_MS) {
+      backlightNext();
+    }
+  }
 }
 
 static void sdBeginShared() {
-  pinMode(PIN_OLED_CS, OUTPUT);
-  digitalWrite(PIN_OLED_CS, HIGH);
+  pinMode(PIN_LCD_CS, OUTPUT);
+  digitalWrite(PIN_LCD_CS, HIGH);
   pinMode(PIN_SD_CS, OUTPUT);
   digitalWrite(PIN_SD_CS, HIGH);
 
@@ -1254,28 +1340,102 @@ static int textPixelWidth(const char *s, uint8_t size) {
   return (int)strlen(s) * 6 * (int)size;
 }
 
+static void invalidateField(FieldCache *f) {
+  f->valid = false;
+  f->text[0] = '\0';
+  f->size = 0;
+}
+
+static void invalidateAllFields() {
+  invalidateField(&fldDist);
+  invalidateField(&fldTime);
+  invalidateField(&fldSpeed);
+  invalidateField(&fldAvg);
+  invalidateField(&fldMove);
+  invalidateField(&fldMax);
+  invalidateField(&fldGpsStatus);
+  invalidateField(&fldGpsSats);
+  invalidateField(&fldGpsAlt);
+  fldGpsColor = 0;
+}
+
+static bool fieldSame(const FieldCache *f, const char *s, uint8_t size) {
+  return f->valid && f->size == size && strcmp(f->text, s) == 0;
+}
+
+static void fieldStore(FieldCache *f, const char *s, uint8_t size) {
+  strncpy(f->text, s, sizeof(f->text) - 1);
+  f->text[sizeof(f->text) - 1] = '\0';
+  f->size = size;
+  f->valid = true;
+}
+
+// Strip the fill so a NAV-PVT burst can be read out of the 64-byte UART ring.
+static void fillRectDrained(int x, int y, int w, int h, uint16_t color) {
+  if (w <= 0 || h <= 0) {
+    return;
+  }
+  const int strip = 8;
+  for (int yy = y; yy < y + h; yy += strip) {
+    int hh = strip;
+    if (yy + hh > y + h) {
+      hh = y + h - yy;
+    }
+    display.fillRect(x, yy, w, hh, color);
+    gpsDrain();
+  }
+}
+
+static void fillScreenDrained(uint16_t color) {
+  const int band = 16;
+  for (int y = 0; y < SCREEN_H; y += band) {
+    int h = band;
+    if (y + h > SCREEN_H) {
+      h = SCREEN_H - y;
+    }
+    display.fillRect(0, y, SCREEN_W, h, color);
+    gpsDrain();
+  }
+}
+
+static void printDrained(const char *s) {
+  if (s == NULL) {
+    return;
+  }
+  while (*s) {
+    gpsDrain();
+    display.write((uint8_t)*s++);
+  }
+  gpsDrain();
+}
+
 static void drawHRule(int y) {
-  display.drawFastHLine(PAD, y, SCREEN_W - 2 * PAD, SH110X_WHITE);
+  display.drawFastHLine(PAD, y, SCREEN_W - 2 * PAD, COL_RULE);
+  gpsDrain();
 }
 
-static void printLeft(int x, int y, uint8_t size, const char *s) {
+static void printLeft(int x, int y, uint8_t size, uint16_t color, const char *s) {
   display.setTextSize(size);
+  display.setTextColor(color);
   display.setCursor(x, y);
-  display.print(s);
+  printDrained(s);
 }
 
-static void printRight(int rightEdge, int y, uint8_t size, const char *s) {
+static void printRight(int rightEdge, int y, uint8_t size, uint16_t color, const char *s) {
   int w = textPixelWidth(s, size);
-  display.setTextSize(size);
-  display.setCursor(rightEdge - w, y);
-  display.print(s);
+  printLeft(rightEdge - w, y, size, color, s);
 }
 
-// Average-speed mark (diameter symbol), 7x7.
+static int unitWidth() {
+  return textPixelWidth("KM/H", UNIT_SIZE);
+}
+
+// Average-speed mark (diameter symbol), 16x16.
 static void drawAvgIcon(int x, int y) {
-  display.drawCircle(x + 3, y + 3, 3, SH110X_WHITE);
-  display.drawPixel(x + 3, y + 3, SH110X_WHITE);
-  display.drawLine(x + 1, y + 5, x + 5, y + 1, SH110X_WHITE);
+  display.drawCircle(x + 7, y + 7, 6, COL_FG);
+  display.fillCircle(x + 7, y + 7, 2, COL_FG);
+  display.drawLine(x + 3, y + 11, x + 11, y + 3, COL_FG);
+  gpsDrain();
 }
 
 // H:MM:SS always (matches Figma samples like 7:34:12).
@@ -1307,74 +1467,68 @@ static void formatFloatFit(float value, int maxChars, char *buf, size_t buflen) 
   }
 }
 
-// Choose size 2 if both sides fit with a gap; otherwise size 1.
+// Prefer size 3; drop until both values fit on one row.
 static uint8_t fitPairSize(const char *left, const char *right, int gap) {
   const int avail = SCREEN_W - 2 * PAD;
-  if (textPixelWidth(left, 2) + textPixelWidth(right, 2) + gap <= avail) {
-    return 2;
+  for (uint8_t size = 3; size > 1; size--) {
+    if (textPixelWidth(left, size) + textPixelWidth(right, size) + gap <= avail) {
+      return size;
+    }
   }
   return 1;
 }
 
-static void drawCornerPair(int labelY, int valueY,
-                           const char *leftLabel, const char *leftValue,
-                           const char *rightLabel, const char *rightValue) {
-  printLeft(PAD, labelY, 1, leftLabel);
-  printRight(SCREEN_W - PAD, labelY, 1, rightLabel);
-
-  uint8_t size = fitPairSize(leftValue, rightValue, 6);
-  printLeft(PAD, valueY, size, leftValue);
-  printRight(SCREEN_W - PAD, valueY, size, rightValue);
+static void paintValueRow(int y, int slotH, FieldCache *leftF, FieldCache *rightF,
+                          const char *left, const char *right) {
+  uint8_t size = fitPairSize(left, right, 8);
+  if (fieldSame(leftF, left, size) && fieldSame(rightF, right, size)) {
+    return;
+  }
+  fillRectDrained(PAD, y, SCREEN_W - 2 * PAD, slotH, COL_BG);
+  int textY = y + (slotH - 8 * (int)size) / 2;
+  printLeft(PAD, textY, size, COL_FG, left);
+  printRight(SCREEN_W - PAD, textY, size, COL_FG, right);
+  fieldStore(leftF, left, size);
+  fieldStore(rightF, right, size);
 }
 
-static void drawSpeedBlock(float speedKmh, float avgSpeedKmh) {
-  char speedBuf[12];
-  char avgBuf[12];
-
-  // Large speed: prefer 1 decimal; shrink size if digits won't fit beside unit.
-  formatFloatFit(speedKmh, 5, speedBuf, sizeof(speedBuf));
-  const char *unit = "KM/H";
-  const int unitW = textPixelWidth(unit, 1);
-  const int gap = 4;
-  const int maxSpeedW = SCREEN_W - 2 * PAD - unitW - gap;
-
-  uint8_t speedSize = 3;
-  while (speedSize > 1 && textPixelWidth(speedBuf, speedSize) > maxSpeedW) {
+static void paintSpeed(const char *speedBuf) {
+  const int slotW = SCREEN_W - 2 * PAD - unitWidth() - 6;
+  uint8_t speedSize = 6;
+  while (speedSize > 1 && textPixelWidth(speedBuf, speedSize) > slotW) {
     speedSize--;
   }
-  // If still too wide at size 1, drop decimals further.
-  while (speedSize == 1 && textPixelWidth(speedBuf, 1) > maxSpeedW) {
-    formatFloatFit(speedKmh, (int)strlen(speedBuf) - 1, speedBuf, sizeof(speedBuf));
+  if (fieldSame(&fldSpeed, speedBuf, speedSize)) {
+    return;
   }
-
-  const int speedY = 42;
-  const int speedH = 8 * (int)speedSize;
-  printLeft(PAD, speedY, speedSize, speedBuf);
-  // Unit near the upper half of the large digits, right edge.
-  printRight(SCREEN_W - PAD, speedY + (speedH - 8) / 4, 1, unit);
-
-  // Average row: icon + value left, unit right.
-  formatFloatFit(avgSpeedKmh, 5, avgBuf, sizeof(avgBuf));
-  const int avgY = 68;
-  const int iconX = PAD;
-  drawAvgIcon(iconX, avgY + 4);
-
-  uint8_t avgSize = 2;
-  const int avgTextX = iconX + 10;
-  const int avgMaxW = SCREEN_W - PAD - unitW - gap - avgTextX;
-  while (avgSize > 1 && textPixelWidth(avgBuf, avgSize) > avgMaxW) {
-    avgSize--;
-  }
-  printLeft(avgTextX, avgY, avgSize, avgBuf);
-  const int avgH = 8 * (int)avgSize;
-  printRight(SCREEN_W - PAD, avgY + (avgH - 8) / 2, 1, unit);
+  fillRectDrained(PAD, SPEED_Y, slotW, SPEED_H, COL_BG);
+  int textY = SPEED_Y + (SPEED_H - 8 * (int)speedSize) / 2;
+  printLeft(PAD, textY, speedSize, COL_FG, speedBuf);
+  fieldStore(&fldSpeed, speedBuf, speedSize);
 }
 
-static void drawGpsFooter(unsigned long now) {
+static void paintAvg(const char *avgBuf) {
+  const int textX = PAD + AVG_ICON + 6;
+  const int slotW = SCREEN_W - PAD - unitWidth() - 6 - textX;
+  uint8_t avgSize = 3;
+  while (avgSize > 1 && textPixelWidth(avgBuf, avgSize) > slotW) {
+    avgSize--;
+  }
+  if (fieldSame(&fldAvg, avgBuf, avgSize)) {
+    return;
+  }
+  fillRectDrained(textX, AVG_Y, slotW, AVG_H, COL_BG);
+  int textY = AVG_Y + (AVG_H - 8 * (int)avgSize) / 2;
+  printLeft(textX, textY, avgSize, COL_FG, avgBuf);
+  fieldStore(&fldAvg, avgBuf, avgSize);
+}
+
+static void paintGpsFooter(unsigned long now) {
   char satBuf[8];
   char altBuf[12];
   const bool live = gpsIsLive(now);
   const char *status = !sdReady ? "NO SD" : (live ? "LIVE" : "CONNECTING");
+  uint16_t statusColor = !sdReady ? COL_NOSD : (live ? COL_LIVE : COL_CONN);
 
   if (gpsFrameFresh(now) && gps.satsKnown) {
     snprintf(satBuf, sizeof(satBuf), "%u", (unsigned)gps.sats);
@@ -1388,71 +1542,146 @@ static void drawGpsFooter(unsigned long now) {
     memcpy(altBuf, "--", 3);
   }
 
-  const int gpsY = 118;
-  printLeft(PAD, gpsY, 1, status);
-  printLeft(PAD + textPixelWidth(status, 1) + 6, gpsY, 1, satBuf);
-  printRight(SCREEN_W - PAD, gpsY, 1, altBuf);
+  const uint8_t size = 2;
+  if (fieldSame(&fldGpsStatus, status, size) &&
+      fieldSame(&fldGpsSats, satBuf, size) &&
+      fieldSame(&fldGpsAlt, altBuf, size) &&
+      fldGpsColor == statusColor) {
+    return;
+  }
+
+  fillRectDrained(PAD, GPS_Y, SCREEN_W - 2 * PAD, GPS_H, COL_BG);
+  int textY = GPS_Y + (GPS_H - 8 * (int)size) / 2;
+  printLeft(PAD, textY, size, statusColor, status);
+  printLeft(PAD + textPixelWidth(status, size) + 8, textY, size, COL_FG, satBuf);
+  printRight(SCREEN_W - PAD, textY, size, COL_FG, altBuf);
+  fieldStore(&fldGpsStatus, status, size);
+  fieldStore(&fldGpsSats, satBuf, size);
+  fieldStore(&fldGpsAlt, altBuf, size);
+  fldGpsColor = statusColor;
+}
+
+static void drawSpeedChrome() {
+  const int unitH = 8 * UNIT_SIZE;
+  printRight(SCREEN_W - PAD, SPEED_Y + (SPEED_H - unitH) / 4, UNIT_SIZE, COL_FG, "KM/H");
+  drawAvgIcon(PAD, AVG_Y + (AVG_H - AVG_ICON) / 2);
+  printRight(SCREEN_W - PAD, AVG_Y + (AVG_H - unitH) / 2, UNIT_SIZE, COL_FG, "KM/H");
+}
+
+static void drawStaticChrome() {
+  printLeft(PAD, ROW_LABEL_Y, 2, COL_FG, "DIST");
+  printRight(SCREEN_W - PAD, ROW_LABEL_Y, 2, COL_FG, "TIME");
+  drawHRule(RULE1_Y);
+  drawSpeedChrome();
+  drawHRule(RULE2_Y);
+  printLeft(PAD, MOVE_LABEL_Y, 2, COL_FG, "MOVE");
+  printRight(SCREEN_W - PAD, MOVE_LABEL_Y, 2, COL_FG, "MAX");
+}
+
+static void ensureChrome() {
+  if (uiChromeDrawn) {
+    return;
+  }
+  fillScreenDrained(COL_BG);
+  display.setTextWrap(false);
+  drawStaticChrome();
+  uiChromeDrawn = true;
+  invalidateAllFields();
+}
+
+static void clearOverlayDrawn() {
+  overlayDrawnTitle = NULL;
+  overlayDrawnFilled = -2;
+  overlayDrawnSub[0] = '\0';
+}
+
+static void overlayBoxRect(int *x, int *y, int *w, int *h) {
+  *w = 200;
+  *h = 80;
+  *x = (SCREEN_W - *w) / 2;
+  const int blockTop = SPEED_Y;
+  const int blockBot = AVG_Y + AVG_H;
+  *y = blockTop + (blockBot - blockTop - *h) / 2;
+}
+
+static bool overlayActive(unsigned long now, char *sub, size_t sublen,
+                          int *barFilled, int *barTotal, const char **title) {
+  *barFilled = 0;
+  *barTotal = 0;
+  sub[0] = '\0';
+
+  if (overlayFlashMsg && (long)(overlayFlashUntilMs - now) > 0) {
+    *title = overlayFlashMsg;
+    return true;
+  }
+  overlayFlashMsg = NULL;
+
+  if (!btnArmed || !btnHeld || btnDidExec) {
+    return false;
+  }
+
+  unsigned long held = now - btnHoldStartMs;
+  if (held < BTN_ARM_MS || held >= BTN_EXEC_MS) {
+    return false;
+  }
+
+  unsigned long remainMs = BTN_EXEC_MS - held;
+  unsigned long remainSec = (remainMs + 999UL) / 1000UL;
+  snprintf(sub, sublen, "%lu", remainSec);
+  *barFilled = (int)(held - BTN_ARM_MS);
+  *barTotal = (int)(BTN_EXEC_MS - BTN_ARM_MS);
+  *title = "NEW RIDE";
+  return true;
 }
 
 static void drawOverlayBox(const char *title, const char *sub, int barFilled, int barTotal) {
-  const int boxW = 116;
-  const int boxH = 54;
-  const int x = (SCREEN_W - boxW) / 2;
-  const int y = 38;
+  int x, y, boxW, boxH;
+  overlayBoxRect(&x, &y, &boxW, &boxH);
 
-  display.fillRect(x, y, boxW, boxH, SH110X_BLACK);
-  display.drawRect(x, y, boxW, boxH, SH110X_WHITE);
-
-  int tw = textPixelWidth(title, 1);
-  printLeft(x + (boxW - tw) / 2, y + 6, 1, title);
-
-  if (sub && sub[0]) {
-    int sw = textPixelWidth(sub, 2);
-    printLeft(x + (boxW - sw) / 2, y + 18, 2, sub);
-  }
-
+  const int bw = boxW - 24;
+  long fw = 0;
   if (barTotal > 0) {
-    const int bx = x + 8;
-    const int by = y + boxH - 12;
-    const int bw = boxW - 16;
-    const int bh = 6;
-    display.drawRect(bx, by, bw, bh, SH110X_WHITE);
-    long fw = (long)(bw - 2) * (long)barFilled / (long)barTotal;
+    fw = (long)(bw - 2) * (long)barFilled / (long)barTotal;
     if (fw < 0) {
       fw = 0;
     }
     if (fw > (bw - 2)) {
       fw = bw - 2;
     }
+  }
+
+  if (overlayDrawnTitle == title && overlayDrawnFilled == (int)fw &&
+      strcmp(overlayDrawnSub, sub) == 0) {
+    return;
+  }
+
+  fillRectDrained(x, y, boxW, boxH, COL_BG);
+  display.drawRect(x, y, boxW, boxH, COL_FG);
+  gpsDrain();
+
+  int tw = textPixelWidth(title, 2);
+  printLeft(x + (boxW - tw) / 2, y + 10, 2, COL_FG, title);
+
+  if (sub && sub[0]) {
+    int sw = textPixelWidth(sub, 3);
+    printLeft(x + (boxW - sw) / 2, y + 32, 3, COL_FG, sub);
+  }
+
+  if (barTotal > 0) {
+    const int bx = x + 12;
+    const int by = y + boxH - 16;
+    const int bh = 8;
+    display.drawRect(bx, by, bw, bh, COL_FG);
     if (fw > 0) {
-      display.fillRect(bx + 1, by + 1, (int)fw, bh - 2, SH110X_WHITE);
+      display.fillRect(bx + 1, by + 1, (int)fw, bh - 2, COL_FG);
     }
-  }
-}
-
-static void drawBtnOverlay(unsigned long now) {
-  if (overlayFlashMsg && (long)(overlayFlashUntilMs - now) > 0) {
-    drawOverlayBox(overlayFlashMsg, "", 0, 0);
-    return;
-  }
-  overlayFlashMsg = NULL;
-
-  if (!btnArmed || !btnHeld || btnDidExec) {
-    return;
+    gpsDrain();
   }
 
-  unsigned long held = now - btnHoldStartMs;
-  if (held < BTN_ARM_MS || held >= BTN_EXEC_MS) {
-    return;
-  }
-
-  unsigned long remainMs = BTN_EXEC_MS - held;
-  unsigned long remainSec = (remainMs + 999UL) / 1000UL;
-  char sub[8];
-  snprintf(sub, sizeof(sub), "%lu", remainSec);
-  int filled = (int)(held - BTN_ARM_MS);
-  int total = (int)(BTN_EXEC_MS - BTN_ARM_MS);
-  drawOverlayBox("NEW RIDE", sub, filled, total);
+  overlayDrawnTitle = title;
+  overlayDrawnFilled = (int)fw;
+  strncpy(overlayDrawnSub, sub ? sub : "", sizeof(overlayDrawnSub) - 1);
+  overlayDrawnSub[sizeof(overlayDrawnSub) - 1] = '\0';
 }
 
 static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
@@ -1462,53 +1691,80 @@ static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
   char timeBuf[16];
   char moveBuf[16];
   char maxBuf[12];
+  char speedBuf[12];
+  char avgBuf[12];
 
-  // Distance: prefer 1 decimal like the mock; tighten if needed for size-2 pair.
   formatFloatFit(distanceKm, 6, distBuf, sizeof(distBuf));
   formatHms(elapsedMs, timeBuf, sizeof(timeBuf));
   formatHms(moveMs, moveBuf, sizeof(moveBuf));
   formatFloatFit(maxKmh, 5, maxBuf, sizeof(maxBuf));
+  formatFloatFit(speedKmh, 5, speedBuf, sizeof(speedBuf));
+  formatFloatFit(avgSpeedKmh, 5, avgBuf, sizeof(avgBuf));
 
-  display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
-  display.setTextWrap(false);
+  const int speedSlotW = SCREEN_W - 2 * PAD - unitWidth() - 6;
+  int guard = 6;
+  while (guard-- > 0 && textPixelWidth(speedBuf, 1) > speedSlotW && strlen(speedBuf) > 1) {
+    formatFloatFit(speedKmh, (int)strlen(speedBuf) - 1, speedBuf, sizeof(speedBuf));
+  }
 
-  // Top: DIST / TIME
-  drawCornerPair(2, 14, "DIST", distBuf, "TIME", timeBuf);
-  drawHRule(34);
+  ensureChrome();
 
-  // Middle: current + average speed
-  drawSpeedBlock(speedKmh, avgSpeedKmh);
-  drawHRule(86);
+  char sub[8];
+  int barFilled = 0;
+  int barTotal = 0;
+  const char *title = NULL;
+  bool showOverlay = overlayActive(now, sub, sizeof(sub), &barFilled, &barTotal, &title);
 
-  // Bottom: MOVE / MAX, then GPS status / sats / altitude
-  drawCornerPair(90, 100, "MOVE", moveBuf, "MAX", maxBuf);
-  drawGpsFooter(now);
+  if (showOverlay) {
+    drawOverlayBox(title, sub, barFilled, barTotal);
+    overlayWasShown = true;
+    return;
+  }
 
-  drawBtnOverlay(now);
+  if (overlayWasShown) {
+    int x, y, boxW, boxH;
+    overlayBoxRect(&x, &y, &boxW, &boxH);
+    fillRectDrained(x, y, boxW, boxH, COL_BG);
+    drawSpeedChrome();
+    invalidateField(&fldSpeed);
+    invalidateField(&fldAvg);
+    overlayWasShown = false;
+    clearOverlayDrawn();
+  }
 
-  display.display();
+  paintValueRow(ROW_VALUE_Y, ROW_VALUE_H, &fldDist, &fldTime, distBuf, timeBuf);
+  paintSpeed(speedBuf);
+  paintAvg(avgBuf);
+  paintValueRow(MOVE_VALUE_Y, ROW_VALUE_H, &fldMove, &fldMax, moveBuf, maxBuf);
+  paintGpsFooter(now);
 }
 
 static void drawSplash(const char *sdLine) {
-  display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
-  display.setTextSize(1);
-  display.setCursor(10, 40);
-  display.println("Cycling computer");
-  display.setCursor(16, 60);
-  display.println("700x32C / D0");
-  display.setCursor(28, 80);
-  display.println(sdLine);
-  display.display();
+  uiChromeDrawn = false;
+  overlayWasShown = false;
+  clearOverlayDrawn();
+  invalidateAllFields();
+  fillScreenDrained(COL_BG);
+  display.setTextWrap(false);
+
+  const char *line1 = "Cycling computer";
+  const char *line2 = "700x32C / D0";
+  int w1 = textPixelWidth(line1, 2);
+  int w2 = textPixelWidth(line2, 2);
+  int w3 = textPixelWidth(sdLine, 2);
+  printLeft((SCREEN_W - w1) / 2, 118, 2, COL_FG, line1);
+  printLeft((SCREEN_W - w2) / 2, 148, 2, COL_FG, line2);
+  printLeft((SCREEN_W - w3) / 2, 178, 2, COL_FG, sdLine);
 }
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(PIN_REED, INPUT_PULLUP);
   pinMode(PIN_BTN, INPUT_PULLUP);
-  pinMode(PIN_OLED_CS, OUTPUT);
-  digitalWrite(PIN_OLED_CS, HIGH);
+  pinMode(PIN_LCD_BL, OUTPUT);
+  backlightApply();
+  pinMode(PIN_LCD_CS, OUTPUT);
+  digitalWrite(PIN_LCD_CS, HIGH);
   pinMode(PIN_SD_CS, OUTPUT);
   digitalWrite(PIN_SD_CS, HIGH);
 
@@ -1521,20 +1777,14 @@ void setup() {
   Serial.begin(115200);
   delay(1500);
   Serial.println();
-  Serial.println("XIAO cycling computer — SH1107 + reed D0 + btn D4 + GPS Serial1 + SD D5");
+  Serial.println("XIAO cycling computer — ILI9341 + reed D0 + btn D4 + GPS Serial1 + SD D5");
 
-  // Hardware SPI: SCK=D8, MOSI=D10, MISO=D9 (SD). OLED CS=D1, SD CS=D5.
-  if (!display.begin(0x3C, true)) {
-    Serial.println("SH1107 begin() failed — check wiring / power");
-    while (true) {
-      digitalWrite(LED_BUILTIN, LOW);
-      delay(100);
-      digitalWrite(LED_BUILTIN, HIGH);
-      delay(100);
-    }
-  }
-
+  // Hardware SPI: SCK=D8, MOSI=D10, MISO=D9. LCD CS=D1, SD CS=D5.
+  // RST is tied to 3.3V; begin() sends a software reset. Backlight is D3.
+  display.begin(32000000);
   display.setRotation(0);
+  display.invertDisplay(true);
+  display.setTextWrap(false);
   drawSplash("SD...");
 
   sdBeginShared();
