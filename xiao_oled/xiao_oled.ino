@@ -35,7 +35,7 @@
  *   Hold 4 s while stopped: save the ride and start a new one.
  *
  * BLE file download (no extra wiring):
- *   Advertises as "XIAO Ride". tools/rides.html lists root *.GPX files
+ *   Advertises as "OBJECT-001". tools/index.html lists root *.GPX files
  *   and saves them on the phone. TRIP.DAT is not offered. Open that page
  *   over HTTPS (Android Chrome, or a Web Bluetooth browser on iPhone).
  *
@@ -1792,7 +1792,7 @@ static void drawSplash(const char *sdLine) {
 
 // Phone download of root *.GPX files. Callbacks only set flags; loop()
 // does every SD read so the shared SPI bus stays on this task.
-// UUIDs share one vendor base. tools/rides.html speaks the same bytes.
+// UUIDs share one vendor base. tools/index.html speaks the same bytes.
 static const char BLE_RIDE_SVC_UUID[]  = "7A1E0001-4C8B-4D2E-9F63-1B5A0C7E8D24";
 static const char BLE_RIDE_CMD_UUID[]  = "7A1E0002-4C8B-4D2E-9F63-1B5A0C7E8D24";
 static const char BLE_RIDE_META_UUID[] = "7A1E0003-4C8B-4D2E-9F63-1B5A0C7E8D24";
@@ -2327,7 +2327,7 @@ static void bleStart() {
   }
   bleReady = true;
   Bluefruit.setTxPower(4);
-  Bluefruit.setName("XIAO Ride");
+  Bluefruit.setName("OBJECT-001");
   Bluefruit.Periph.setConnectCallback(bleOnConnect);
   Bluefruit.Periph.setDisconnectCallback(bleOnDisconnect);
   Bluefruit.Periph.setConnIntervalMS(15, 30);
@@ -2352,7 +2352,7 @@ static void bleStart() {
     Serial.println("BLE advertise failed");
     return;
   }
-  Serial.println("BLE advertising XIAO Ride");
+  Serial.println("BLE advertising OBJECT-001");
 }
 
 void setup() {
