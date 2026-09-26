@@ -34,9 +34,15 @@
  *   Short press (release before 2 s): backlight bright -> dim -> off.
  *   Hold 4 s while stopped: save the ride and start a new one.
  *
+ * BLE file download (no extra wiring):
+ *   Advertises as "XIAO Ride". tools/rides.html lists root *.GPX files
+ *   and saves them on the phone. TRIP.DAT is not offered. Open that page
+ *   over HTTPS (Android Chrome, or a Web Bluetooth browser on iPhone).
+ *
  * Libraries (Arduino Library Manager):
  *   Adafruit ILI9341, Adafruit GFX Library, Adafruit BusIO
- * SdFat is bundled with the Seeeduino nRF52 core (do not install 2.3.x).
+ * SdFat and Bluefruit are bundled with the Seeeduino nRF52 core
+ * (do not install SdFat 2.3.x).
  *
  * Wheel: 700x32C (ISO 32-622) -> circumference 2155 mm.
  *
@@ -47,6 +53,7 @@
 #include <Adafruit_TinyUSB.h>
 #include <SPI.h>
 #include <SdFat.h>
+#include <bluefruit.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
 #include <stdio.h>
@@ -208,6 +215,7 @@ static bool overlayWasShown = false;
 static char overlayDrawnSub[8];
 static const char *overlayDrawnTitle = NULL;
 static int overlayDrawnFilled = -2;
+static int8_t bleMarkShown = -1;
 
 #pragma pack(push, 1)
 struct TripDat {
@@ -719,8 +727,7 @@ static bool gpsIsLive(unsigned long now) {
   return gps.valid && gpsFrameFresh(now);
 }
 
-static uint32_t crc32(const uint8_t *data, size_t len) {
-  uint32_t c = 0xFFFFFFFFUL;
+static uint32_t crc32Update(uint32_t c, const uint8_t *data, size_t len) {
   for (size_t i = 0; i < len; i++) {
     c ^= data[i];
     for (int b = 0; b < 8; b++) {
@@ -728,7 +735,11 @@ static uint32_t crc32(const uint8_t *data, size_t len) {
       c = (c >> 1) ^ (0xEDB88320UL & mask);
     }
   }
-  return ~c;
+  return c;
+}
+
+static uint32_t crc32(const uint8_t *data, size_t len) {
+  return ~crc32Update(0xFFFFFFFFUL, data, len);
 }
 
 static void formatE7(int32_t e7, char *buf, size_t buflen) {
@@ -1089,7 +1100,10 @@ enum {
   NEW_RIDE_SAVED
 };
 
+static void bleStopForNewRide();
+
 static int tripStartNewRide() {
+  bleStopForNewRide();
   if (!sdReady) {
     tripResetRam();
     gpxBodyEnd = 0;
@@ -1561,6 +1575,22 @@ static void paintGpsFooter(unsigned long now) {
   fldGpsColor = statusColor;
 }
 
+static bool blePhoneConnected();
+
+// 6 px square in the GPS-row margin. Footer text is left as it is.
+static void paintBleMark() {
+  if (!uiChromeDrawn) {
+    return;
+  }
+  bool on = blePhoneConnected();
+  int8_t next = on ? 1 : 0;
+  if (bleMarkShown == next) {
+    return;
+  }
+  display.fillRect(3, GPS_Y + 5, 6, 6, on ? COL_LIVE : COL_BG);
+  bleMarkShown = next;
+}
+
 static void drawSpeedChrome() {
   const int unitH = 8 * UNIT_SIZE;
   printRight(SCREEN_W - PAD, SPEED_Y + (SPEED_H - unitH) / 4, UNIT_SIZE, COL_FG, "KM/H");
@@ -1586,6 +1616,7 @@ static void ensureChrome() {
   display.setTextWrap(false);
   drawStaticChrome();
   uiChromeDrawn = true;
+  bleMarkShown = -1;
   invalidateAllFields();
 }
 
@@ -1718,6 +1749,7 @@ static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
   if (showOverlay) {
     drawOverlayBox(title, sub, barFilled, barTotal);
     overlayWasShown = true;
+    paintBleMark();
     return;
   }
 
@@ -1737,6 +1769,7 @@ static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
   paintAvg(avgBuf);
   paintValueRow(MOVE_VALUE_Y, ROW_VALUE_H, &fldMove, &fldMax, moveBuf, maxBuf);
   paintGpsFooter(now);
+  paintBleMark();
 }
 
 static void drawSplash(const char *sdLine) {
@@ -1755,6 +1788,571 @@ static void drawSplash(const char *sdLine) {
   printLeft((SCREEN_W - w1) / 2, 118, 2, COL_FG, line1);
   printLeft((SCREEN_W - w2) / 2, 148, 2, COL_FG, line2);
   printLeft((SCREEN_W - w3) / 2, 178, 2, COL_FG, sdLine);
+}
+
+// Phone download of root *.GPX files. Callbacks only set flags; loop()
+// does every SD read so the shared SPI bus stays on this task.
+// UUIDs share one vendor base. tools/rides.html speaks the same bytes.
+static const char BLE_RIDE_SVC_UUID[]  = "7A1E0001-4C8B-4D2E-9F63-1B5A0C7E8D24";
+static const char BLE_RIDE_CMD_UUID[]  = "7A1E0002-4C8B-4D2E-9F63-1B5A0C7E8D24";
+static const char BLE_RIDE_META_UUID[] = "7A1E0003-4C8B-4D2E-9F63-1B5A0C7E8D24";
+static const char BLE_RIDE_DATA_UUID[] = "7A1E0004-4C8B-4D2E-9F63-1B5A0C7E8D24";
+
+enum {
+  BLE_OP_LIST = 0x01,
+  BLE_OP_GET = 0x02,
+  BLE_OP_ABORT = 0x03
+};
+
+enum {
+  BLE_META_ENTRY = 0x01,
+  BLE_META_LIST_END = 0x02,
+  BLE_META_START = 0x03,
+  BLE_META_DONE = 0x04,
+  BLE_META_ERROR = 0x7F
+};
+
+enum {
+  BLE_ERR_NO_SD = 1,
+  BLE_ERR_NAME = 2,
+  BLE_ERR_NOT_FOUND = 3,
+  BLE_ERR_IO = 4,
+  BLE_ERR_ABORT = 5
+};
+
+enum {
+  BLE_JOB_IDLE = 0,
+  BLE_JOB_LIST,
+  BLE_JOB_SEND
+};
+
+static BLEService bleSvc(BLE_RIDE_SVC_UUID);
+static BLECharacteristic bleCmd(BLE_RIDE_CMD_UUID, CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP, 13);
+static BLECharacteristic bleMeta(BLE_RIDE_META_UUID, CHR_PROPS_NOTIFY, 17);
+static BLECharacteristic bleData(BLE_RIDE_DATA_UUID, CHR_PROPS_NOTIFY, 244);
+
+static bool bleReady = false;
+static volatile uint8_t bleCmdPending = 0;
+static volatile uint8_t bleLinkLost = 0;
+static volatile uint8_t bleLinkUpEdge = 0;
+static uint8_t bleCmdOp = 0;
+static char bleCmdName[13];
+static uint8_t bleJob = BLE_JOB_IDLE;
+static uint8_t bleErrorPending = 0;
+static File32 bleFile;
+static File32 bleDir;
+static bool bleListHave = false;
+static bool bleListEnd = false;
+static char bleListName[13];
+static uint32_t bleListSize = 0;
+static char bleSendName[13];
+static uint32_t bleOffset = 0;
+static uint32_t bleSize = 0;
+static uint32_t bleFileLimit = 0;
+static bool bleFooterFromRam = false;
+static bool bleStartSent = false;
+static uint32_t bleCrc = 0xFFFFFFFFUL;
+static uint8_t bleChunk[244];
+
+static bool blePhoneConnected() {
+  return bleReady && Bluefruit.connected() > 0;
+}
+
+static bool bleGpxNameOk(const char *name) {
+  size_t n = strlen(name);
+  if (n < 5 || n > 12) {
+    return false;
+  }
+  const char *dot = strchr(name, '.');
+  if (!dot || strchr(dot + 1, '.')) {
+    return false;
+  }
+  size_t base = (size_t)(dot - name);
+  if (base < 1 || base > 8 || strcmp(dot, ".GPX") != 0) {
+    return false;
+  }
+  for (size_t i = 0; i < base; i++) {
+    char c = name[i];
+    if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool bleNormalizeGpx(const char *in, char *out, size_t outlen) {
+  if (!in || outlen < 13) {
+    return false;
+  }
+  size_t n = strlen(in);
+  if (n < 5 || n > 12) {
+    return false;
+  }
+  for (size_t i = 0; i < n; i++) {
+    char c = in[i];
+    if (c >= 'a' && c <= 'z') {
+      c = (char)(c - 'a' + 'A');
+    }
+    out[i] = c;
+  }
+  out[n] = '\0';
+  return bleGpxNameOk(out);
+}
+
+static void bleCloseFiles() {
+  gpsDrain();
+  if (bleFile.isOpen()) {
+    bleFile.close();
+  }
+  if (bleDir.isOpen()) {
+    bleDir.close();
+  }
+  gpsDrain();
+}
+
+static void bleResetXfer() {
+  bleCloseFiles();
+  bleJob = BLE_JOB_IDLE;
+  bleListHave = false;
+  bleListEnd = false;
+  bleListName[0] = '\0';
+  bleListSize = 0;
+  bleSendName[0] = '\0';
+  bleOffset = 0;
+  bleSize = 0;
+  bleFileLimit = 0;
+  bleFooterFromRam = false;
+  bleStartSent = false;
+  bleCrc = 0xFFFFFFFFUL;
+}
+
+static void bleQueueError(uint8_t code) {
+  bleResetXfer();
+  bleErrorPending = code;
+}
+
+static void bleStopForNewRide() {
+  if (!bleReady || (bleJob == BLE_JOB_IDLE && bleErrorPending == 0)) {
+    return;
+  }
+  bleQueueError(BLE_ERR_ABORT);
+  Serial.println("BLE transfer aborted — new ride");
+}
+
+// CURRENT.GPX grows at gpxBodyEnd. Bytes below that stay put; the footer
+// is sent from RAM so a later append cannot tear the downloaded file.
+static uint32_t bleDownloadSize(File32 &f, const char *name, bool *footerFromRam) {
+  uint32_t sz = (uint32_t)f.fileSize();
+  if (footerFromRam) {
+    *footerFromRam = false;
+  }
+  if (strcmp(name, GPX_NAME) == 0 && gpxBodyEnd > 0 && gpxBodyEnd <= sz) {
+    if (footerFromRam) {
+      *footerFromRam = true;
+    }
+    return gpxBodyEnd + (uint32_t)strlen(GPX_FOOTER);
+  }
+  return sz;
+}
+
+static bool bleNotifyMeta(const uint8_t *data, uint16_t len) {
+  if (!bleMeta.notifyEnabled()) {
+    return false;
+  }
+  return bleMeta.notify(data, len);
+}
+
+static bool bleNotifyNamed(uint8_t type, const char *name, uint32_t size) {
+  uint8_t buf[17];
+  memset(buf, 0, sizeof(buf));
+  buf[0] = type;
+  size_t n = strlen(name);
+  if (n > 12) {
+    n = 12;
+  }
+  memcpy(buf + 1, name, n);
+  buf[13] = (uint8_t)(size & 0xff);
+  buf[14] = (uint8_t)((size >> 8) & 0xff);
+  buf[15] = (uint8_t)((size >> 16) & 0xff);
+  buf[16] = (uint8_t)((size >> 24) & 0xff);
+  return bleNotifyMeta(buf, sizeof(buf));
+}
+
+static bool bleScanOneEntry() {
+  File32 ent;
+  int skipped = 0;
+  while (skipped < 8) {
+    gpsDrain();
+    if (!ent.openNext(&bleDir, O_RDONLY)) {
+      gpsDrain();
+      bleListEnd = true;
+      return false;
+    }
+    char raw[32];
+    memset(raw, 0, sizeof(raw));
+    bool isDir = ent.isDir();
+    if (!isDir) {
+      ent.getName(raw, sizeof(raw));
+    }
+    char name[13];
+    bool ok = !isDir && bleNormalizeGpx(raw, name, sizeof(name));
+    uint32_t sz = 0;
+    if (ok) {
+      sz = bleDownloadSize(ent, name, NULL);
+    }
+    ent.close();
+    gpsDrain();
+    if (!ok) {
+      skipped++;
+      continue;
+    }
+    memcpy(bleListName, name, sizeof(bleListName));
+    bleListSize = sz;
+    bleListHave = true;
+    return true;
+  }
+  return false;
+}
+
+static bool bleFinishList() {
+  uint8_t endb = BLE_META_LIST_END;
+  if (!bleNotifyMeta(&endb, 1)) {
+    return false;
+  }
+  bleCloseFiles();
+  bleJob = BLE_JOB_IDLE;
+  bleListEnd = false;
+  Serial.println("BLE list end");
+  return true;
+}
+
+static bool blePumpList() {
+  if (!sdReady) {
+    bleQueueError(BLE_ERR_NO_SD);
+    return false;
+  }
+  if (!bleDir.isOpen()) {
+    gpsDrain();
+    bool opened = bleDir.open("/");
+    gpsDrain();
+    if (!opened) {
+      bleQueueError(BLE_ERR_IO);
+      return false;
+    }
+  }
+  if (bleListEnd) {
+    return bleFinishList();
+  }
+  if (!bleListHave) {
+    bleScanOneEntry();
+    if (bleListEnd) {
+      return bleFinishList();
+    }
+    if (!bleListHave) {
+      return false;
+    }
+  }
+  if (!bleNotifyNamed(BLE_META_ENTRY, bleListName, bleListSize)) {
+    return false;
+  }
+  bleListHave = false;
+  return true;
+}
+
+static uint16_t blePayloadMax() {
+  uint16_t mtu = 23;
+  if (Bluefruit.connected()) {
+    BLEConnection *conn = Bluefruit.Connection(Bluefruit.connHandle());
+    if (conn) {
+      mtu = conn->getMtu();
+    }
+  }
+  if (mtu < 23) {
+    mtu = 23;
+  }
+  uint16_t att = mtu - 3;
+  if (att <= 4) {
+    return 1;
+  }
+  uint16_t payload = att - 4;
+  if (payload > 240) {
+    payload = 240;
+  }
+  return payload;
+}
+
+static bool blePumpSend() {
+  if (!bleStartSent) {
+    if (!bleNotifyNamed(BLE_META_START, bleSendName, bleSize)) {
+      return false;
+    }
+    bleStartSent = true;
+    return true;
+  }
+  if (bleOffset >= bleSize) {
+    uint32_t crc = ~bleCrc;
+    uint8_t buf[5];
+    buf[0] = BLE_META_DONE;
+    buf[1] = (uint8_t)(crc & 0xff);
+    buf[2] = (uint8_t)((crc >> 8) & 0xff);
+    buf[3] = (uint8_t)((crc >> 16) & 0xff);
+    buf[4] = (uint8_t)((crc >> 24) & 0xff);
+    if (!bleNotifyMeta(buf, sizeof(buf))) {
+      return false;
+    }
+    Serial.print("BLE sent ");
+    Serial.print(bleSendName);
+    Serial.print(" bytes=");
+    Serial.print(bleSize);
+    Serial.print(" crc=");
+    Serial.println(crc, HEX);
+    bleResetXfer();
+    return true;
+  }
+
+  uint16_t payload = blePayloadMax();
+  uint32_t remain = bleSize - bleOffset;
+  if ((uint32_t)payload > remain) {
+    payload = (uint16_t)remain;
+  }
+
+  uint8_t *dst = bleChunk + 4;
+  uint16_t filled = 0;
+  if (bleOffset < bleFileLimit) {
+    uint32_t avail = bleFileLimit - bleOffset;
+    uint16_t n = payload;
+    if ((uint32_t)n > avail) {
+      n = (uint16_t)avail;
+    }
+    gpsDrain();
+    bool seekOk = bleFile.seekSet(bleOffset);
+    int got = seekOk ? bleFile.read(dst, n) : -1;
+    gpsDrain();
+    if (got != (int)n) {
+      bleQueueError(BLE_ERR_IO);
+      return false;
+    }
+    filled = n;
+  }
+  if (filled < payload) {
+    uint32_t footerAt = (bleOffset + filled) - bleFileLimit;
+    uint16_t n = (uint16_t)(payload - filled);
+    if (!bleFooterFromRam || footerAt + n > (uint32_t)strlen(GPX_FOOTER)) {
+      bleQueueError(BLE_ERR_IO);
+      return false;
+    }
+    memcpy(dst + filled, GPX_FOOTER + footerAt, n);
+    filled = (uint16_t)(filled + n);
+  }
+
+  bleChunk[0] = (uint8_t)(bleOffset & 0xff);
+  bleChunk[1] = (uint8_t)((bleOffset >> 8) & 0xff);
+  bleChunk[2] = (uint8_t)((bleOffset >> 16) & 0xff);
+  bleChunk[3] = (uint8_t)((bleOffset >> 24) & 0xff);
+
+  if (!bleData.notifyEnabled() || !bleData.notify(bleChunk, (uint16_t)(4 + filled))) {
+    return false;
+  }
+  bleCrc = crc32Update(bleCrc, dst, filled);
+  bleOffset += filled;
+  return true;
+}
+
+static void bleBeginList() {
+  bleResetXfer();
+  bleErrorPending = 0;
+  if (!sdReady) {
+    bleQueueError(BLE_ERR_NO_SD);
+    return;
+  }
+  bleJob = BLE_JOB_LIST;
+  Serial.println("BLE list");
+}
+
+static void bleBeginGet(const char *rawName) {
+  char name[13];
+  if (!bleNormalizeGpx(rawName, name, sizeof(name))) {
+    bleQueueError(BLE_ERR_NAME);
+    return;
+  }
+  if (!sdReady) {
+    bleQueueError(BLE_ERR_NO_SD);
+    return;
+  }
+  bleResetXfer();
+  bleErrorPending = 0;
+  gpsDrain();
+  bool opened = bleFile.open(name, O_RDONLY);
+  gpsDrain();
+  if (!opened) {
+    bleQueueError(BLE_ERR_NOT_FOUND);
+    return;
+  }
+  bool footer = false;
+  bleSize = bleDownloadSize(bleFile, name, &footer);
+  bleFooterFromRam = footer;
+  bleFileLimit = footer ? gpxBodyEnd : bleSize;
+  memcpy(bleSendName, name, sizeof(bleSendName));
+  bleCrc = 0xFFFFFFFFUL;
+  bleOffset = 0;
+  bleStartSent = false;
+  bleJob = BLE_JOB_SEND;
+  Serial.print("BLE get ");
+  Serial.print(name);
+  Serial.print(" bytes=");
+  Serial.println(bleSize);
+}
+
+static void bleTakeCommand() {
+  uint8_t op;
+  char name[13];
+  noInterrupts();
+  op = bleCmdOp;
+  memcpy(name, bleCmdName, sizeof(name));
+  bleCmdPending = 0;
+  interrupts();
+
+  if (op == BLE_OP_ABORT) {
+    if (bleJob != BLE_JOB_IDLE || bleErrorPending != 0) {
+      bleQueueError(BLE_ERR_ABORT);
+      Serial.println("BLE abort");
+    }
+    return;
+  }
+  if (op == BLE_OP_LIST) {
+    bleBeginList();
+    return;
+  }
+  if (op == BLE_OP_GET) {
+    bleBeginGet(name);
+    return;
+  }
+  bleQueueError(BLE_ERR_NAME);
+}
+
+static bool bleActive() {
+  return bleReady && (bleJob != BLE_JOB_IDLE || bleErrorPending != 0);
+}
+
+static bool bleService() {
+  if (!bleReady) {
+    return false;
+  }
+
+  if (bleLinkUpEdge) {
+    bleLinkUpEdge = 0;
+    Serial.println("BLE connected");
+  }
+  if (bleLinkLost || (bleJob != BLE_JOB_IDLE && !Bluefruit.connected())) {
+    bleLinkLost = 0;
+    noInterrupts();
+    bleCmdPending = 0;
+    interrupts();
+    bleErrorPending = 0;
+    bleResetXfer();
+    Serial.println("BLE disconnected");
+    return false;
+  }
+
+  if (bleCmdPending) {
+    bleTakeCommand();
+    return true;
+  }
+  if (bleErrorPending) {
+    uint8_t buf[2] = {BLE_META_ERROR, bleErrorPending};
+    if (!bleNotifyMeta(buf, sizeof(buf))) {
+      return false;
+    }
+    Serial.print("BLE error ");
+    Serial.println(bleErrorPending);
+    bleErrorPending = 0;
+    return true;
+  }
+  if (bleJob == BLE_JOB_LIST) {
+    return blePumpList();
+  }
+  if (bleJob == BLE_JOB_SEND) {
+    return blePumpSend();
+  }
+  return false;
+}
+
+static void bleOnWrite(uint16_t conn_hdl, BLECharacteristic *chr, uint8_t *data, uint16_t len) {
+  (void)conn_hdl;
+  (void)chr;
+  if (len < 1 || len > 13) {
+    return;
+  }
+  uint8_t op = data[0];
+  char name[13];
+  memset(name, 0, sizeof(name));
+  if (op == BLE_OP_GET && len > 1) {
+    uint16_t n = (uint16_t)(len - 1);
+    if (n > 12) {
+      n = 12;
+    }
+    memcpy(name, data + 1, n);
+  }
+  noInterrupts();
+  bleCmdOp = op;
+  memcpy(bleCmdName, name, sizeof(bleCmdName));
+  bleCmdPending = 1;
+  interrupts();
+}
+
+static void bleOnConnect(uint16_t conn_hdl) {
+  BLEConnection *conn = Bluefruit.Connection(conn_hdl);
+  if (conn) {
+    conn->requestMtuExchange(247);
+    conn->requestPHY(BLE_GAP_PHY_2MBPS);
+  }
+  bleLinkUpEdge = 1;
+}
+
+static void bleOnDisconnect(uint16_t conn_hdl, uint8_t reason) {
+  (void)conn_hdl;
+  (void)reason;
+  bleLinkLost = 1;
+}
+
+static void bleStart() {
+  // Keep the speed LED. Bluefruit's connect blink uses that pin.
+  Bluefruit.autoConnLed(false);
+  // MTU 247 with a short event. BANDWIDTH_MAX's event length does not fit
+  // the SoftDevice RAM this board reserves.
+  Bluefruit.configPrphConn(247, 6, 2, 1);
+  if (!Bluefruit.begin(1, 0)) {
+    Serial.println("BLE begin failed");
+    return;
+  }
+  bleReady = true;
+  Bluefruit.setTxPower(4);
+  Bluefruit.setName("XIAO Ride");
+  Bluefruit.Periph.setConnectCallback(bleOnConnect);
+  Bluefruit.Periph.setDisconnectCallback(bleOnDisconnect);
+  Bluefruit.Periph.setConnIntervalMS(15, 30);
+
+  bleCmd.setPermission(SECMODE_NO_ACCESS, SECMODE_OPEN);
+  bleCmd.setWriteCallback(bleOnWrite, true);
+  bleMeta.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  bleData.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  bleSvc.begin();
+  bleCmd.begin();
+  bleMeta.begin();
+  bleData.begin();
+
+  Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
+  Bluefruit.Advertising.addTxPower();
+  Bluefruit.Advertising.addService(bleSvc);
+  Bluefruit.ScanResponse.addName();
+  Bluefruit.Advertising.restartOnDisconnect(true);
+  Bluefruit.Advertising.setInterval(32, 244);
+  Bluefruit.Advertising.setFastTimeout(30);
+  if (!Bluefruit.Advertising.start(0)) {
+    Serial.println("BLE advertise failed");
+    return;
+  }
+  Serial.println("BLE advertising XIAO Ride");
 }
 
 void setup() {
@@ -1810,6 +2408,8 @@ void setup() {
 
   // Attach after display is up so early glitches don't race an empty UI.
   attachInterrupt(digitalPinToInterrupt(PIN_REED), reedIsr, FALLING);
+
+  bleStart();
 
   Serial.println(tripStarted ? "Ready — resuming trip" : "Ready — waiting for wheel pulses");
 }
@@ -1884,5 +2484,12 @@ void loop() {
 
   digitalWrite(LED_BUILTIN, (speedKmh > 0.05f) ? LOW : HIGH);
 
-  gpsWait(50);
+  bool bleSent = bleService();
+  if (bleSent) {
+    gpsDrain();
+  } else if (bleActive()) {
+    gpsWait(5);
+  } else {
+    gpsWait(50);
+  }
 }

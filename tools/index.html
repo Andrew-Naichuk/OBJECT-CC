@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XIAO Ride</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f1ea;
+      --ink: #1c1915;
+      --muted: #5c564c;
+      --line: #d9d2c5;
+      --card: #fffdf8;
+      --accent: #1f6b45;
+      --danger: #8c2f2f;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141311;
+        --ink: #f3efe6;
+        --muted: #b7b0a4;
+        --line: #3a372f;
+        --card: #1e1c19;
+        --accent: #7dcea0;
+        --danger: #f0a0a0;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 16px/1.4 system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    main {
+      max-width: 32rem;
+      margin: 0 auto;
+      padding: 1.25rem 1rem 3rem;
+    }
+    h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+    p { margin: 0.4rem 0; }
+    .muted { color: var(--muted); font-size: 0.92rem; }
+    .row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 1rem 0; }
+    button {
+      font: inherit;
+      border: 1px solid var(--line);
+      background: var(--card);
+      color: var(--ink);
+      border-radius: 0.6rem;
+      padding: 0.7rem 1rem;
+      min-height: 2.75rem;
+    }
+    button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+    button:disabled { opacity: 0.45; }
+    #status { min-height: 1.4em; }
+    #status.error { color: var(--danger); }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { margin: 0 0 0.5rem; }
+    li button {
+      width: 100%;
+      text-align: left;
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+    progress { width: 100%; height: 0.7rem; }
+    .hide { display: none; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>XIAO Ride</h1>
+    <p class="muted">Download GPX rides from the bike computer. Open this page over HTTPS in Android Chrome. iPhone Safari cannot use Bluetooth; use a Web Bluetooth browser such as Bluefy.</p>
+    <p id="status" class="muted">Not connected.</p>
+    <div class="row">
+      <button id="connect" class="primary" type="button">Connect</button>
+      <button id="refresh" type="button" disabled>Refresh list</button>
+      <button id="disconnect" type="button" disabled>Disconnect</button>
+    </div>
+    <p id="progress-label" class="muted hide"></p>
+    <progress id="progress" class="hide" max="1" value="0"></progress>
+    <ul id="files"></ul>
+  </main>
+  <script>
+    // Same bytes as xiao_oled.ino.
+    const SERVICE = "7a1e0001-4c8b-4d2e-9f63-1b5a0c7e8d24";
+    const CMD = "7a1e0002-4c8b-4d2e-9f63-1b5a0c7e8d24";
+    const META = "7a1e0003-4c8b-4d2e-9f63-1b5a0c7e8d24";
+    const DATA = "7a1e0004-4c8b-4d2e-9f63-1b5a0c7e8d24";
+    const OP_LIST = 0x01;
+    const OP_GET = 0x02;
+    const OP_ABORT = 0x03;
+    const META_ENTRY = 0x01;
+    const META_LIST_END = 0x02;
+    const META_START = 0x03;
+    const META_DONE = 0x04;
+    const META_ERROR = 0x7f;
+    const MAX_FILE = 16 * 1024 * 1024;
+    const STALL_MS = 15000;
+    const ERRORS = {
+      1: "No SD card",
+      2: "Bad file name",
+      3: "File not found",
+      4: "Read failed",
+      5: "Transfer aborted"
+    };
+
+    const statusEl = document.getElementById("status");
+    const connectBtn = document.getElementById("connect");
+    const refreshBtn = document.getElementById("refresh");
+    const disconnectBtn = document.getElementById("disconnect");
+    const filesEl = document.getElementById("files");
+    const progressEl = document.getElementById("progress");
+    const progressLabel = document.getElementById("progress-label");
+
+    let device = null;
+    let cmdChar = null;
+    let phase = "idle";
+    let rides = [];
+    let fileBuf = null;
+    let fileName = "";
+    let received = 0;
+    let doneCrc = null;
+    let early = [];
+    let stallTimer = 0;
+
+    function setStatus(text, isError) {
+      statusEl.textContent = text;
+      statusEl.className = isError ? "error" : "muted";
+    }
+
+    function formatSize(n) {
+      if (n < 1024) return n + " B";
+      if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10 * 1024 ? 1 : 0) + " KB";
+      return (n / (1024 * 1024)).toFixed(1) + " MB";
+    }
+
+    function crc32(bytes) {
+      let c = 0xffffffff;
+      for (let i = 0; i < bytes.length; i++) {
+        c ^= bytes[i];
+        for (let b = 0; b < 8; b++) {
+          const mask = -(c & 1);
+          c = (c >>> 1) ^ (0xedb88320 & mask);
+        }
+      }
+      return (~c) >>> 0;
+    }
+
+    function u32le(bytes, offset) {
+      return (bytes[offset] |
+        (bytes[offset + 1] << 8) |
+        (bytes[offset + 2] << 16) |
+        (bytes[offset + 3] << 24)) >>> 0;
+    }
+
+    function readName(bytes) {
+      let n = bytes.length;
+      while (n > 0 && (bytes[n - 1] === 0 || bytes[n - 1] === 32)) n--;
+      let s = "";
+      for (let i = 0; i < n; i++) s += String.fromCharCode(bytes[i]);
+      return s;
+    }
+
+    function noteActivity() {
+      clearTimeout(stallTimer);
+      if (phase === "listing" || phase === "downloading") {
+        stallTimer = setTimeout(() => {
+          setStatus("Transfer stalled. Move closer and try again.", true);
+          phase = "idle";
+          hideProgress();
+        }, STALL_MS);
+      }
+    }
+
+    function hideProgress() {
+      progressEl.classList.add("hide");
+      progressLabel.classList.add("hide");
+    }
+
+    function showProgress(name, got, total) {
+      progressEl.classList.remove("hide");
+      progressLabel.classList.remove("hide");
+      progressEl.max = total || 1;
+      progressEl.value = got;
+      progressLabel.textContent = name + " — " + formatSize(got) + " / " + formatSize(total);
+    }
+
+    function renderRides() {
+      filesEl.replaceChildren();
+      const sorted = rides.slice().sort((a, b) => {
+        if (a.name === "CURRENT.GPX") return -1;
+        if (b.name === "CURRENT.GPX") return 1;
+        return a.name < b.name ? 1 : a.name > b.name ? -1 : 0;
+      });
+      for (const ride of sorted) {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.disabled = phase !== "idle";
+        const name = document.createElement("span");
+        name.textContent = ride.name;
+        const size = document.createElement("span");
+        size.textContent = formatSize(ride.size);
+        btn.append(name, size);
+        btn.addEventListener("click", () => {
+          downloadRide(ride.name).catch((err) => {
+            phase = "idle";
+            resetTransfer();
+            setStatus(err.message || "Download failed.", true);
+            renderRides();
+          });
+        });
+        li.append(btn);
+        filesEl.append(li);
+      }
+    }
+
+    function resetTransfer() {
+      fileBuf = null;
+      fileName = "";
+      received = 0;
+      doneCrc = null;
+      early = [];
+      hideProgress();
+    }
+
+    function saveFile() {
+      const crc = crc32(fileBuf);
+      if (crc !== doneCrc) {
+        setStatus("CRC mismatch for " + fileName + ". File not saved.", true);
+        phase = "idle";
+        resetTransfer();
+        renderRides();
+        return;
+      }
+      const blob = new Blob([fileBuf], { type: "application/gpx+xml" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      setStatus("Saved " + fileName + ".");
+      phase = "idle";
+      resetTransfer();
+      renderRides();
+    }
+
+    function maybeFinish() {
+      if (doneCrc === null || !fileBuf || received !== fileBuf.length) return;
+      clearTimeout(stallTimer);
+      saveFile();
+    }
+
+    function takeBytes(payload, offset) {
+      if (!fileBuf || offset !== received) return;
+      if (offset + payload.length > fileBuf.length) return;
+      fileBuf.set(payload, offset);
+      received += payload.length;
+      showProgress(fileName, received, fileBuf.length);
+      maybeFinish();
+    }
+
+    function onMeta(event) {
+      const view = event.target.value;
+      const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+      if (bytes.length < 1) return;
+      noteActivity();
+      const type = bytes[0];
+      if (type === META_ENTRY && bytes.length >= 17) {
+        const name = readName(bytes.subarray(1, 13));
+        const size = u32le(bytes, 13);
+        rides.push({ name, size });
+        return;
+      }
+      if (type === META_LIST_END) {
+        clearTimeout(stallTimer);
+        phase = "idle";
+        setStatus(rides.length ? rides.length + " ride" + (rides.length === 1 ? "" : "s") + "." : "No GPX files on the card.");
+        renderRides();
+        return;
+      }
+      if (type === META_START && bytes.length >= 17) {
+        fileName = readName(bytes.subarray(1, 13));
+        const size = u32le(bytes, 13);
+        if (size > MAX_FILE) {
+          setStatus("File is too large to download here.", true);
+          phase = "idle";
+          return;
+        }
+        fileBuf = new Uint8Array(size);
+        received = 0;
+        doneCrc = null;
+        phase = "downloading";
+        showProgress(fileName, 0, size);
+        const queued = early;
+        early = [];
+        for (const chunk of queued) takeBytes(chunk.payload, chunk.offset);
+        maybeFinish();
+        renderRides();
+        return;
+      }
+      if (type === META_DONE && bytes.length >= 5) {
+        doneCrc = u32le(bytes, 1);
+        maybeFinish();
+        return;
+      }
+      if (type === META_ERROR && bytes.length >= 2) {
+        clearTimeout(stallTimer);
+        phase = "idle";
+        resetTransfer();
+        setStatus(ERRORS[bytes[1]] || "Transfer failed.", true);
+        renderRides();
+      }
+    }
+
+    function onData(event) {
+      const view = event.target.value;
+      const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+      if (bytes.length < 4) return;
+      noteActivity();
+      const offset = u32le(bytes, 0);
+      const payload = bytes.subarray(4);
+      const copy = new Uint8Array(payload);
+      if (!fileBuf) {
+        early.push({ offset, payload: copy });
+        return;
+      }
+      takeBytes(copy, offset);
+    }
+
+    async function writeCmd(bytes) {
+      await cmdChar.writeValue(bytes);
+    }
+
+    async function listRides() {
+      if (!cmdChar || phase !== "idle") return;
+      rides = [];
+      filesEl.replaceChildren();
+      phase = "listing";
+      resetTransfer();
+      renderRides();
+      setStatus("Listing rides…");
+      noteActivity();
+      await writeCmd(new Uint8Array([OP_LIST]));
+    }
+
+    async function downloadRide(name) {
+      if (!cmdChar || phase !== "idle") return;
+      phase = "downloading";
+      resetTransfer();
+      fileName = name;
+      renderRides();
+      setStatus("Downloading " + name + "…");
+      showProgress(name, 0, 1);
+      noteActivity();
+      const body = new Uint8Array(1 + name.length);
+      body[0] = OP_GET;
+      for (let i = 0; i < name.length; i++) body[i + 1] = name.charCodeAt(i);
+      await writeCmd(body);
+    }
+
+    async function connect() {
+      if (!navigator.bluetooth) {
+        setStatus("This browser has no Bluetooth. Use Android Chrome over HTTPS, or Bluefy on iPhone.", true);
+        return;
+      }
+      connectBtn.disabled = true;
+      try {
+        device = await navigator.bluetooth.requestDevice({
+          filters: [{ name: "XIAO Ride" }, { services: [SERVICE] }],
+          optionalServices: [SERVICE]
+        });
+        device.addEventListener("gattserverdisconnected", onDisconnected);
+        setStatus("Connecting…");
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService(SERVICE);
+        cmdChar = await service.getCharacteristic(CMD);
+        const meta = await service.getCharacteristic(META);
+        const data = await service.getCharacteristic(DATA);
+        meta.addEventListener("characteristicvaluechanged", onMeta);
+        data.addEventListener("characteristicvaluechanged", onData);
+        await meta.startNotifications();
+        await data.startNotifications();
+        refreshBtn.disabled = false;
+        disconnectBtn.disabled = false;
+        setStatus("Connected to " + (device.name || "XIAO Ride") + ".");
+        await listRides();
+      } catch (err) {
+        phase = "idle";
+        if (err && err.name === "NotFoundError") {
+          setStatus("No device selected.");
+        } else {
+          setStatus(err && err.message ? err.message : "Connect failed.", true);
+        }
+        cmdChar = null;
+      } finally {
+        connectBtn.disabled = !!cmdChar;
+      }
+    }
+
+    function onDisconnected() {
+      clearTimeout(stallTimer);
+      cmdChar = null;
+      phase = "idle";
+      rides = [];
+      resetTransfer();
+      filesEl.replaceChildren();
+      connectBtn.disabled = false;
+      refreshBtn.disabled = true;
+      disconnectBtn.disabled = true;
+      setStatus("Disconnected.");
+    }
+
+    async function disconnect() {
+      if (cmdChar && phase !== "idle") {
+        try { await writeCmd(new Uint8Array([OP_ABORT])); } catch (e) {}
+      }
+      if (device && device.gatt.connected) device.gatt.disconnect();
+      else onDisconnected();
+    }
+
+    connectBtn.addEventListener("click", connect);
+    refreshBtn.addEventListener("click", () => listRides().catch((err) => {
+      phase = "idle";
+      setStatus(err.message || "List failed.", true);
+    }));
+    disconnectBtn.addEventListener("click", disconnect);
+  </script>
+</body>
+</html>
