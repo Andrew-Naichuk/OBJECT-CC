@@ -46,7 +46,11 @@
  *
  * Wheel: 700x32C (ISO 32-622) -> circumference 2155 mm.
  *
- * TFT layout (portrait 240x320): DIST/TIME | speed + avg | MOVE/MAX | GPS.
+ * TFT layout (portrait 240x320), monochrome to match the OBJECT ride page:
+ *   OBJECT | GPS state, km/h | Avg, dot-matrix speed, 24-dot gauge,
+ *   Distance / Time / Moving / Max rows, Altitude | card, phone, recording.
+ * The gauge shows speed (2 km/h a dot), the new-ride hold, or a phone
+ * download in progress.
  * Rotation 0. If the image is upside down relative to the pin header, use 2.
  */
 
@@ -56,6 +60,10 @@
 #include <bluefruit.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
+#include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/FreeSansBold9pt7b.h>
+#include <Fonts/FreeSansBold12pt7b.h>
+#include <Fonts/FreeSansBold18pt7b.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,30 +81,31 @@ static const int SCREEN_W = 240;
 static const int SCREEN_H = 320;
 static const int PAD      = 12;
 
-static const uint16_t COL_BG   = ILI9341_BLACK;
-static const uint16_t COL_FG   = ILI9341_WHITE;
-static const uint16_t COL_RULE = ILI9341_DARKGREY;
-static const uint16_t COL_LIVE = ILI9341_GREEN;
-static const uint16_t COL_CONN = ILI9341_YELLOW;
-static const uint16_t COL_NOSD = ILI9341_RED;
+// Monochrome palette, the same one the OBJECT ride-transfer page uses.
+static const uint16_t COL_BG   = 0x0000;  // black
+static const uint16_t COL_FG   = 0xFFFF;  // white
+static const uint16_t COL_DIM  = 0x8C71;  // #8f8f8f labels and captions
+static const uint16_t COL_RULE = 0x2124;  // #242424 hairlines
+static const uint16_t COL_OFF  = 0x18E3;  // #1c1c1c unlit matrix dots
 
-// Portrait stack. Slots reserve the preferred glyph height so a smaller
-// fallback size does not leave the previous digits behind.
-static const int ROW_LABEL_Y  = 10;
-static const int ROW_VALUE_Y  = 32;
-static const int ROW_VALUE_H  = 24;  // text size 3
-static const int RULE1_Y      = 68;
-static const int SPEED_Y      = 84;
-static const int SPEED_H      = 48;  // text size 6
-static const int AVG_Y        = 148;
-static const int AVG_H        = 24;  // text size 3
-static const int AVG_ICON     = 16;
-static const int RULE2_Y      = 188;
-static const int MOVE_LABEL_Y = 200;
-static const int MOVE_VALUE_Y = 222;
-static const int GPS_Y        = 290;
-static const int GPS_H        = 16;  // text size 2
-static const int UNIT_SIZE    = 2;
+// Portrait stack, top to bottom.
+static const int STATUS_BASE = 19;   // wordmark baseline
+static const int CAPTION_Y   = 34;
+static const int CAPTION_H   = 20;
+static const int HERO_Y      = 60;   // speed matrix top
+static const int HERO_PITCH  = 10;   // matrix cell
+static const int HERO_DOT    = 8;    // lit square inside the cell
+static const int GAUGE_Y     = 142;  // dot centre line
+static const int GAUGE_DOTS  = 24;
+static const int GAUGE_PITCH = 9;
+static const int GAUGE_R     = 2;
+static const float GAUGE_KMH_PER_DOT = 2.0f;
+static const int ROWS_Y      = 156;
+static const int ROW_H       = 34;
+static const int ROW_COUNT   = 4;
+static const int VALUE_X     = 96;
+static const int FOOTER_Y    = 296;
+static const int FOOTER_H    = 22;
 
 // Circumference of 700x32C (32-622), millimetres.
 static const float WHEEL_CIRC_MM = 2155.0f;
@@ -194,28 +203,36 @@ static uint8_t blMode = BL_BRIGHT;
 static unsigned long overlayFlashUntilMs = 0;
 static const char *overlayFlashMsg = NULL;
 
-struct FieldCache {
-  char text[20];
-  uint8_t size;
+struct TextCache {
+  char text[40];
+  uint16_t color;
+  uint8_t mark;
   bool valid;
 };
 
-static FieldCache fldDist;
-static FieldCache fldTime;
-static FieldCache fldSpeed;
-static FieldCache fldAvg;
-static FieldCache fldMove;
-static FieldCache fldMax;
-static FieldCache fldGpsStatus;
-static FieldCache fldGpsSats;
-static FieldCache fldGpsAlt;
-static uint16_t fldGpsColor = 0;
+struct Slot {
+  int16_t x;
+  int16_t y;
+  int16_t w;
+  int16_t h;
+  int16_t base;
+};
+
+struct DotGlyph {
+  char ch;
+  uint8_t cols;
+  uint8_t rows[7];
+};
+
+static TextCache txtStatus;
+static TextCache txtCaption;
+static TextCache txtRow[ROW_COUNT];
+static TextCache txtFootL;
+static TextCache txtFootR;
+static char heroShown[8];
+static bool heroValid = false;
+static int gaugeLit = -1;
 static bool uiChromeDrawn = false;
-static bool overlayWasShown = false;
-static char overlayDrawnSub[8];
-static const char *overlayDrawnTitle = NULL;
-static int overlayDrawnFilled = -2;
-static int8_t bleMarkShown = -1;
 
 #pragma pack(push, 1)
 struct TripDat {
@@ -1005,13 +1022,13 @@ static const char *tripResumeSd() {
   if (!gpxOpenOrCreate()) {
     sdReady = false;
     gpxFile.close();
-    return "NO SD";
+    return "No card";
   }
 
   if (!haveDat) {
     tripDatSave(0, 0);
     Serial.println("SD new TRIP.DAT");
-    return "SD OK";
+    return "Card ready";
   }
 
   noInterrupts();
@@ -1035,7 +1052,7 @@ static const char *tripResumeSd() {
   Serial.print(d.elapsedMs);
   Serial.print(" max=");
   Serial.println(d.maxSpeedKmh, 1);
-  return tripStarted ? "SD RESUME" : "SD OK";
+  return tripStarted ? "Resuming ride" : "Card ready";
 }
 
 static void tripResetRam() {
@@ -1240,11 +1257,11 @@ static void btnHandle(unsigned long now, unsigned long lastPulseMs) {
     btnArmed = false;
     int result = tripStartNewRide();
     if (result == NEW_RIDE_SAVED) {
-      btnFlash("RIDE SAVED", now);
+      btnFlash("Ride saved", now);
     } else if (result == NEW_RIDE_RESET) {
-      btnFlash("RESET", now);
+      btnFlash("Stats reset", now);
     } else {
-      btnFlash("SAVE FAIL", now);
+      btnFlash("Save failed", now);
     }
   }
 
@@ -1349,39 +1366,62 @@ static void gpsPoll() {
   }
 }
 
-// Default GFX glyph cell is 6x8 at text size 1.
-static int textPixelWidth(const char *s, uint8_t size) {
-  return (int)strlen(s) * 6 * (int)size;
+// ---------------------------------------------------------------------------
+// Drawing. Values that change are rendered into a 1-bit canvas and pushed to
+// the panel as whole rows, background included, so nothing is cleared first
+// and nothing blinks. Each burst is short so the GPS UART ring is drained.
+
+static bool blePhoneConnected();
+static bool bleSendProgress(uint8_t *pct);
+
+static GFXcanvas1 textCanvas(SCREEN_W, 32);
+static uint16_t blitLine[SCREEN_W * 4];
+
+enum {
+  MARK_NONE = 0,
+  MARK_RING,
+  MARK_DOT,
+  MARK_ALERT,
+  MARK_PILL
+};
+
+static const Slot SLOT_STATUS  = {108, 4, SCREEN_W - PAD - 108, 22, 15};
+static const Slot SLOT_CAPTION = {PAD, CAPTION_Y, SCREEN_W - 2 * PAD, CAPTION_H, 15};
+static const Slot SLOT_FOOT_L  = {PAD, FOOTER_Y, 122, FOOTER_H, 15};
+static const Slot SLOT_FOOT_R  = {PAD + 122, FOOTER_Y, SCREEN_W - 2 * PAD - 122, FOOTER_H, 15};
+
+static const char *const ROW_LABELS[ROW_COUNT] = {"Distance", "Time", "Moving", "Max"};
+static const char *const ROW_UNITS[ROW_COUNT]  = {"km", "", "", "km/h"};
+
+// 5x7 matrix; bit (cols - 1) is the left column. ' ' is an unlit digit cell.
+static const DotGlyph DOT_FONT[] = {
+  {' ', 5, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+  {'0', 5, {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}},
+  {'1', 5, {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}},
+  {'2', 5, {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F}},
+  {'3', 5, {0x0E, 0x11, 0x01, 0x06, 0x01, 0x11, 0x0E}},
+  {'4', 5, {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}},
+  {'5', 5, {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E}},
+  {'6', 5, {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}},
+  {'7', 5, {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}},
+  {'8', 5, {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E}},
+  {'9', 5, {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C}},
+  {'-', 5, {0x00, 0x00, 0x00, 0x0E, 0x00, 0x00, 0x00}},
+  {'.', 1, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},
+  {':', 1, {0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00}},
+};
+
+static const DotGlyph *dotGlyph(char c) {
+  for (size_t i = 0; i < sizeof(DOT_FONT) / sizeof(DOT_FONT[0]); i++) {
+    if (DOT_FONT[i].ch == c) {
+      return &DOT_FONT[i];
+    }
+  }
+  return &DOT_FONT[0];
 }
 
-static void invalidateField(FieldCache *f) {
-  f->valid = false;
-  f->text[0] = '\0';
-  f->size = 0;
-}
-
-static void invalidateAllFields() {
-  invalidateField(&fldDist);
-  invalidateField(&fldTime);
-  invalidateField(&fldSpeed);
-  invalidateField(&fldAvg);
-  invalidateField(&fldMove);
-  invalidateField(&fldMax);
-  invalidateField(&fldGpsStatus);
-  invalidateField(&fldGpsSats);
-  invalidateField(&fldGpsAlt);
-  fldGpsColor = 0;
-}
-
-static bool fieldSame(const FieldCache *f, const char *s, uint8_t size) {
-  return f->valid && f->size == size && strcmp(f->text, s) == 0;
-}
-
-static void fieldStore(FieldCache *f, const char *s, uint8_t size) {
-  strncpy(f->text, s, sizeof(f->text) - 1);
-  f->text[sizeof(f->text) - 1] = '\0';
-  f->size = size;
-  f->valid = true;
+static bool dotOn(const DotGlyph *g, int row, int col) {
+  return (g->rows[row] >> (g->cols - 1 - col)) & 1;
 }
 
 // Strip the fill so a NAV-PVT burst can be read out of the 64-byte UART ring.
@@ -1423,33 +1463,281 @@ static void printDrained(const char *s) {
   gpsDrain();
 }
 
-static void drawHRule(int y) {
-  display.drawFastHLine(PAD, y, SCREEN_W - 2 * PAD, COL_RULE);
-  gpsDrain();
-}
-
-static void printLeft(int x, int y, uint8_t size, uint16_t color, const char *s) {
-  display.setTextSize(size);
+static void drawLabel(const GFXfont *font, int x, int base, uint16_t color, const char *s) {
+  display.setFont(font);
   display.setTextColor(color);
-  display.setCursor(x, y);
+  display.setCursor(x, base);
   printDrained(s);
+  display.setFont(NULL);
 }
 
-static void printRight(int rightEdge, int y, uint8_t size, uint16_t color, const char *s) {
-  int w = textPixelWidth(s, size);
-  printLeft(rightEdge - w, y, size, color, s);
+static int trackedWidth(const GFXfont *font, int track, const char *s) {
+  int w = 0;
+  for (const char *p = s; *p; p++) {
+    uint8_t c = (uint8_t)*p;
+    if (c < font->first || c > font->last) {
+      continue;
+    }
+    w += font->glyph[c - font->first].xAdvance;
+    if (p[1]) {
+      w += track;
+    }
+  }
+  return w;
 }
 
-static int unitWidth() {
-  return textPixelWidth("KM/H", UNIT_SIZE);
+// The wordmark is set with extra letter spacing, like the page header.
+static void drawTracked(const GFXfont *font, int x, int base, int track,
+                        const char *s, uint16_t color) {
+  display.setFont(font);
+  display.setTextColor(color);
+  for (const char *p = s; *p; p++) {
+    display.setCursor(x, base);
+    display.write((uint8_t)*p);
+    x = display.getCursorX() + track;
+    gpsDrain();
+  }
+  display.setFont(NULL);
 }
 
-// Average-speed mark (diameter symbol), 16x16.
-static void drawAvgIcon(int x, int y) {
-  display.drawCircle(x + 7, y + 7, 6, COL_FG);
-  display.fillCircle(x + 7, y + 7, 2, COL_FG);
-  display.drawLine(x + 3, y + 11, x + 11, y + 3, COL_FG);
+// Push a w x h region of textCanvas to the panel, 4 rows per SPI burst.
+static void blitCanvas(int x, int y, int w, int h, uint16_t fg, uint16_t bg) {
+  const uint8_t *buf = textCanvas.getBuffer();
+  const int stride = (SCREEN_W + 7) / 8;
+  for (int r0 = 0; r0 < h; r0 += 4) {
+    int rows = h - r0;
+    if (rows > 4) {
+      rows = 4;
+    }
+    uint16_t *dst = blitLine;
+    for (int r = r0; r < r0 + rows; r++) {
+      const uint8_t *row = buf + r * stride;
+      for (int c = 0; c < w; c++) {
+        *dst++ = (row[c >> 3] & (0x80 >> (c & 7))) ? fg : bg;
+      }
+    }
+    display.startWrite();
+    display.setAddrWindow(x, y + r0, w, rows);
+    display.writePixels(blitLine, (uint32_t)(w * rows));
+    display.endWrite();
+    gpsDrain();
+  }
+}
+
+static void invalidateText(TextCache *c) {
+  c->valid = false;
+  c->text[0] = '\0';
+}
+
+// One text slot: optional left text, optional right-aligned text with a
+// status mark before it (ring, dot, alert) or a filled pill around it.
+static void drawSlot(const Slot &s, TextCache *cache, const GFXfont *font,
+                     const char *left, const char *right, uint8_t mark, uint16_t fg) {
+  char key[sizeof(cache->text)];
+  snprintf(key, sizeof(key), "%s\x1f%s", left, right);
+  if (cache->valid && cache->color == fg && cache->mark == mark &&
+      strcmp(cache->text, key) == 0) {
+    return;
+  }
+
+  textCanvas.fillRect(0, 0, s.w, s.h, 0);
+  textCanvas.setTextWrap(false);
+  textCanvas.setFont(font);
+
+  if (left[0]) {
+    textCanvas.setTextColor(1);
+    textCanvas.setCursor(0, s.base);
+    textCanvas.print(left);
+  }
+
+  if (right[0]) {
+    int16_t bx, by;
+    uint16_t bw, bh;
+    textCanvas.getTextBounds(right, 0, s.base, &bx, &by, &bw, &bh);
+    int inkLeft = s.w - (int)bw;
+    uint16_t ink = 1;
+    const int cy = s.base - 6;
+
+    if (mark == MARK_PILL) {
+      const int padX = 6;
+      int pillW = (int)bw + 2 * padX;
+      int pillX = s.w - pillW;
+      textCanvas.fillRoundRect(pillX, s.base - 14, pillW, 19, 9, 1);
+      inkLeft = pillX + padX;
+      ink = 0;
+    } else if (mark == MARK_ALERT) {
+      int cx = inkLeft - 7 - 7;
+      textCanvas.fillCircle(cx, cy, 7, 1);
+      textCanvas.setFont(NULL);
+      textCanvas.setTextColor(0);
+      textCanvas.setCursor(cx - 2, cy - 3);
+      textCanvas.print('!');
+      textCanvas.setFont(font);
+    } else if (mark == MARK_DOT || mark == MARK_RING) {
+      int cx = inkLeft - 8 - 4;
+      if (mark == MARK_DOT) {
+        textCanvas.fillCircle(cx, cy, 4, 1);
+      } else {
+        textCanvas.drawCircle(cx, cy, 4, 1);
+        textCanvas.drawCircle(cx, cy, 3, 1);
+      }
+    }
+
+    textCanvas.setTextColor(ink);
+    textCanvas.setCursor(inkLeft - bx, s.base);
+    textCanvas.print(right);
+  }
+
+  blitCanvas(s.x, s.y, s.w, s.h, fg, COL_BG);
+
+  strncpy(cache->text, key, sizeof(cache->text) - 1);
+  cache->text[sizeof(cache->text) - 1] = '\0';
+  cache->color = fg;
+  cache->mark = mark;
+  cache->valid = true;
+}
+
+// Repaint only the matrix cells that changed. old == NULL paints every cell.
+static void drawDotGlyph(int x, int y, const DotGlyph *old, const DotGlyph *g) {
+  for (int r = 0; r < 7; r++) {
+    for (int c = 0; c < g->cols; c++) {
+      bool on = dotOn(g, r, c);
+      if (old && dotOn(old, r, c) == on) {
+        continue;
+      }
+      display.fillRect(x + c * HERO_PITCH, y + r * HERO_PITCH,
+                       HERO_DOT, HERO_DOT, on ? COL_FG : COL_OFF);
+    }
+    gpsDrain();
+  }
+}
+
+static int dotTextWidth(const char *s) {
+  int cols = 0;
+  int n = 0;
+  for (const char *p = s; *p; p++, n++) {
+    cols += dotGlyph(*p)->cols;
+  }
+  if (n == 0) {
+    return 0;
+  }
+  return (cols + n - 1) * HERO_PITCH - (HERO_PITCH - HERO_DOT);
+}
+
+static void paintHero(const char *s) {
+  size_t n = strlen(s);
+  bool full = !heroValid || strlen(heroShown) != n;
+  if (!full) {
+    for (size_t i = 0; i < n; i++) {
+      if (dotGlyph(heroShown[i])->cols != dotGlyph(s[i])->cols) {
+        full = true;
+        break;
+      }
+    }
+  }
+  if (!full && strcmp(heroShown, s) == 0) {
+    return;
+  }
+  if (full) {
+    fillRectDrained(0, HERO_Y, SCREEN_W, 7 * HERO_PITCH, COL_BG);
+  }
+
+  int x = (SCREEN_W - dotTextWidth(s)) / 2;
+  for (size_t i = 0; i < n; i++) {
+    const DotGlyph *g = dotGlyph(s[i]);
+    const DotGlyph *old = full ? NULL : dotGlyph(heroShown[i]);
+    if (old != g) {
+      drawDotGlyph(x, HERO_Y, old, g);
+    }
+    x += (g->cols + 1) * HERO_PITCH;
+  }
+
+  strncpy(heroShown, s, sizeof(heroShown) - 1);
+  heroShown[sizeof(heroShown) - 1] = '\0';
+  heroValid = true;
+}
+
+static void paintGauge(int lit) {
+  if (lit < 0) {
+    lit = 0;
+  }
+  if (lit > GAUGE_DOTS) {
+    lit = GAUGE_DOTS;
+  }
+  if (lit == gaugeLit) {
+    return;
+  }
+  const int x0 = (SCREEN_W - (GAUGE_DOTS - 1) * GAUGE_PITCH) / 2;
+  for (int i = 0; i < GAUGE_DOTS; i++) {
+    bool now = i < lit;
+    if (gaugeLit >= 0 && (i < gaugeLit) == now) {
+      continue;
+    }
+    display.fillCircle(x0 + i * GAUGE_PITCH, GAUGE_Y, GAUGE_R, now ? COL_FG : COL_OFF);
+  }
   gpsDrain();
+  gaugeLit = lit;
+}
+
+// Units sit in one column flush with the right margin; values end before it.
+static int unitX() {
+  return SCREEN_W - PAD - trackedWidth(&FreeSans9pt7b, 0, "km/h");
+}
+
+static int rowTop(int i) {
+  return ROWS_Y + i * ROW_H;
+}
+
+static Slot rowSlot(int i) {
+  Slot s;
+  s.x = VALUE_X;
+  s.y = rowTop(i) + 4;
+  int right = ROW_UNITS[i][0] ? unitX() - 6 : SCREEN_W - PAD;
+  s.w = right - VALUE_X;
+  s.h = 28;
+  s.base = 21;
+  return s;
+}
+
+static void drawStaticChrome() {
+  drawTracked(&FreeSansBold9pt7b, PAD, STATUS_BASE, 3, "OBJECT", COL_FG);
+
+  for (int i = 0; i <= ROW_COUNT; i++) {
+    display.drawFastHLine(PAD, rowTop(i), SCREEN_W - 2 * PAD, COL_RULE);
+  }
+  gpsDrain();
+
+  for (int i = 0; i < ROW_COUNT; i++) {
+    const int base = rowTop(i) + 4 + 21;
+    drawLabel(&FreeSans9pt7b, PAD, base, COL_DIM, ROW_LABELS[i]);
+    if (ROW_UNITS[i][0]) {
+      drawLabel(&FreeSans9pt7b, unitX(), base, COL_DIM, ROW_UNITS[i]);
+    }
+  }
+}
+
+static void invalidateAllFields() {
+  invalidateText(&txtStatus);
+  invalidateText(&txtCaption);
+  for (int i = 0; i < ROW_COUNT; i++) {
+    invalidateText(&txtRow[i]);
+  }
+  invalidateText(&txtFootL);
+  invalidateText(&txtFootR);
+  heroValid = false;
+  heroShown[0] = '\0';
+  gaugeLit = -1;
+}
+
+static void ensureChrome() {
+  if (uiChromeDrawn) {
+    return;
+  }
+  fillScreenDrained(COL_BG);
+  display.setTextWrap(false);
+  drawStaticChrome();
+  invalidateAllFields();
+  uiChromeDrawn = true;
 }
 
 // H:MM:SS always (matches Figma samples like 7:34:12).
@@ -1461,333 +1749,151 @@ static void formatHms(unsigned long ms, char *buf, size_t buflen) {
   snprintf(buf, buflen, "%lu:%02lu:%02lu", h, m, s);
 }
 
-// Pick decimals so the string fits in maxChars (includes sign/dot).
-static void formatFloatFit(float value, int maxChars, char *buf, size_t buflen) {
-  if (value < 0.0f) {
-    value = 0.0f;
-  }
+enum {
+  OVL_NONE = 0,
+  OVL_FLASH,
+  OVL_HOLD
+};
 
-  for (int decimals = 2; decimals >= 0; decimals--) {
-    snprintf(buf, buflen, "%.*f", decimals, (double)value);
-    if ((int)strlen(buf) <= maxChars) {
-      return;
-    }
-  }
-
-  // Last resort: integer, truncated if still too wide.
-  snprintf(buf, buflen, "%.0f", (double)value);
-  if ((int)strlen(buf) > maxChars) {
-    buf[maxChars] = '\0';
-  }
-}
-
-// Prefer size 3; drop until both values fit on one row.
-static uint8_t fitPairSize(const char *left, const char *right, int gap) {
-  const int avail = SCREEN_W - 2 * PAD;
-  for (uint8_t size = 3; size > 1; size--) {
-    if (textPixelWidth(left, size) + textPixelWidth(right, size) + gap <= avail) {
-      return size;
-    }
-  }
-  return 1;
-}
-
-static void paintValueRow(int y, int slotH, FieldCache *leftF, FieldCache *rightF,
-                          const char *left, const char *right) {
-  uint8_t size = fitPairSize(left, right, 8);
-  if (fieldSame(leftF, left, size) && fieldSame(rightF, right, size)) {
-    return;
-  }
-  fillRectDrained(PAD, y, SCREEN_W - 2 * PAD, slotH, COL_BG);
-  int textY = y + (slotH - 8 * (int)size) / 2;
-  printLeft(PAD, textY, size, COL_FG, left);
-  printRight(SCREEN_W - PAD, textY, size, COL_FG, right);
-  fieldStore(leftF, left, size);
-  fieldStore(rightF, right, size);
-}
-
-static void paintSpeed(const char *speedBuf) {
-  const int slotW = SCREEN_W - 2 * PAD - unitWidth() - 6;
-  uint8_t speedSize = 6;
-  while (speedSize > 1 && textPixelWidth(speedBuf, speedSize) > slotW) {
-    speedSize--;
-  }
-  if (fieldSame(&fldSpeed, speedBuf, speedSize)) {
-    return;
-  }
-  fillRectDrained(PAD, SPEED_Y, slotW, SPEED_H, COL_BG);
-  int textY = SPEED_Y + (SPEED_H - 8 * (int)speedSize) / 2;
-  printLeft(PAD, textY, speedSize, COL_FG, speedBuf);
-  fieldStore(&fldSpeed, speedBuf, speedSize);
-}
-
-static void paintAvg(const char *avgBuf) {
-  const int textX = PAD + AVG_ICON + 6;
-  const int slotW = SCREEN_W - PAD - unitWidth() - 6 - textX;
-  uint8_t avgSize = 3;
-  while (avgSize > 1 && textPixelWidth(avgBuf, avgSize) > slotW) {
-    avgSize--;
-  }
-  if (fieldSame(&fldAvg, avgBuf, avgSize)) {
-    return;
-  }
-  fillRectDrained(textX, AVG_Y, slotW, AVG_H, COL_BG);
-  int textY = AVG_Y + (AVG_H - 8 * (int)avgSize) / 2;
-  printLeft(textX, textY, avgSize, COL_FG, avgBuf);
-  fieldStore(&fldAvg, avgBuf, avgSize);
-}
-
-static void paintGpsFooter(unsigned long now) {
-  char satBuf[8];
-  char altBuf[12];
-  const bool live = gpsIsLive(now);
-  const char *status = !sdReady ? "NO SD" : (live ? "LIVE" : "CONNECTING");
-  uint16_t statusColor = !sdReady ? COL_NOSD : (live ? COL_LIVE : COL_CONN);
-
-  if (gpsFrameFresh(now) && gps.satsKnown) {
-    snprintf(satBuf, sizeof(satBuf), "%u", (unsigned)gps.sats);
-  } else {
-    memcpy(satBuf, "--", 3);
-  }
-
-  if (live && gps.altKnown) {
-    snprintf(altBuf, sizeof(altBuf), "%.0fm", (double)gps.altM);
-  } else {
-    memcpy(altBuf, "--", 3);
-  }
-
-  const uint8_t size = 2;
-  if (fieldSame(&fldGpsStatus, status, size) &&
-      fieldSame(&fldGpsSats, satBuf, size) &&
-      fieldSame(&fldGpsAlt, altBuf, size) &&
-      fldGpsColor == statusColor) {
-    return;
-  }
-
-  fillRectDrained(PAD, GPS_Y, SCREEN_W - 2 * PAD, GPS_H, COL_BG);
-  int textY = GPS_Y + (GPS_H - 8 * (int)size) / 2;
-  printLeft(PAD, textY, size, statusColor, status);
-  printLeft(PAD + textPixelWidth(status, size) + 8, textY, size, COL_FG, satBuf);
-  printRight(SCREEN_W - PAD, textY, size, COL_FG, altBuf);
-  fieldStore(&fldGpsStatus, status, size);
-  fieldStore(&fldGpsSats, satBuf, size);
-  fieldStore(&fldGpsAlt, altBuf, size);
-  fldGpsColor = statusColor;
-}
-
-static bool blePhoneConnected();
-
-// 6 px square in the GPS-row margin. Footer text is left as it is.
-static void paintBleMark() {
-  if (!uiChromeDrawn) {
-    return;
-  }
-  bool on = blePhoneConnected();
-  int8_t next = on ? 1 : 0;
-  if (bleMarkShown == next) {
-    return;
-  }
-  display.fillRect(3, GPS_Y + 5, 6, 6, on ? COL_LIVE : COL_BG);
-  bleMarkShown = next;
-}
-
-static void drawSpeedChrome() {
-  const int unitH = 8 * UNIT_SIZE;
-  printRight(SCREEN_W - PAD, SPEED_Y + (SPEED_H - unitH) / 4, UNIT_SIZE, COL_FG, "KM/H");
-  drawAvgIcon(PAD, AVG_Y + (AVG_H - AVG_ICON) / 2);
-  printRight(SCREEN_W - PAD, AVG_Y + (AVG_H - unitH) / 2, UNIT_SIZE, COL_FG, "KM/H");
-}
-
-static void drawStaticChrome() {
-  printLeft(PAD, ROW_LABEL_Y, 2, COL_FG, "DIST");
-  printRight(SCREEN_W - PAD, ROW_LABEL_Y, 2, COL_FG, "TIME");
-  drawHRule(RULE1_Y);
-  drawSpeedChrome();
-  drawHRule(RULE2_Y);
-  printLeft(PAD, MOVE_LABEL_Y, 2, COL_FG, "MOVE");
-  printRight(SCREEN_W - PAD, MOVE_LABEL_Y, 2, COL_FG, "MAX");
-}
-
-static void ensureChrome() {
-  if (uiChromeDrawn) {
-    return;
-  }
-  fillScreenDrained(COL_BG);
-  display.setTextWrap(false);
-  drawStaticChrome();
-  uiChromeDrawn = true;
-  bleMarkShown = -1;
-  invalidateAllFields();
-}
-
-static void clearOverlayDrawn() {
-  overlayDrawnTitle = NULL;
-  overlayDrawnFilled = -2;
-  overlayDrawnSub[0] = '\0';
-}
-
-static void overlayBoxRect(int *x, int *y, int *w, int *h) {
-  *w = 200;
-  *h = 80;
-  *x = (SCREEN_W - *w) / 2;
-  const int blockTop = SPEED_Y;
-  const int blockBot = AVG_Y + AVG_H;
-  *y = blockTop + (blockBot - blockTop - *h) / 2;
-}
-
-static bool overlayActive(unsigned long now, char *sub, size_t sublen,
-                          int *barFilled, int *barTotal, const char **title) {
-  *barFilled = 0;
-  *barTotal = 0;
-  sub[0] = '\0';
-
+// Hold-for-new-ride countdown, or the short message after it fires.
+static uint8_t overlayState(unsigned long now, unsigned long *remainSec, int *holdLit) {
   if (overlayFlashMsg && (long)(overlayFlashUntilMs - now) > 0) {
-    *title = overlayFlashMsg;
-    return true;
+    return OVL_FLASH;
   }
   overlayFlashMsg = NULL;
 
   if (!btnArmed || !btnHeld || btnDidExec) {
-    return false;
+    return OVL_NONE;
   }
-
   unsigned long held = now - btnHoldStartMs;
   if (held < BTN_ARM_MS || held >= BTN_EXEC_MS) {
-    return false;
+    return OVL_NONE;
   }
-
   unsigned long remainMs = BTN_EXEC_MS - held;
-  unsigned long remainSec = (remainMs + 999UL) / 1000UL;
-  snprintf(sub, sublen, "%lu", remainSec);
-  *barFilled = (int)(held - BTN_ARM_MS);
-  *barTotal = (int)(BTN_EXEC_MS - BTN_ARM_MS);
-  *title = "NEW RIDE";
-  return true;
+  *remainSec = (remainMs + 999UL) / 1000UL;
+  *holdLit = (int)((long)(held - BTN_ARM_MS) * GAUGE_DOTS /
+                   (long)(BTN_EXEC_MS - BTN_ARM_MS)) + 1;
+  return OVL_HOLD;
 }
 
-static void drawOverlayBox(const char *title, const char *sub, int barFilled, int barTotal) {
-  int x, y, boxW, boxH;
-  overlayBoxRect(&x, &y, &boxW, &boxH);
-
-  const int bw = boxW - 24;
-  long fw = 0;
-  if (barTotal > 0) {
-    fw = (long)(bw - 2) * (long)barFilled / (long)barTotal;
-    if (fw < 0) {
-      fw = 0;
+static void paintStatus(unsigned long now) {
+  char buf[20];
+  if (gpsIsLive(now)) {
+    if (gps.satsKnown) {
+      snprintf(buf, sizeof(buf), "%u satellites", (unsigned)gps.sats);
+    } else {
+      strcpy(buf, "GPS");
     }
-    if (fw > (bw - 2)) {
-      fw = bw - 2;
-    }
+    drawSlot(SLOT_STATUS, &txtStatus, &FreeSans9pt7b, "", buf, MARK_DOT, COL_FG);
+  } else {
+    drawSlot(SLOT_STATUS, &txtStatus, &FreeSans9pt7b, "", "Searching", MARK_RING, COL_DIM);
   }
+}
 
-  if (overlayDrawnTitle == title && overlayDrawnFilled == (int)fw &&
-      strcmp(overlayDrawnSub, sub) == 0) {
-    return;
+static void paintFooter(unsigned long now) {
+  char buf[24];
+  const bool live = gpsIsLive(now);
+  if (live && gps.altKnown) {
+    snprintf(buf, sizeof(buf), "Altitude %.0f m", (double)gps.altM);
+  } else {
+    strcpy(buf, "Altitude --");
   }
+  drawSlot(SLOT_FOOT_L, &txtFootL, &FreeSans9pt7b, buf, "", MARK_NONE, COL_DIM);
 
-  fillRectDrained(x, y, boxW, boxH, COL_BG);
-  display.drawRect(x, y, boxW, boxH, COL_FG);
-  gpsDrain();
-
-  int tw = textPixelWidth(title, 2);
-  printLeft(x + (boxW - tw) / 2, y + 10, 2, COL_FG, title);
-
-  if (sub && sub[0]) {
-    int sw = textPixelWidth(sub, 3);
-    printLeft(x + (boxW - sw) / 2, y + 32, 3, COL_FG, sub);
+  if (!sdReady) {
+    drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSansBold9pt7b, "", "No card", MARK_ALERT, COL_FG);
+  } else if (blePhoneConnected()) {
+    drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSans9pt7b, "", "Phone", MARK_DOT, COL_FG);
+  } else if (tripStarted && live && gps.posKnown && gps.timeKnown) {
+    drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSans9pt7b, "", "Recording", MARK_PILL, COL_FG);
+  } else {
+    drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSans9pt7b, "", "", MARK_NONE, COL_DIM);
   }
-
-  if (barTotal > 0) {
-    const int bx = x + 12;
-    const int by = y + boxH - 16;
-    const int bh = 8;
-    display.drawRect(bx, by, bw, bh, COL_FG);
-    if (fw > 0) {
-      display.fillRect(bx + 1, by + 1, (int)fw, bh - 2, COL_FG);
-    }
-    gpsDrain();
-  }
-
-  overlayDrawnTitle = title;
-  overlayDrawnFilled = (int)fw;
-  strncpy(overlayDrawnSub, sub ? sub : "", sizeof(overlayDrawnSub) - 1);
-  overlayDrawnSub[sizeof(overlayDrawnSub) - 1] = '\0';
 }
 
 static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
                            float maxKmh, unsigned long elapsedMs, unsigned long moveMs,
                            unsigned long now) {
-  char distBuf[12];
-  char timeBuf[16];
-  char moveBuf[16];
-  char maxBuf[12];
-  char speedBuf[12];
-  char avgBuf[12];
-
-  formatFloatFit(distanceKm, 6, distBuf, sizeof(distBuf));
-  formatHms(elapsedMs, timeBuf, sizeof(timeBuf));
-  formatHms(moveMs, moveBuf, sizeof(moveBuf));
-  formatFloatFit(maxKmh, 5, maxBuf, sizeof(maxBuf));
-  formatFloatFit(speedKmh, 5, speedBuf, sizeof(speedBuf));
-  formatFloatFit(avgSpeedKmh, 5, avgBuf, sizeof(avgBuf));
-
-  const int speedSlotW = SCREEN_W - 2 * PAD - unitWidth() - 6;
-  int guard = 6;
-  while (guard-- > 0 && textPixelWidth(speedBuf, 1) > speedSlotW && strlen(speedBuf) > 1) {
-    formatFloatFit(speedKmh, (int)strlen(speedBuf) - 1, speedBuf, sizeof(speedBuf));
-  }
-
   ensureChrome();
 
-  char sub[8];
-  int barFilled = 0;
-  int barTotal = 0;
-  const char *title = NULL;
-  bool showOverlay = overlayActive(now, sub, sizeof(sub), &barFilled, &barTotal, &title);
+  char buf[24];
+  char right[24];
 
-  if (showOverlay) {
-    drawOverlayBox(title, sub, barFilled, barTotal);
-    overlayWasShown = true;
-    paintBleMark();
-    return;
+  // Speed: fixed "dd.d" template so the matrix only repaints changed cells.
+  float shown = speedKmh;
+  if (shown < 0.0f) {
+    shown = 0.0f;
+  }
+  if (shown > 99.9f) {
+    shown = 99.9f;
+  }
+  snprintf(buf, sizeof(buf), "%4.1f", (double)shown);
+  paintHero(buf);
+
+  unsigned long remainSec = 0;
+  int holdLit = 0;
+  uint8_t ovl = overlayState(now, &remainSec, &holdLit);
+  uint8_t sendPct = 0;
+  bool sending = bleSendProgress(&sendPct);
+
+  if (ovl == OVL_FLASH) {
+    drawSlot(SLOT_CAPTION, &txtCaption, &FreeSans9pt7b, overlayFlashMsg, "", MARK_NONE, COL_FG);
+  } else if (ovl == OVL_HOLD) {
+    snprintf(right, sizeof(right), "%lu s", remainSec);
+    drawSlot(SLOT_CAPTION, &txtCaption, &FreeSans9pt7b, "Hold for new ride", right, MARK_NONE, COL_FG);
+  } else {
+    if (sending) {
+      snprintf(right, sizeof(right), "Sending %u%%", (unsigned)sendPct);
+    } else {
+      snprintf(right, sizeof(right), "Avg %.1f", (double)avgSpeedKmh);
+    }
+    drawSlot(SLOT_CAPTION, &txtCaption, &FreeSans9pt7b, "km/h", right, MARK_NONE, COL_DIM);
   }
 
-  if (overlayWasShown) {
-    int x, y, boxW, boxH;
-    overlayBoxRect(&x, &y, &boxW, &boxH);
-    fillRectDrained(x, y, boxW, boxH, COL_BG);
-    drawSpeedChrome();
-    invalidateField(&fldSpeed);
-    invalidateField(&fldAvg);
-    overlayWasShown = false;
-    clearOverlayDrawn();
+  // Gauge: new-ride hold, then phone transfer, else speed at 2 km/h a dot.
+  int lit;
+  if (ovl == OVL_HOLD) {
+    lit = holdLit;
+  } else if (sending) {
+    lit = ((int)sendPct * GAUGE_DOTS + 50) / 100;
+  } else {
+    lit = (int)(speedKmh / GAUGE_KMH_PER_DOT + 0.5f);
   }
+  paintGauge(lit);
 
-  paintValueRow(ROW_VALUE_Y, ROW_VALUE_H, &fldDist, &fldTime, distBuf, timeBuf);
-  paintSpeed(speedBuf);
-  paintAvg(avgBuf);
-  paintValueRow(MOVE_VALUE_Y, ROW_VALUE_H, &fldMove, &fldMax, moveBuf, maxBuf);
-  paintGpsFooter(now);
-  paintBleMark();
+  if (distanceKm < 0.0f) {
+    distanceKm = 0.0f;
+  }
+  snprintf(buf, sizeof(buf), distanceKm < 100.0f ? "%.2f" : "%.1f", (double)distanceKm);
+  drawSlot(rowSlot(0), &txtRow[0], &FreeSansBold12pt7b, "", buf, MARK_NONE, COL_FG);
+  formatHms(elapsedMs, buf, sizeof(buf));
+  drawSlot(rowSlot(1), &txtRow[1], &FreeSansBold12pt7b, "", buf, MARK_NONE, COL_FG);
+  formatHms(moveMs, buf, sizeof(buf));
+  drawSlot(rowSlot(2), &txtRow[2], &FreeSansBold12pt7b, "", buf, MARK_NONE, COL_FG);
+  snprintf(buf, sizeof(buf), "%.1f", (double)maxKmh);
+  drawSlot(rowSlot(3), &txtRow[3], &FreeSansBold12pt7b, "", buf, MARK_NONE, COL_FG);
+
+  paintStatus(now);
+  paintFooter(now);
 }
 
-static void drawSplash(const char *sdLine) {
+static void drawSplash(const char *line) {
   uiChromeDrawn = false;
-  overlayWasShown = false;
-  clearOverlayDrawn();
-  invalidateAllFields();
   fillScreenDrained(COL_BG);
   display.setTextWrap(false);
 
-  const char *line1 = "Cycling computer";
-  const char *line2 = "700x32C / D0";
-  int w1 = textPixelWidth(line1, 2);
-  int w2 = textPixelWidth(line2, 2);
-  int w3 = textPixelWidth(sdLine, 2);
-  printLeft((SCREEN_W - w1) / 2, 118, 2, COL_FG, line1);
-  printLeft((SCREEN_W - w2) / 2, 148, 2, COL_FG, line2);
-  printLeft((SCREEN_W - w3) / 2, 178, 2, COL_FG, sdLine);
+  const int track = 6;
+  int w = trackedWidth(&FreeSansBold18pt7b, track, "OBJECT");
+  drawTracked(&FreeSansBold18pt7b, (SCREEN_W - w) / 2, 164, track, "OBJECT", COL_FG);
+
+  display.setFont(&FreeSans9pt7b);
+  int16_t bx, by;
+  uint16_t bw, bh;
+  display.getTextBounds(line, 0, 0, &bx, &by, &bw, &bh);
+  display.setTextColor(COL_DIM);
+  display.setCursor((SCREEN_W - (int)bw) / 2 - bx, 198);
+  printDrained(line);
+  display.setFont(NULL);
 }
 
 // Phone download of root *.GPX files. Callbacks only set flags; loop()
@@ -2234,6 +2340,19 @@ static bool bleActive() {
   return bleReady && (bleJob != BLE_JOB_IDLE || bleErrorPending != 0);
 }
 
+// Percent of the file sent to the phone, while a download runs.
+static bool bleSendProgress(uint8_t *pct) {
+  if (!bleReady || bleJob != BLE_JOB_SEND || bleSize == 0) {
+    return false;
+  }
+  uint32_t p = (uint32_t)((uint64_t)bleOffset * 100u / bleSize);
+  if (p > 100) {
+    p = 100;
+  }
+  *pct = (uint8_t)p;
+  return true;
+}
+
 static bool bleService() {
   if (!bleReady) {
     return false;
@@ -2383,14 +2502,14 @@ void setup() {
   display.setRotation(0);
   display.invertDisplay(true);
   display.setTextWrap(false);
-  drawSplash("SD...");
+  drawSplash("Checking card");
 
   sdBeginShared();
-  const char *sdLine = "NO SD";
+  const char *sdLine = "No card";
   if (sdReady) {
     sdLine = tripResumeSd();
   } else {
-    sdLine = "NO SD";
+    sdLine = "No card";
   }
   drawSplash(sdLine);
   delay(1000);
