@@ -1,226 +1,336 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 720" width="1100" height="720" role="img" aria-labelledby="title desc">
-  <title id="title">OBJECT cycling computer ? principal schematic</title>
-  <desc id="desc">Electrical schematic connecting Seeed XIAO nRF52840 Sense to ILI9341 TFT with microSD, reed switch, tact button, and HGLRC M100 Pro GPS.</desc>
-
-  <defs>
-    <style type="text/css"><![CDATA[
-      .bg { fill: #ffffff; }
-      .box { fill: #fafafa; stroke: #111111; stroke-width: 1.5; }
-      .wire { fill: none; stroke: #111111; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
-      .rail { fill: none; stroke: #111111; stroke-width: 1.8; }
-      .sym { fill: none; stroke: #111111; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-      .pin { fill: #111111; }
-      .junc { fill: #111111; }
-      .label { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; fill: #111111; }
-      .label-sm { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px; fill: #333333; }
-      .title { font-family: -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 600; fill: #111111; }
-      .subtitle { font-family: -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif; font-size: 11px; fill: #555555; }
-      .ref { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; font-weight: 700; fill: #111111; }
-      .val { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px; fill: #333333; }
-      .note { font-family: -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif; font-size: 10px; fill: #555555; }
-    ]]></style>
-  </defs>
-
-  <rect class="bg" width="1100" height="720"/>
-
-  <!-- Title block -->
-  <text class="title" x="24" y="28">OBJECT ? principal schematic</text>
-  <text class="subtitle" x="24" y="46">Seeed XIAO nRF52840 Sense ? ILI9341 3.2 in SPI TFT + microSD ? HGLRC M100 Pro ? reed ? button</text>
-  <text class="subtitle" x="980" y="28">Rev A</text>
-  <text class="subtitle" x="960" y="46">3.3 V logic</text>
-
-  <!-- Power rails -->
-  <line class="rail" x1="40" y1="80" x2="1060" y2="80"/>
-  <text class="ref" x="40" y="72">+5V</text>
-  <line class="rail" x1="40" y1="100" x2="1060" y2="100"/>
-  <text class="ref" x="40" y="94">+3V3</text>
-  <line class="rail" x1="40" y1="680" x2="1060" y2="680"/>
-
-  <!-- GND earth symbol -->
-  <g transform="translate(60,680)">
-    <line class="sym" x1="0" y1="0" x2="0" y2="8"/>
-    <line class="sym" x1="-10" y1="8" x2="10" y2="8"/>
-    <line class="sym" x1="-6" y1="12" x2="6" y2="12"/>
-    <line class="sym" x1="-2" y1="16" x2="2" y2="16"/>
-  </g>
-  <text class="ref" x="78" y="694">GND</text>
-
-  <!-- ========== U1 XIAO ========== -->
-  <rect class="box" x="380" y="200" width="200" height="340" rx="2"/>
-  <text class="ref" x="400" y="222">U1</text>
-  <text class="label" x="430" y="222">XIAO nRF52840 Sense</text>
-  <text class="label-sm" x="400" y="240">MCU / BLE / USB</text>
-
-  <!-- Left pin labels -->
-  <text class="label" x="370" y="278" text-anchor="end">D0</text>
-  <text class="label" x="370" y="318" text-anchor="end">D4</text>
-  <text class="label" x="370" y="378" text-anchor="end">3V3</text>
-  <text class="label" x="370" y="418" text-anchor="end">5V</text>
-  <text class="label" x="370" y="458" text-anchor="end">GND</text>
-  <circle class="pin" cx="380" cy="274" r="2.5"/>
-  <circle class="pin" cx="380" cy="314" r="2.5"/>
-  <circle class="pin" cx="380" cy="374" r="2.5"/>
-  <circle class="pin" cx="380" cy="414" r="2.5"/>
-  <circle class="pin" cx="380" cy="454" r="2.5"/>
-
-  <!-- Right pin labels -->
-  <text class="label" x="590" y="258">D1</text>
-  <text class="label" x="590" y="288">D2</text>
-  <text class="label" x="590" y="318">D3</text>
-  <text class="label" x="590" y="348">D5</text>
-  <text class="label" x="590" y="378">D6</text>
-  <text class="label" x="590" y="408">D7</text>
-  <text class="label" x="590" y="438">D8</text>
-  <text class="label" x="590" y="468">D9</text>
-  <text class="label" x="590" y="498">D10</text>
-  <text class="label" x="590" y="528">GND</text>
-  <text class="label-sm" x="620" y="258">LCD_CS</text>
-  <text class="label-sm" x="620" y="288">LCD_DC</text>
-  <text class="label-sm" x="620" y="318">LCD_BL</text>
-  <text class="label-sm" x="620" y="348">SD_CS</text>
-  <text class="label-sm" x="620" y="378">TX to GPS RX</text>
-  <text class="label-sm" x="620" y="408">RX from GPS TX</text>
-  <text class="label-sm" x="620" y="438">SCK</text>
-  <text class="label-sm" x="620" y="468">MISO</text>
-  <text class="label-sm" x="620" y="498">MOSI</text>
-  <circle class="pin" cx="580" cy="254" r="2.5"/>
-  <circle class="pin" cx="580" cy="284" r="2.5"/>
-  <circle class="pin" cx="580" cy="314" r="2.5"/>
-  <circle class="pin" cx="580" cy="344" r="2.5"/>
-  <circle class="pin" cx="580" cy="374" r="2.5"/>
-  <circle class="pin" cx="580" cy="404" r="2.5"/>
-  <circle class="pin" cx="580" cy="434" r="2.5"/>
-  <circle class="pin" cx="580" cy="464" r="2.5"/>
-  <circle class="pin" cx="580" cy="494" r="2.5"/>
-  <circle class="pin" cx="580" cy="524" r="2.5"/>
-
-  <text class="note" x="400" y="510">D0, D4: INPUT_PULLUP</text>
-  <text class="note" x="400" y="526">Serial1 115200 8N1</text>
-
-  <!-- ========== SW1 Reed ========== -->
-  <text class="ref" x="48" y="250">SW1</text>
-  <text class="val" x="48" y="264">Reed</text>
-  <text class="note" x="118" y="248">wheel magnet</text>
-  <rect class="sym" x="138" y="232" width="22" height="10" rx="1"/>
-  <text class="label-sm" x="141" y="241">N/S</text>
-  <!-- NO reed contact -->
-  <line class="sym" x1="100" y1="274" x2="130" y2="274"/>
-  <circle class="pin" cx="130" cy="274" r="2"/>
-  <line class="sym" x1="130" y1="274" x2="155" y2="258"/>
-  <circle class="pin" cx="170" cy="274" r="2"/>
-  <line class="sym" x1="170" y1="274" x2="200" y2="274"/>
-  <path class="wire" d="M200 274 H380"/>
-  <path class="wire" d="M100 274 V680"/>
-  <circle class="junc" cx="100" cy="680" r="3"/>
-
-  <!-- ========== SW2 Button ========== -->
-  <text class="ref" x="48" y="300">SW2</text>
-  <text class="val" x="48" y="314">Tact</text>
-  <line class="sym" x1="100" y1="314" x2="128" y2="314"/>
-  <line class="sym" x1="128" y1="304" x2="128" y2="324"/>
-  <line class="sym" x1="146" y1="300" x2="146" y2="328"/>
-  <line class="sym" x1="146" y1="314" x2="170" y2="314"/>
-  <circle class="pin" cx="128" cy="314" r="2"/>
-  <circle class="pin" cx="170" cy="314" r="2"/>
-  <line class="sym" x1="170" y1="314" x2="200" y2="314"/>
-  <path class="wire" d="M200 314 H380"/>
-  <path class="wire" d="M100 314 V680"/>
-  <circle class="junc" cx="100" cy="314" r="3"/>
-
-  <!-- Power into U1 -->
-  <path class="wire" d="M340 100 V374 H380"/>
-  <circle class="junc" cx="340" cy="100" r="3"/>
-  <path class="wire" d="M320 80 V414 H380"/>
-  <circle class="junc" cx="320" cy="80" r="3"/>
-  <path class="wire" d="M340 454 H300 V680"/>
-  <circle class="junc" cx="300" cy="680" r="3"/>
-
-  <!-- ========== U2 Display ========== -->
-  <rect class="box" x="780" y="160" width="260" height="280" rx="2"/>
-  <text class="ref" x="798" y="182">U2</text>
-  <text class="label" x="828" y="182">ILI9341 3.2 in TFT</text>
-  <text class="label-sm" x="798" y="200">SPI display + onboard microSD</text>
-
-  <text class="label" x="770" y="228" text-anchor="end">VCC</text>
-  <text class="label" x="770" y="248" text-anchor="end">GND</text>
-  <text class="label" x="770" y="278" text-anchor="end">LCD_CS</text>
-  <text class="label" x="770" y="308" text-anchor="end">LCD_RS</text>
-  <text class="label" x="770" y="338" text-anchor="end">LCD_RST</text>
-  <text class="label" x="770" y="368" text-anchor="end">MOSI</text>
-  <text class="label" x="770" y="388" text-anchor="end">SCK</text>
-  <text class="label" x="770" y="408" text-anchor="end">MISO</text>
-  <text class="label" x="770" y="428" text-anchor="end">LED</text>
-  <text class="label" x="770" y="448" text-anchor="end">SD_CS</text>
-  <circle class="pin" cx="780" cy="224" r="2.5"/>
-  <circle class="pin" cx="780" cy="244" r="2.5"/>
-  <circle class="pin" cx="780" cy="274" r="2.5"/>
-  <circle class="pin" cx="780" cy="304" r="2.5"/>
-  <circle class="pin" cx="780" cy="334" r="2.5"/>
-  <circle class="pin" cx="780" cy="364" r="2.5"/>
-  <circle class="pin" cx="780" cy="384" r="2.5"/>
-  <circle class="pin" cx="780" cy="404" r="2.5"/>
-  <circle class="pin" cx="780" cy="424" r="2.5"/>
-  <circle class="pin" cx="780" cy="444" r="2.5"/>
-  <text class="note" x="798" y="464">microSD shares SCK / MOSI / MISO</text>
-
-  <!-- R1 7k pull-up on LCD_RST -->
-  <text class="ref" x="688" y="300">R1</text>
-  <text class="val" x="688" y="314">7k</text>
-  <path class="wire" d="M720 100 V300"/>
-  <circle class="junc" cx="720" cy="100" r="3"/>
-  <path class="sym" d="M720 300 l8 5 l-16 8 l16 8 l-16 8 l16 8 l-8 5"/>
-  <path class="wire" d="M720 344 H780"/>
-  <circle class="junc" cx="720" cy="344" r="3"/>
-  <text class="note" x="628" y="358">held out of reset</text>
-  <text class="note" x="628" y="370">(no MCU GPIO)</text>
-
-  <!-- U2 power -->
-  <path class="wire" d="M760 100 V224 H780"/>
-  <circle class="junc" cx="760" cy="100" r="3"/>
-  <path class="wire" d="M750 244 H730 V680"/>
-  <circle class="junc" cx="730" cy="680" r="3"/>
-
-  <!-- U1 to U2 signals -->
-  <path class="wire" d="M580 254 H700 V274 H780"/>
-  <path class="wire" d="M580 284 H690 V304 H780"/>
-  <path class="wire" d="M580 314 H680 V424 H780"/>
-  <path class="wire" d="M580 344 H670 V444 H780"/>
-  <path class="wire" d="M580 434 H660 V384 H780"/>
-  <path class="wire" d="M580 464 H650 V404 H780"/>
-  <path class="wire" d="M580 494 H640 V364 H780"/>
-
-  <!-- ========== U3 GPS ========== -->
-  <rect class="box" x="780" y="500" width="260" height="140" rx="2"/>
-  <text class="ref" x="798" y="522">U3</text>
-  <text class="label" x="828" y="522">HGLRC M100 Pro</text>
-  <text class="label-sm" x="798" y="540">u-blox GPS / UART 115200 8N1</text>
-
-  <text class="label" x="770" y="568" text-anchor="end">5V</text>
-  <text class="label" x="770" y="588" text-anchor="end">GND</text>
-  <text class="label" x="770" y="608" text-anchor="end">RX</text>
-  <text class="label" x="770" y="628" text-anchor="end">TX</text>
-  <circle class="pin" cx="780" cy="564" r="2.5"/>
-  <circle class="pin" cx="780" cy="584" r="2.5"/>
-  <circle class="pin" cx="780" cy="604" r="2.5"/>
-  <circle class="pin" cx="780" cy="624" r="2.5"/>
-  <text class="note" x="798" y="620">compass SCL/SDA unused</text>
-
-  <path class="wire" d="M740 80 V564 H780"/>
-  <circle class="junc" cx="740" cy="80" r="3"/>
-  <path class="wire" d="M760 584 H745 V680"/>
-  <circle class="junc" cx="745" cy="680" r="3"/>
-  <path class="wire" d="M580 374 H630 V604 H780"/>
-  <path class="wire" d="M580 404 H620 V624 H780"/>
-  <path class="wire" d="M580 524 H610 V680"/>
-  <circle class="junc" cx="610" cy="680" r="3"/>
-
-  <!-- Notes -->
-  <rect class="box" x="40" y="520" width="280" height="130" rx="2"/>
-  <text class="ref" x="56" y="542">Notes</text>
-  <text class="note" x="56" y="562">1. SPI shared: SCK / MOSI / MISO</text>
-  <text class="note" x="56" y="578">2. Chip-selects: D1 = LCD, D5 = SD</text>
-  <text class="note" x="56" y="594">3. SW1 / SW2 active-low, internal PU</text>
-  <text class="note" x="56" y="610">4. LCD_RST tied high via R1 (no GPIO)</text>
-  <text class="note" x="56" y="626">5. Backlight PWM on D3</text>
-  <text class="note" x="56" y="642">6. Wheel circ. set in firmware (2155 mm)</text>
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg
+  PUBLIC '-//W3C//DTD SVG 1.0//EN'
+  'http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd'>
+<svg width="1190.55" height="841.89" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1190 841" xmlns="http://www.w3.org/2000/svg" version="1.0" fill-rule="evenodd" xmlns:xlink="http://www.w3.org/1999/xlink">
+	<title>...</title>
+	<desc>...</desc>
+	<clipPath id="clip">
+		<rect x="0" y="0" width="1190.55" height="841.89"/>
+	</clipPath>
+	<g id="group" transform="scale(1,-1) translate(0,-841)" style="clip-path: url(#clip)">
+		<g transform="">
+			<rect x="20" y="20.0" width="1150.55" height="801.89" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 1; fill: none; fill-rule: evenodd;"/>
+			<text x="113.14283854166666" y="825.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1651) scale(1,-1)">A</text>
+			<text x="113.14283854166666" y="7.0" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,14) scale(1,-1)">A</text>
+			<text x="304.893359375" y="825.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1651) scale(1,-1)">B</text>
+			<text x="304.893359375" y="7.0" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,14) scale(1,-1)">B</text>
+			<text x="496.6028645833333" y="825.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1651) scale(1,-1)">C</text>
+			<text x="496.6028645833333" y="7.0" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,14) scale(1,-1)">C</text>
+			<text x="688.0740885416666" y="825.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1651) scale(1,-1)">D</text>
+			<text x="688.0740885416666" y="7.0" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,14) scale(1,-1)">D</text>
+			<text x="880.3851562499999" y="825.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1651) scale(1,-1)">E</text>
+			<text x="880.3851562499999" y="7.0" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,14) scale(1,-1)">E</text>
+			<text x="1072.3700520833333" y="825.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1651) scale(1,-1)">F</text>
+			<text x="1072.3700520833333" y="7.0" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,14) scale(1,-1)">F</text>
+			<text x="8.455078125" y="721.65375" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1443) scale(1,-1)">1</text>
+			<text x="1177.005078125" y="721.65375" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1443) scale(1,-1)">1</text>
+			<text x="8.455078125" y="521.18125" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1042) scale(1,-1)">2</text>
+			<text x="1177.005078125" y="521.18125" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1042) scale(1,-1)">2</text>
+			<text x="8.455078125" y="320.70875" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,641) scale(1,-1)">3</text>
+			<text x="1177.005078125" y="320.70875" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,641) scale(1,-1)">3</text>
+			<text x="8.455078125" y="120.23625000000004" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,240) scale(1,-1)">4</text>
+			<text x="1177.005078125" y="120.23625000000004" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,240) scale(1,-1)">4</text>
+			<text x="45" y="792.89" style="font-family: DejaVuSans-Bold; font-size: 15px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1585) scale(1,-1)">OBJECT / CYCLING COMPUTER</text>
+			<text x="45" y="776.89" style="font-family: DejaVuSans; font-size: 10px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1553) scale(1,-1)">Assembly electrical schematic - existing wiring</text>
+			<text x="1018.84716796875" y="792.89" style="font-family: DejaVuSans-Bold; font-size: 9px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1585) scale(1,-1)">MODULE-LEVEL CIRCUIT</text>
+			<text x="1026.79296875" y="777.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1555) scale(1,-1)">2026-09-30  |  A3 landscape</text>
+			<rect x="220" y="589.89" width="165" height="130.0" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 1.1; fill: none; fill-rule: evenodd;"/>
+			<text x="220" y="744.89" style="font-family: DejaVuSans-Bold; font-size: 11px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1489) scale(1,-1)">U1</text>
+			<text x="245" y="744.89" style="font-family: DejaVuSans-Bold; font-size: 10px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1489) scale(1,-1)">Adafruit bq25185</text>
+			<text x="220" y="730.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(33%,33%,33%); stroke:none;" transform="translate(0,1461) scale(1,-1)">Charger / power-path module - PID 6091</text>
+			<path d="M 200,671.89 L 220,671.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="227" y="668.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1337) scale(1,-1)">BATT +</text>
+			<path d="M 90,671.89 L 200,671.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 385,671.89 L 405,671.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="344.39013671875" y="668.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1337) scale(1,-1)">LOAD +</text>
+			<path d="M 405,671.89 L 485,671.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<circle cx="430" cy="671.89" r="2" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.4; fill: rgb(0%,0%,0%); fill-rule: evenodd;"/>
+			<text x="417" y="685.89" style="font-family: DejaVuSans-Bold; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1371) scale(1,-1)">VSYS</text>
+			<path d="M 90,671.89 L 90,652.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 75,652.89 L 105,652.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 1.2;"/>
+			<path d="M 81,644.89 L 99,644.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 2.5;"/>
+			<path d="M 90,644.89 L 90,605.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 90,605.89 L 90,597.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 81,597.89 L 99,597.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 84,593.89 L 96,593.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 87,589.89 L 93,589.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="81.974609375" y="577.89" style="font-family: DejaVuSans; font-size: 7px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1155) scale(1,-1)">GND</text>
+			<text x="108" y="656.89" style="font-family: DejaVuSans; font-size: 10px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1313) scale(1,-1)">+</text>
+			<text x="108" y="634.89" style="font-family: DejaVuSans; font-size: 10px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1269) scale(1,-1)">-</text>
+			<text x="112" y="617.89" style="font-family: DejaVuSans-Bold; font-size: 10px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1235) scale(1,-1)">BT1</text>
+			<text x="112" y="604.89" style="font-family: DejaVuSans; font-size: 9px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1209) scale(1,-1)">1S LiPo</text>
+			<text x="112" y="592.89" style="font-family: DejaVuSans; font-size: 9px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1185) scale(1,-1)">2000 mAh</text>
+			<text x="253.811767578125" y="640.89" style="font-family: DejaVuSans; font-size: 9px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1281) scale(1,-1)">USB-C charging input</text>
+			<text x="259.908203125" y="625.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(33%,33%,33%); stroke:none;" transform="translate(0,1251) scale(1,-1)">(onboard receptacle)</text>
+			<text x="260.8031005859375" y="599.89" style="font-family: DejaVuSans; font-size: 7.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1199) scale(1,-1)">GND / BATT - / LOAD -</text>
+			<path d="M 302,589.89 L 302,580.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 302,580.89 L 302,572.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 293,572.89 L 311,572.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 296,568.89 L 308,568.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 299,564.89 L 305,564.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="293.974609375" y="552.89" style="font-family: DejaVuSans; font-size: 7px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1105) scale(1,-1)">GND</text>
+			<path d="M 485,671.89 L 496,671.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<polygon points="496 679.89, 496 663.89, 510 671.89" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.9; fill: none; fill-rule: evenodd;"/>
+			<path d="M 510,679.89 L 510,663.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 1.1;"/>
+			<path d="M 510,679.89 L 514,679.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 514,679.89 L 514,675.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 510,663.89 L 506,663.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 506,663.89 L 506,667.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 510,671.89 L 585,671.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="490.37060546875" y="704.89" style="font-family: DejaVuSans-Bold; font-size: 10px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1409) scale(1,-1)">D1</text>
+			<text x="480.458984375" y="692.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1385) scale(1,-1)">Schottky</text>
+			<text x="530" y="683.89" style="font-family: DejaVuSans-Bold; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1367) scale(1,-1)">V_XIAO</text>
+			<text x="488" y="646.89" style="font-family: DejaVuSans; font-size: 7px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1293) scale(1,-1)">A</text>
+			<text x="516" y="646.89" style="font-family: DejaVuSans; font-size: 7px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1293) scale(1,-1)">K</text>
+			<text x="446" y="627.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1255) scale(1,-1)">Cathode (band) toward XIAO</text>
+			<text x="446" y="614.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(33%,33%,33%); stroke:none;" transform="translate(0,1229) scale(1,-1)">Exact part number not specified</text>
+			<text x="45" y="528.89" style="font-family: DejaVuSans-Bold; font-size: 9px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1057) scale(1,-1)">VSYS = charger LOAD; variable voltage, not a regulated 5 V rail.</text>
+			<text x="45" y="514.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(33%,33%,33%); stroke:none;" transform="translate(0,1029) scale(1,-1)">No boost converter is included in this as-wired drawing.</text>
+			<rect x="920" y="591.89" width="175" height="127.0" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 1.1; fill: none; fill-rule: evenodd;"/>
+			<text x="920" y="743.89" style="font-family: DejaVuSans-Bold; font-size: 11px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1487) scale(1,-1)">U4</text>
+			<text x="945" y="743.89" style="font-family: DejaVuSans-Bold; font-size: 10px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1487) scale(1,-1)">HGLRC M100 Pro</text>
+			<text x="920" y="729.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(33%,33%,33%); stroke:none;" transform="translate(0,1459) scale(1,-1)">GNSS module / UART; onboard compass unused</text>
+			<path d="M 900,693.89 L 920,693.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="927" y="690.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1381) scale(1,-1)">5V</text>
+			<path d="M 830,693.89 L 900,693.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="832" y="698.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1397) scale(1,-1)">VSYS</text>
+			<path d="M 900,661.89 L 920,661.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="927" y="658.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1317) scale(1,-1)">RX</text>
+			<path d="M 830,661.89 L 900,661.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="832" y="666.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1333) scale(1,-1)">GPS_RX</text>
+			<path d="M 900,631.89 L 920,631.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="927" y="628.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1257) scale(1,-1)">TX</text>
+			<path d="M 830,631.89 L 900,631.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="832" y="636.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1273) scale(1,-1)">GPS_TX</text>
+			<path d="M 1095,661.89 L 1115,661.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="1071.933837890625" y="658.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1317) scale(1,-1)">SCL</text>
+			<path d="M 1112,664.89 L 1118,658.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1112,658.89 L 1118,664.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1095,631.89 L 1115,631.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="1070.24462890625" y="628.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1257) scale(1,-1)">SDA</text>
+			<path d="M 1112,634.89 L 1118,628.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1112,628.89 L 1118,634.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="997.828125" y="602.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1205) scale(1,-1)">GND</text>
+			<path d="M 1007,591.89 L 1007,580.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1007,580.89 L 1007,572.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 998,572.89 L 1016,572.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1001,568.89 L 1013,568.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1004,564.89 L 1010,564.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="998.974609375" y="552.89" style="font-family: DejaVuSans; font-size: 7px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,1105) scale(1,-1)">GND</text>
+			<rect x="485" y="216.89" width="205" height="255.0" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 1.1; fill: none; fill-rule: evenodd;"/>
+			<text x="485" y="496.89" style="font-family: DejaVuSans-Bold; font-size: 11px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,993) scale(1,-1)">U2</text>
+			<text x="510" y="496.89" style="font-family: DejaVuSans-Bold; font-size: 10px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,993) scale(1,-1)">Seeed XIAO nRF52840 Sense</text>
+			<text x="485" y="482.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(33%,33%,33%); stroke:none;" transform="translate(0,965) scale(1,-1)">Module pad names shown; onboard circuits not expanded</text>
+			<path d="M 465,447.89 L 485,447.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="492" y="444.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,889) scale(1,-1)">5V / VBUS</text>
+			<path d="M 403,447.89 L 465,447.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="405" y="452.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,905) scale(1,-1)">V_XIAO</text>
+			<path d="M 465,417.89 L 485,417.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="492" y="414.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,829) scale(1,-1)">3V3</text>
+			<path d="M 403,417.89 L 465,417.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="405" y="422.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,845) scale(1,-1)">+3V3</text>
+			<path d="M 465,369.89 L 485,369.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="492" y="366.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,733) scale(1,-1)">D0 / reed</text>
+			<path d="M 403,369.89 L 465,369.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="405" y="374.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,749) scale(1,-1)">REED</text>
+			<path d="M 465,335.89 L 485,335.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="492" y="332.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,665) scale(1,-1)">D4 / button</text>
+			<path d="M 403,335.89 L 465,335.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="405" y="340.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,681) scale(1,-1)">BUTTON</text>
+			<path d="M 690,450.89 L 710,450.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="671.046875" y="447.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,895) scale(1,-1)">D1</text>
+			<path d="M 710,450.89 L 787,450.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="712" y="455.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,911) scale(1,-1)">LCD_CS</text>
+			<path d="M 690,426.89 L 710,426.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="671.046875" y="423.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,847) scale(1,-1)">D2</text>
+			<path d="M 710,426.89 L 787,426.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="712" y="431.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,863) scale(1,-1)">LCD_DC</text>
+			<path d="M 690,402.89 L 710,402.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="641.915283203125" y="399.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,799) scale(1,-1)">D3 / PWM</text>
+			<path d="M 710,402.89 L 787,402.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="712" y="407.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,815) scale(1,-1)">LCD_BL</text>
+			<path d="M 690,378.89 L 710,378.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="671.046875" y="375.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,751) scale(1,-1)">D5</text>
+			<path d="M 710,378.89 L 787,378.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="712" y="383.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,767) scale(1,-1)">SD_CS</text>
+			<path d="M 690,354.89 L 710,354.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="651.76416015625" y="351.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,703) scale(1,-1)">D6 / TX</text>
+			<path d="M 710,354.89 L 787,354.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="712" y="359.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,719) scale(1,-1)">GPS_RX</text>
+			<path d="M 690,330.89 L 710,330.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="651.05029296875" y="327.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,655) scale(1,-1)">D7 / RX</text>
+			<path d="M 710,330.89 L 787,330.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="712" y="335.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,671) scale(1,-1)">GPS_TX</text>
+			<path d="M 690,306.89 L 710,306.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="645.874755859375" y="303.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,607) scale(1,-1)">D8 / SCK</text>
+			<path d="M 710,306.89 L 787,306.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="712" y="311.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,623) scale(1,-1)">SPI_SCK</text>
+			<path d="M 690,282.89 L 710,282.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="640.852783203125" y="279.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,559) scale(1,-1)">D9 / MISO</text>
+			<path d="M 710,282.89 L 787,282.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="712" y="287.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,575) scale(1,-1)">SPI_MISO</text>
+			<path d="M 690,258.89 L 710,258.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="635.44482421875" y="255.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,511) scale(1,-1)">D10 / MOSI</text>
+			<path d="M 710,258.89 L 787,258.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="712" y="263.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,527) scale(1,-1)">SPI_MOSI</text>
+			<text x="500" y="292.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(33%,33%,33%); stroke:none;" transform="translate(0,585) scale(1,-1)">USB-C: programming / data</text>
+			<text x="500" y="276.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(33%,33%,33%); stroke:none;" transform="translate(0,553) scale(1,-1)">BAT pads: not connected</text>
+			<text x="500" y="260.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(33%,33%,33%); stroke:none;" transform="translate(0,521) scale(1,-1)">D0, D4: internal pull-ups</text>
+			<text x="573.828125" y="226.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,453) scale(1,-1)">GND</text>
+			<path d="M 583,216.89 L 583,206.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 583,206.89 L 583,198.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 574,198.89 L 592,198.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 577,194.89 L 589,194.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 580,190.89 L 586,190.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="574.974609375" y="178.89" style="font-family: DejaVuSans; font-size: 7px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,357) scale(1,-1)">GND</text>
+			<rect x="920" y="216.89" width="175" height="255.0" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 1.1; fill: none; fill-rule: evenodd;"/>
+			<text x="920" y="496.89" style="font-family: DejaVuSans-Bold; font-size: 11px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,993) scale(1,-1)">U3</text>
+			<text x="945" y="496.89" style="font-family: DejaVuSans-Bold; font-size: 10px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,993) scale(1,-1)">ILI9341 IPS TFT</text>
+			<text x="920" y="482.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(33%,33%,33%); stroke:none;" transform="translate(0,965) scale(1,-1)">LCDWiki MSP3222 / MSP3223 interface, 3.2 in</text>
+			<path d="M 900,450.89 L 920,450.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="927" y="447.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,895) scale(1,-1)">VCC</text>
+			<text x="905.9322509765625" y="453.89" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,907) scale(1,-1)">1</text>
+			<path d="M 815,450.89 L 900,450.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="817" y="455.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,911) scale(1,-1)">VSYS</text>
+			<path d="M 900,426.89 L 920,426.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="927" y="423.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,847) scale(1,-1)">LCD_CS</text>
+			<text x="905.9322509765625" y="429.89" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,859) scale(1,-1)">3</text>
+			<path d="M 815,426.89 L 900,426.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="817" y="431.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,863) scale(1,-1)">LCD_CS</text>
+			<path d="M 900,402.89 L 920,402.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="927" y="399.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,799) scale(1,-1)">LCD_RST</text>
+			<text x="905.9322509765625" y="405.89" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,811) scale(1,-1)">4</text>
+			<path d="M 815,402.89 L 900,402.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="817" y="407.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,815) scale(1,-1)">LCD_RST</text>
+			<path d="M 900,378.89 L 920,378.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="927" y="375.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,751) scale(1,-1)">LCD_RS</text>
+			<text x="905.9322509765625" y="381.89" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,763) scale(1,-1)">5</text>
+			<path d="M 815,378.89 L 900,378.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="817" y="383.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,767) scale(1,-1)">LCD_DC</text>
+			<path d="M 900,354.89 L 920,354.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="927" y="351.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,703) scale(1,-1)">SDI / MOSI</text>
+			<text x="905.9322509765625" y="357.89" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,715) scale(1,-1)">6</text>
+			<path d="M 815,354.89 L 900,354.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="817" y="359.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,719) scale(1,-1)">SPI_MOSI</text>
+			<path d="M 900,330.89 L 920,330.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="927" y="327.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,655) scale(1,-1)">SCK</text>
+			<text x="905.9322509765625" y="333.89" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,667) scale(1,-1)">7</text>
+			<path d="M 815,330.89 L 900,330.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="817" y="335.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,671) scale(1,-1)">SPI_SCK</text>
+			<path d="M 900,306.89 L 920,306.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="927" y="303.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,607) scale(1,-1)">LED</text>
+			<text x="905.9322509765625" y="309.89" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,619) scale(1,-1)">8</text>
+			<path d="M 815,306.89 L 900,306.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="817" y="311.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,623) scale(1,-1)">LCD_BL</text>
+			<path d="M 900,282.89 L 920,282.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="927" y="279.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,559) scale(1,-1)">SDO / MISO</text>
+			<text x="905.9322509765625" y="285.89" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,571) scale(1,-1)">9</text>
+			<path d="M 815,282.89 L 900,282.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="817" y="287.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,575) scale(1,-1)">SPI_MISO</text>
+			<path d="M 900,258.89 L 920,258.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="927" y="255.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,511) scale(1,-1)">SD_CS</text>
+			<text x="903.864501953125" y="261.89" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,523) scale(1,-1)">14</text>
+			<path d="M 815,258.89 L 900,258.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="817" y="263.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,527) scale(1,-1)">SD_CS</text>
+			<path d="M 1095,414.89 L 1115,414.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="1051.430908203125" y="411.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,823) scale(1,-1)">CTP_SCL</text>
+			<text x="1100.864501953125" y="417.89" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,835) scale(1,-1)">10</text>
+			<path d="M 1112,417.89 L 1118,411.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1112,411.89 L 1118,417.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1095,384.89 L 1115,384.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="1051.00341796875" y="381.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,763) scale(1,-1)">CTP_RST</text>
+			<text x="1100.864501953125" y="387.89" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,775) scale(1,-1)">11</text>
+			<path d="M 1112,387.89 L 1118,381.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1112,381.89 L 1118,387.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1095,354.89 L 1115,354.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="1049.74169921875" y="351.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,703) scale(1,-1)">CTP_SDA</text>
+			<text x="1100.864501953125" y="357.89" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,715) scale(1,-1)">12</text>
+			<path d="M 1112,357.89 L 1118,351.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1112,351.89 L 1118,357.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1095,324.89 L 1115,324.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="1053.439697265625" y="321.89" style="font-family: DejaVuSans; font-size: 8.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,643) scale(1,-1)">CTP_INT</text>
+			<text x="1100.864501953125" y="327.89" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,655) scale(1,-1)">13</text>
+			<path d="M 1112,327.89 L 1118,321.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1112,321.89 L 1118,327.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="992.740234375" y="232.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,465) scale(1,-1)">2  GND</text>
+			<path d="M 1007,216.89 L 1007,206.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1007,206.89 L 1007,198.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 998,198.89 L 1016,198.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1001,194.89 L 1013,194.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1004,190.89 L 1010,190.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="998.974609375" y="178.89" style="font-family: DejaVuSans; font-size: 7px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,357) scale(1,-1)">GND</text>
+			<text x="80" y="448.89" style="font-family: DejaVuSans-Bold; font-size: 11px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,897) scale(1,-1)">S1</text>
+			<text x="110" y="448.89" style="font-family: DejaVuSans; font-size: 9px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,897) scale(1,-1)">Wheel reed switch (NO)</text>
+			<rect x="91" y="400.89" width="67" height="26.0" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.65; fill: none; fill-rule: evenodd;"/>
+			<path d="M 72,408.89 L 105,408.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<circle cx="105" cy="408.89" r="2" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.4; fill: rgb(0%,0%,0%); fill-rule: evenodd;"/>
+			<path d="M 105,408.89 L 139,422.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<circle cx="146" cy="408.89" r="2" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.4; fill: rgb(0%,0%,0%); fill-rule: evenodd;"/>
+			<path d="M 146,408.89 L 223,408.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="177" y="414.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,829) scale(1,-1)">REED</text>
+			<path d="M 72,408.89 L 72,379.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 72,379.89 L 72,371.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 63,371.89 L 81,371.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 66,367.89 L 78,367.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 69,363.89 L 75,363.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="63.974609375" y="351.89" style="font-family: DejaVuSans; font-size: 7px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,703) scale(1,-1)">GND</text>
+			<text x="80" y="307.89" style="font-family: DejaVuSans-Bold; font-size: 11px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,615) scale(1,-1)">S2</text>
+			<text x="110" y="307.89" style="font-family: DejaVuSans; font-size: 9px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,615) scale(1,-1)">Momentary pushbutton (NO)</text>
+			<path d="M 72,270.89 L 105,270.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<circle cx="105" cy="270.89" r="2" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.4; fill: rgb(0%,0%,0%); fill-rule: evenodd;"/>
+			<circle cx="145" cy="270.89" r="2" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.4; fill: rgb(0%,0%,0%); fill-rule: evenodd;"/>
+			<path d="M 145,270.89 L 223,270.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="177" y="276.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,553) scale(1,-1)">BUTTON</text>
+			<path d="M 103,282.89 L 147,282.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 125,293.89 L 125,282.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 72,270.89 L 72,240.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 72,240.89 L 72,232.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 63,232.89 L 81,232.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 66,228.89 L 78,228.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 69,224.89 L 75,224.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="63.974609375" y="212.89" style="font-family: DejaVuSans; font-size: 7px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,425) scale(1,-1)">GND</text>
+			<text x="290" y="448.89" style="font-family: DejaVuSans-Bold; font-size: 9px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,897) scale(1,-1)">RESET PULL-UP</text>
+			<path d="M 329,413.89 L 329,425.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 329,425.89 L 325,420.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 329,425.89 L 333,420.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="317.822265625" y="431.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,863) scale(1,-1)">+3V3</text>
+			<path d="M 329,413.89 L 329,396.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<rect x="323" y="361.89" width="12" height="35.0" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.9; fill: none; fill-rule: evenodd;"/>
+			<path d="M 329,361.89 L 329,330.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="346" y="384.89" style="font-family: DejaVuSans-Bold; font-size: 10px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,769) scale(1,-1)">R1</text>
+			<text x="346" y="369.89" style="font-family: DejaVuSans; font-size: 9px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,739) scale(1,-1)">7 kOhm</text>
+			<path d="M 329,330.89 L 388,330.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="331" y="335.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,671) scale(1,-1)">LCD_RST</text>
+			<text x="286" y="294.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(33%,33%,33%); stroke:none;" transform="translate(0,589) scale(1,-1)">Held high; no reset GPIO.</text>
+			<text x="286" y="278.89" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(33%,33%,33%); stroke:none;" transform="translate(0,557) scale(1,-1)">Value from audited wiring.</text>
+			<path d="M 35,161.89 L 1155,161.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.7;"/>
+			<text x="45" y="142.89" style="font-family: DejaVuSans-Bold; font-size: 9px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,285) scale(1,-1)">DRAWING NOTES</text>
+			<text x="45" y="127.88999999999999" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,255) scale(1,-1)">1. Identical net labels are electrically connected. All GND symbols share one net.</text>
+			<text x="45" y="116.88999999999999" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,233) scale(1,-1)">2. D1 isolates XIAO USB VBUS from VSYS. Do not reverse A / K orientation.</text>
+			<text x="45" y="105.88999999999999" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,211) scale(1,-1)">3. U3 LED is a control input to its onboard MOSFET; no external driver is added.</text>
+			<text x="45" y="94.88999999999999" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,189) scale(1,-1)">4. All signals are 3.3 V logic. Pin numbers are given only for the TFT header.</text>
+			<text x="45" y="83.88999999999999" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,167) scale(1,-1)">5. NC crosses mark unused touch / compass signals. Other unused pads omitted.</text>
+			<text x="45" y="72.88999999999999" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,145) scale(1,-1)">6. Main power-switch location and D1 part/rating are unspecified; not invented.</text>
+			<text x="630" y="142.89" style="font-family: DejaVuSans-Bold; font-size: 9px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,285) scale(1,-1)">POWER / VERIFICATION</text>
+			<text x="630" y="127.88999999999999" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,255) scale(1,-1)">LOAD may fall below the GPS manufacturer's 3.6 V minimum on battery power.</text>
+			<text x="630" y="116.88999999999999" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,233) scale(1,-1)">No boost supply or other proposed audit modification has been inserted.</text>
+			<text x="630" y="105.88999999999999" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,211) scale(1,-1)">Confirm low-battery operation, diode rating and battery polarity before build release.</text>
+			<text x="630" y="94.88999999999999" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,189) scale(1,-1)">Basis: user-confirmed power wiring + OBJECT-CC commit 1a27ed7 (signal wiring).</text>
+			<text x="630" y="83.88999999999999" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,167) scale(1,-1)">Module references: Adafruit 6091; Seeed XIAO nRF52840 Sense; LCDWiki MSP3222/23.</text>
+			<text x="630" y="72.88999999999999" style="font-family: DejaVuSans; font-size: 8px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,145) scale(1,-1)">Module-level assembly drawing: internal charger, regulator and TFT circuits omitted.</text>
+			<rect x="35" y="24.889999999999986" width="1120" height="30.0" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.9; fill: none; fill-rule: evenodd;"/>
+			<path d="M 670,54.89 L 670,24.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 875,54.89 L 875,24.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<path d="M 1020,54.89 L 1020,24.89 Z" style="stroke: rgb(0%,0%,0%); stroke-linecap: butt; stroke-width: 0.8;"/>
+			<text x="45" y="42.889999999999986" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(33%,33%,33%); stroke:none;" transform="translate(0,85) scale(1,-1)">TITLE</text>
+			<text x="45" y="30.889999999999986" style="font-family: DejaVuSans-Bold; font-size: 10px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,61) scale(1,-1)">OBJECT - Cycling computer / assembly schematic</text>
+			<text x="680" y="42.889999999999986" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(33%,33%,33%); stroke:none;" transform="translate(0,85) scale(1,-1)">DOCUMENT</text>
+			<text x="680" y="30.889999999999986" style="font-family: DejaVuSans; font-size: 9px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,61) scale(1,-1)">OBJECT-CC-ELEC-001</text>
+			<text x="885" y="42.889999999999986" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(33%,33%,33%); stroke:none;" transform="translate(0,85) scale(1,-1)">REVISION / STATUS</text>
+			<text x="885" y="30.889999999999986" style="font-family: DejaVuSans; font-size: 9px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,61) scale(1,-1)">A / wiring reference</text>
+			<text x="1030" y="42.889999999999986" style="font-family: DejaVuSans; font-size: 6.5px;fill: rgb(33%,33%,33%); stroke:none;" transform="translate(0,85) scale(1,-1)">SHEET / SIZE</text>
+			<text x="1030" y="30.889999999999986" style="font-family: DejaVuSans; font-size: 9px;fill: rgb(0%,0%,0%); stroke:none;" transform="translate(0,61) scale(1,-1)">1 of 1 / A3</text>
+		</g>
+	</g>
 </svg>

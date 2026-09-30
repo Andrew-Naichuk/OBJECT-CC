@@ -110,8 +110,15 @@ static const int FOOTER_H    = 22;
 // Circumference of 700x32C (32-622), millimetres.
 static const float WHEEL_CIRC_MM = 2155.0f;
 
-// Ignore reed edges closer than this (contact bounce).
+// Instantaneous speeds above this are treated as reed noise / bounce.
+// (Real road descents rarely top this; 200–400 km/h spikes are not.)
+static const float MAX_SPEED_KMH = 100.0f;
+
+// Contact-bounce floor. Real minimum gap is also derived from MAX_SPEED_KMH
+// so a double-fire after the floor cannot invent absurd km/h and lock Max.
 static const unsigned long DEBOUNCE_MS = 15;
+static const unsigned long MIN_REV_MS =
+    (unsigned long)((WHEEL_CIRC_MM * 3.6f) / MAX_SPEED_KMH + 0.5f);
 
 // If no pulse for this long, treat the bike as stopped.
 static const unsigned long STOPPED_MS = 3000;
@@ -307,7 +314,12 @@ static GpsState gps;
 
 void reedIsr() {
   unsigned long now = millis();
-  if (now - g_lastIsrMs < DEBOUNCE_MS) {
+  // Drop edges closer than bounce floor or the interval at MAX_SPEED_KMH.
+  unsigned long minGap = MIN_REV_MS;
+  if (minGap < DEBOUNCE_MS) {
+    minGap = DEBOUNCE_MS;
+  }
+  if (now - g_lastIsrMs < minGap) {
     return;
   }
   g_lastIsrMs = now;
@@ -1037,7 +1049,10 @@ static const char *tripResumeSd() {
   g_prevPulseMs = 0;
   interrupts();
   movingMs = d.movingMs;
-  maxSpeedKmh = d.maxSpeedKmh;
+  // Drop a previously saved noise spike so resume does not keep 200+ km/h Max.
+  maxSpeedKmh = (d.maxSpeedKmh > 0.0f && d.maxSpeedKmh <= MAX_SPEED_KMH)
+                    ? d.maxSpeedKmh
+                    : 0.0f;
   if (d.revCount >= 1 || d.elapsedMs > 0 || d.movingMs > 0) {
     tripStarted = true;
     elapsedBaseMs = d.elapsedMs;
@@ -2559,9 +2574,13 @@ void loop() {
   // cannot pair with a zero timestamp and invent a huge speed.
   if (revCount >= 2 && prevPulseMs != 0 && (now - lastPulseMs) < STOPPED_MS) {
     unsigned long dtMs = lastPulseMs - prevPulseMs;
-    if (dtMs > 0) {
+    // Same ceiling as the ISR: ignore intervals that imply > MAX_SPEED_KMH.
+    if (dtMs >= MIN_REV_MS) {
       // mm/ms -> km/h: (mm/ms) * (3600 s/h) / 1e6 (mm/km) = * 3.6
-      speedKmh = (WHEEL_CIRC_MM / (float)dtMs) * 3.6f;
+      float raw = (WHEEL_CIRC_MM / (float)dtMs) * 3.6f;
+      if (raw <= MAX_SPEED_KMH) {
+        speedKmh = raw;
+      }
     }
   }
 
@@ -2580,7 +2599,7 @@ void loop() {
   }
   lastLoopMs = now;
 
-  if (speedKmh > maxSpeedKmh) {
+  if (speedKmh > maxSpeedKmh && speedKmh <= MAX_SPEED_KMH) {
     maxSpeedKmh = speedKmh;
   }
 
