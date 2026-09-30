@@ -131,7 +131,7 @@ The portrait layout keeps current speed largest, with supporting information und
 
 | Action                                | Result                                                                        |
 | ------------------------------------- | ----------------------------------------------------------------------------- |
-| Press and release before 2 seconds    | Cycle backlight: **bright → dim → off**                                       |
+| Press and release before 2 seconds    | Cycle backlight: **bright → dim → off** (deferred past the double-press window) |
 | Double short-press while stopped      | Open a ~90 s Bluetooth transfer window (footer shows `Transfer`)              |
 | Hold for 4 seconds while stopped      | Archive the GPS track if it has points, write a ride summary, reset counters  |
 | Release during the new-ride countdown | Cancel the action; leave the backlight unchanged                              |
@@ -147,7 +147,8 @@ If the ride has no GPS points, the device shows **No GPS track**, clears counter
 | File           | Contents                                                                                         |
 | -------------- | ------------------------------------------------------------------------------------------------ |
 | `CURRENT.GPX`  | Current GPS track                                                                                |
-| `TRIP_A.DAT` / `TRIP_B.DAT` | Alternating CRC-checked checkpoints (sequence + counters + track position)          |
+| `TRIP_A.DAT` / `TRIP_B.DAT` | Alternating CRC-checked checkpoints (sequence + ride generation + counters + track position) |
+| `FINISH.DAT`   | Short-lived finish journal used to recover an interrupted save                                   |
 | `YYMMDDHH.GPX` | First-choice archive name, based on available GPS UTC time when saving                           |
 | `YYMMDDnn.GPX` | Collision fallback; `nn` is 24–99 (sequence), not a clock hour                                   |
 | `RIDEnnnn.GPX` | Numbered fallback when a date-based name is unavailable                                          |
@@ -156,7 +157,7 @@ If the ride has no GPS points, the device shows **No GPS track**, clears counter
 
 Points are attempted no more frequently than once per second while moving, after the trip starts, when GPS data passes the current checks (including u-blox `gnssFixOK`). Stop and resume add endpoint points; drift while parked is not logged. Subsequent moving points also require advancing GPS time and a coordinate change of at least `0.000018°` on either latitude or longitude.
 
-GPX exports contain coordinates, timestamps and altitude when available. Wheel-derived totals are stored in the matching `.SUM` sidecar. Checkpoints are for recovery only and are not offered over Bluetooth.
+GPX exports contain coordinates, timestamps and altitude when available. Wheel-derived totals are stored in the matching `.SUM` sidecar. Archive stems are reserved against both `.GPX` and `.SUM`. Checkpoints and finish journals are for recovery only and are not offered over Bluetooth. Reading a `.SUM` currently requires access to the microSD card.
 
 ## Download a ride to your phone
 
@@ -170,15 +171,19 @@ You can also download `CURRENT.GPX` without finishing the ride. The device sends
 
 For the documented browser setup, use **Chrome on Android**, or [Bluefy on iPhone](https://apps.apple.com/app/bluefy-web-ble-browser/id1492822185), since Safari does not expose Web Bluetooth. To host your own copy, serve [tools/index.html](tools/index.html) over **HTTPS**.
 
-LIST/GET require an open transfer window on the device. If a transfer stalls, the page aborts the firmware transfer; you can retry while the window is still open.
+LIST/GET require an open transfer window on the device. Successful LIST/GET commands re-arm that inactivity window; it is not owner authentication and is not a hard wall-clock 90-second cap once transfer activity continues. If a transfer stalls or is cancelled, the page clears local download state immediately and still attempts to abort the firmware transfer.
+
+The ride list prefers end timestamps from matching `.SUM` files when the firmware supplies them. Names without a known end time sort after timed rides; collision suffixes `24–99` are not treated as clock hours.
 
 ## Current limitations
 
 | Area                | What to know                                                                                                                                        |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Battery operation   | GPS supply can fall below its specified minimum. Full-discharge operation and runtime have not been established here.                               |
-| BLE pairing         | Transfer uses a physical button window, not LE Secure Connections bonding. A nearby person cannot list tracks unless the window is open.            |
+| BLE access          | Transfer uses a physical button window and inactivity re-arm, not LE Secure Connections bonding or per-owner credentials.                           |
+| Summary transfer    | `.SUM` sidecars are not listed or downloaded over Bluetooth; copy them from the microSD card if you need wheel stats off the device.              |
 | Summary format      | `.SUM` is a plain-text sidecar for this project; third-party GPX apps will not read those wheel stats automatically.                                |
+| On-device validation | Host regressions and compile checks cover recent storage/transfer fixes; slow-ride moving-time and finish/backlight checks on hardware are pending. |
 
 
 ## Firmware
@@ -215,6 +220,7 @@ Replace `<PORT>` with your board's port and upload only after compilation succee
 xiao_oled/     Cycling computer firmware
 xiao_blink/    LED blink and serial hardware check
 tools/         Web Bluetooth ride-transfer page
+test/          Host-side audit regression checks
 docs/          Assembly electrical schematic (SVG)
 AGENTS.md      Notes for automated agents
 ```

@@ -383,9 +383,11 @@
     const META_LIST_END = 0x02;
     const META_START = 0x03;
     const META_DONE = 0x04;
+    const META_END_TIME = 0x05;
     const META_ERROR = 0x7f;
     const MAX_FILE = 16 * 1024 * 1024;
     const STALL_MS = 15000;
+    const ABORT_WRITE_MS = 2000;
     const ERRORS = {
       1: "No SD card",
       2: "Bad file name",
@@ -410,6 +412,7 @@
     let device = null;
     let cmdChar = null;
     let phase = "idle";
+    let transferGen = 0;
     let rides = [];
     let fileBuf = null;
     let fileName = "";
@@ -418,6 +421,7 @@
     let early = [];
     let stallTimer = 0;
     let prog = null;
+    let pendingListEndUtc = null;
 
     const DOWN_ICON = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M10 3v10M5.5 8.5 10 13l4.5-4.5M4 17h12"/></svg>';
 
@@ -537,26 +541,26 @@
       syncUI();
     }
 
-    // YYMMDDHH or YYMMDDnn (nn>=24 = collision seq) → sortable key; else name.
-    function rideSortKey(name) {
-      if (name === "CURRENT.GPX") return -1;
-      const m = /^(\d{8})\.GPX$/i.exec(name);
-      if (m) return Number(m[1]);
-      const r = /^RIDE(\d{4})\.GPX$/i.exec(name);
-      if (r) return 100000000 + Number(r[1]);
-      return 200000000;
+    // Prefer .SUM end time from META_END_TIME. Unknown times sort after known
+    // ones; filename digits are only a tie-breaker (collision slots are not hours).
+    function rideCompare(a, b) {
+      if (a.name === "CURRENT.GPX") return -1;
+      if (b.name === "CURRENT.GPX") return 1;
+      const ta = a.endUtc || 0;
+      const tb = b.endUtc || 0;
+      if (ta !== 0 || tb !== 0) {
+        if (ta === 0) return 1;
+        if (tb === 0) return -1;
+        if (ta !== tb) return tb - ta;
+      }
+      if (a.name < b.name) return 1;
+      if (a.name > b.name) return -1;
+      return 0;
     }
 
     function renderRides() {
       filesEl.replaceChildren();
-      const sorted = rides.slice().sort((a, b) => {
-        if (a.name === "CURRENT.GPX") return -1;
-        if (b.name === "CURRENT.GPX") return 1;
-        const ka = rideSortKey(a.name);
-        const kb = rideSortKey(b.name);
-        if (ka !== kb) return kb - ka;
-        return a.name < b.name ? 1 : a.name > b.name ? -1 : 0;
-      });
+      const sorted = rides.slice().sort(rideCompare);
       if (!sorted.length && cmdChar && phase === "idle") {
         const li = document.createElement("li");
         li.className = "empty";
@@ -619,17 +623,28 @@
     async function abortTransfer(message, isError) {
       clearTimeout(stallTimer);
       const wasBusy = phase === "listing" || phase === "downloading";
-      if (wasBusy && cmdChar) {
-        try { await writeCmd(new Uint8Array([OP_ABORT])); } catch (e) {}
-      }
+      const gen = ++transferGen;
       phase = "idle";
+      pendingListEndUtc = null;
       resetTransfer();
       if (message) setStatus(message, !!isError);
       else syncUI();
       renderRides();
+      if (wasBusy && cmdChar) {
+        try {
+          await Promise.race([
+            writeCmd(new Uint8Array([OP_ABORT])),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("abort timeout")), ABORT_WRITE_MS))
+          ]);
+        } catch (e) {}
+      }
+      // A late abort response must not affect a newer transfer.
+      void gen;
     }
 
-    function saveFile() {
+    function saveFile(gen) {
+      if (gen !== transferGen) return;
+      if (phase !== "downloading" || !fileBuf) return;
       const crc = crc32(fileBuf);
       if (crc !== doneCrc) {
         setStatus("CRC mismatch for " + fileName + ". File not saved.", true);
@@ -651,20 +666,21 @@
       renderRides();
     }
 
-    function maybeFinish() {
+    function maybeFinish(gen) {
+      if (gen !== transferGen || phase !== "downloading") return;
       if (doneCrc === null || !fileBuf || received !== fileBuf.length) return;
       clearTimeout(stallTimer);
-      saveFile();
+      saveFile(gen);
     }
 
-    function takeBytes(payload, offset) {
-      if (phase !== "downloading") return;
+    function takeBytes(payload, offset, gen) {
+      if (gen !== transferGen || phase !== "downloading") return;
       if (!fileBuf || offset !== received) return;
       if (offset + payload.length > fileBuf.length) return;
       fileBuf.set(payload, offset);
       received += payload.length;
       showProgress(fileName, received, fileBuf.length);
-      maybeFinish();
+      maybeFinish(gen);
     }
 
     function onMeta(event) {
@@ -672,26 +688,40 @@
       const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
       if (bytes.length < 1) return;
       const type = bytes[0];
+      const gen = transferGen;
       // Ignore leftovers after abort/idle except ERROR (always useful).
       if (phase === "idle" && type !== META_ERROR) return;
       if (phase !== "listing" && phase !== "downloading" && type !== META_ERROR) return;
       noteActivity();
       if (type === META_ENTRY && bytes.length >= 17) {
-        if (phase !== "listing") return;
+        if (phase !== "listing" || gen !== transferGen) return;
         const name = readName(bytes.subarray(1, 13));
         const size = u32le(bytes, 13);
-        rides.push({ name, size });
+        pendingListEndUtc = 0;
+        rides.push({ name, size, endUtc: 0 });
         syncUI();
         return;
       }
+      if (type === META_END_TIME && bytes.length >= 5) {
+        if (phase !== "listing" || gen !== transferGen) return;
+        const endUtc = u32le(bytes, 1);
+        if (rides.length) {
+          rides[rides.length - 1].endUtc = endUtc;
+        }
+        pendingListEndUtc = null;
+        return;
+      }
       if (type === META_LIST_END) {
+        if (gen !== transferGen) return;
         clearTimeout(stallTimer);
         phase = "idle";
+        pendingListEndUtc = null;
         setStatus(rides.length ? rides.length + " ride" + (rides.length === 1 ? "" : "s") + " on the card." : "No GPX files on the card.");
         renderRides();
         return;
       }
       if (type === META_START && bytes.length >= 17) {
+        if (gen !== transferGen) return;
         fileName = readName(bytes.subarray(1, 13));
         const size = u32le(bytes, 13);
         if (size > MAX_FILE) {
@@ -705,19 +735,20 @@
         showProgress(fileName, 0, size);
         const queued = early;
         early = [];
-        for (const chunk of queued) takeBytes(chunk.payload, chunk.offset);
-        maybeFinish();
+        for (const chunk of queued) takeBytes(chunk.payload, chunk.offset, gen);
+        maybeFinish(gen);
         renderRides();
         return;
       }
       if (type === META_DONE && bytes.length >= 5) {
-        if (phase !== "downloading") return;
+        if (phase !== "downloading" || gen !== transferGen) return;
         doneCrc = u32le(bytes, 1);
-        maybeFinish();
+        maybeFinish(gen);
         return;
       }
       if (type === META_ERROR && bytes.length >= 2) {
         clearTimeout(stallTimer);
+        transferGen++;
         phase = "idle";
         resetTransfer();
         setStatus(ERRORS[bytes[1]] || "Transfer failed.", true);
@@ -727,6 +758,7 @@
 
     function onData(event) {
       if (phase !== "downloading") return;
+      const gen = transferGen;
       const view = event.target.value;
       const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
       if (bytes.length < 4) return;
@@ -738,7 +770,7 @@
         if (early.length < 64) early.push({ offset, payload: copy });
         return;
       }
-      takeBytes(copy, offset);
+      takeBytes(copy, offset, gen);
     }
 
     async function writeCmd(bytes) {
@@ -747,7 +779,9 @@
 
     async function listRides() {
       if (!cmdChar || phase !== "idle") return;
+      transferGen++;
       rides = [];
+      pendingListEndUtc = null;
       filesEl.replaceChildren();
       phase = "listing";
       resetTransfer();
@@ -759,6 +793,7 @@
 
     async function downloadRide(name) {
       if (!cmdChar || phase !== "idle") return;
+      transferGen++;
       phase = "downloading";
       resetTransfer();
       fileName = name;
