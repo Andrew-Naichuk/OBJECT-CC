@@ -350,7 +350,7 @@
       </div>
     </section>
 
-    <p id="status">Wake the computer and keep it close, then connect.</p>
+    <p id="status">Wake the computer, double-press its button while stopped (Transfer), then connect.</p>
 
     <div class="controls">
       <button id="connect" type="button">Connect</button>
@@ -368,7 +368,7 @@
       <ul id="files"></ul>
     </section>
 
-    <p class="note">Works in Chrome on Android when this page is served over HTTPS. Safari on iPhone has no Bluetooth; open the page in Bluefy instead.</p>
+    <p class="note">Works in Chrome on Android when this page is served over HTTPS. Safari on iPhone has no Bluetooth; open the page in Bluefy instead. Transfers need an open window on the computer: double short-press the button while stopped.</p>
   </main>
   <script>
     // Same bytes as xiao_oled.ino.
@@ -391,7 +391,8 @@
       2: "Bad file name",
       3: "File not found",
       4: "Read failed",
-      5: "Transfer aborted"
+      5: "Transfer aborted",
+      6: "Transfer locked — double-press the button on the computer while stopped, then try again"
     };
 
     const statusEl = document.getElementById("status");
@@ -521,10 +522,7 @@
       clearTimeout(stallTimer);
       if (phase === "listing" || phase === "downloading") {
         stallTimer = setTimeout(() => {
-          setStatus("Transfer stalled. Move closer and try again.", true);
-          phase = "idle";
-          hideProgress();
-          renderRides();
+          abortTransfer("Transfer stalled. Move closer and try again.", true);
         }, STALL_MS);
       }
     }
@@ -539,11 +537,24 @@
       syncUI();
     }
 
+    // YYMMDDHH or YYMMDDnn (nn>=24 = collision seq) → sortable key; else name.
+    function rideSortKey(name) {
+      if (name === "CURRENT.GPX") return -1;
+      const m = /^(\d{8})\.GPX$/i.exec(name);
+      if (m) return Number(m[1]);
+      const r = /^RIDE(\d{4})\.GPX$/i.exec(name);
+      if (r) return 100000000 + Number(r[1]);
+      return 200000000;
+    }
+
     function renderRides() {
       filesEl.replaceChildren();
       const sorted = rides.slice().sort((a, b) => {
         if (a.name === "CURRENT.GPX") return -1;
         if (b.name === "CURRENT.GPX") return 1;
+        const ka = rideSortKey(a.name);
+        const kb = rideSortKey(b.name);
+        if (ka !== kb) return kb - ka;
         return a.name < b.name ? 1 : a.name > b.name ? -1 : 0;
       });
       if (!sorted.length && cmdChar && phase === "idle") {
@@ -571,7 +582,7 @@
         if (ride.name === "CURRENT.GPX") {
           const tag = document.createElement("span");
           tag.className = "tag";
-          tag.textContent = "Recording";
+          tag.textContent = "Current ride";
           name.append(tag);
         }
 
@@ -587,10 +598,7 @@
         btn.append(name, size, icon);
         btn.addEventListener("click", () => {
           downloadRide(ride.name).catch((err) => {
-            phase = "idle";
-            resetTransfer();
-            setStatus(err.message || "Download failed.", true);
-            renderRides();
+            abortTransfer(err.message || "Download failed.", true);
           });
         });
         li.append(btn);
@@ -606,6 +614,19 @@
       doneCrc = null;
       early = [];
       hideProgress();
+    }
+
+    async function abortTransfer(message, isError) {
+      clearTimeout(stallTimer);
+      const wasBusy = phase === "listing" || phase === "downloading";
+      if (wasBusy && cmdChar) {
+        try { await writeCmd(new Uint8Array([OP_ABORT])); } catch (e) {}
+      }
+      phase = "idle";
+      resetTransfer();
+      if (message) setStatus(message, !!isError);
+      else syncUI();
+      renderRides();
     }
 
     function saveFile() {
@@ -637,6 +658,7 @@
     }
 
     function takeBytes(payload, offset) {
+      if (phase !== "downloading") return;
       if (!fileBuf || offset !== received) return;
       if (offset + payload.length > fileBuf.length) return;
       fileBuf.set(payload, offset);
@@ -649,9 +671,13 @@
       const view = event.target.value;
       const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
       if (bytes.length < 1) return;
-      noteActivity();
       const type = bytes[0];
+      // Ignore leftovers after abort/idle except ERROR (always useful).
+      if (phase === "idle" && type !== META_ERROR) return;
+      if (phase !== "listing" && phase !== "downloading" && type !== META_ERROR) return;
+      noteActivity();
       if (type === META_ENTRY && bytes.length >= 17) {
+        if (phase !== "listing") return;
         const name = readName(bytes.subarray(1, 13));
         const size = u32le(bytes, 13);
         rides.push({ name, size });
@@ -669,16 +695,13 @@
         fileName = readName(bytes.subarray(1, 13));
         const size = u32le(bytes, 13);
         if (size > MAX_FILE) {
-          setStatus("File is too large to download here.", true);
-          phase = "idle";
-          hideProgress();
-          renderRides();
+          abortTransfer("File is too large to download here.", true);
           return;
         }
+        if (phase !== "downloading") return;
         fileBuf = new Uint8Array(size);
         received = 0;
         doneCrc = null;
-        phase = "downloading";
         showProgress(fileName, 0, size);
         const queued = early;
         early = [];
@@ -688,6 +711,7 @@
         return;
       }
       if (type === META_DONE && bytes.length >= 5) {
+        if (phase !== "downloading") return;
         doneCrc = u32le(bytes, 1);
         maybeFinish();
         return;
@@ -702,6 +726,7 @@
     }
 
     function onData(event) {
+      if (phase !== "downloading") return;
       const view = event.target.value;
       const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
       if (bytes.length < 4) return;
@@ -710,7 +735,7 @@
       const payload = bytes.subarray(4);
       const copy = new Uint8Array(payload);
       if (!fileBuf) {
-        early.push({ offset, payload: copy });
+        if (early.length < 64) early.push({ offset, payload: copy });
         return;
       }
       takeBytes(copy, offset);
@@ -802,18 +827,14 @@
     }
 
     async function disconnect() {
-      if (cmdChar && phase !== "idle") {
-        try { await writeCmd(new Uint8Array([OP_ABORT])); } catch (e) {}
-      }
+      await abortTransfer(null, false);
       if (device && device.gatt.connected) device.gatt.disconnect();
       else onDisconnected();
     }
 
     connectBtn.addEventListener("click", connect);
     refreshBtn.addEventListener("click", () => listRides().catch((err) => {
-      phase = "idle";
-      setStatus(err.message || "List failed.", true);
-      renderRides();
+      abortTransfer(err.message || "List failed.", true);
     }));
     disconnectBtn.addEventListener("click", disconnect);
 

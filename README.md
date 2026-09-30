@@ -11,11 +11,11 @@ The aim is simple: readable numbers on the handlebars, one button, and a record 
 - **Speed and distance from the wheel.** A reed switch counts one pulse per revolution. Wheel speed works independently of GPS reception.
 - **The essentials at a glance.** Current speed, distance, elapsed time, estimated moving time, maximum speed and average speed.
 - **A track to take home.** The GPS supplies position, altitude and UTC time for GPX recording on the microSD card.
-- **One button.** A short press changes the backlight; a four-second hold while stopped finishes the current ride and starts a fresh one.
-- **Phone downloads.** Connect to `OBJECT-001` through the [ride-transfer page](https://object.nav-tech.workers.dev) and download a GPX file, including a snapshot of the current track.
-- **Trip recovery.** Saved counters can be restored after a restart when a valid checkpoint is available. Recovery is not yet guaranteed after an abrupt power loss.
+- **One button.** A short press changes the backlight; double short-press while stopped opens phone transfer; a four-second hold finishes the ride.
+- **Phone downloads.** Double-press to arm transfer, then connect to `OBJECT-001` through the [ride-transfer page](https://object.nav-tech.workers.dev) and download a GPX file.
+- **Trip recovery.** Alternating checkpoints restore counters after a restart when a valid record is available. Abrupt power loss during a write can still lose the newest points, but the previous checkpoint remains.
 
-The trip starts with the first wheel pulse. GPS recording begins when the firmware has the required fix, position and time data. You can ride without a GPS fix, but those wheel stats are not currently archived as a separate ride summary.
+The trip starts with the first wheel pulse. GPS recording begins when the firmware has the required fix, position and time data. Wheel stats are also written to a `.SUM` sidecar when you finish a ride.
 
 ## Hardware
 
@@ -122,9 +122,9 @@ The portrait layout keeps current speed largest, with supporting information und
 2. **Dot-matrix speed:** km/h, with average speed above it.
 3. **24-dot gauge:** normally speed, at 2 km/h per dot; temporarily shows hold-to-save or download progress.
 4. **Ride stats:** Distance, Time, Moving and Max.
-5. **Footer:** altitude and a status such as `Recording`, `Phone` or `No card`.
+5. **Footer:** altitude and a status such as `Recording`, `Write failed`, `Transfer`, `Phone` or `No card`.
 
-**Time** is elapsed time since the trip began, including stops while powered on. Time spent powered off is not added after recovery. **Moving** is estimated from wheel pulses with a three-second stop timeout; **Avg** divides wheel distance by that estimated moving time.
+**Time** is elapsed time since the trip began, including stops while powered on. Time spent powered off is not added after recovery. **Moving** accumulates from valid wheel-pulse intervals; **Avg** divides wheel distance by that moving time once a few revolutions and enough moving time have been recorded.
 
 ## Controls
 
@@ -132,60 +132,53 @@ The portrait layout keeps current speed largest, with supporting information und
 | Action                                | Result                                                                        |
 | ------------------------------------- | ----------------------------------------------------------------------------- |
 | Press and release before 2 seconds    | Cycle backlight: **bright → dim → off**                                       |
-| Hold for 4 seconds while stopped      | Archive the GPS track if it has points, reset counters and start a fresh ride |
+| Double short-press while stopped      | Open a ~90 s Bluetooth transfer window (footer shows `Transfer`)              |
+| Hold for 4 seconds while stopped      | Archive the GPS track if it has points, write a ride summary, reset counters  |
 | Release during the new-ride countdown | Cancel the action; leave the backlight unchanged                              |
 
 
 Stop and wait for the speed reading to reach zero before holding for a new ride. The countdown appears after two seconds. Turning the backlight off does **not** stop recording or turn off the device.
 
-**If the ride has no GPS points, the current firmware clears its counters without creating an archive, even though it displays “Ride saved”.** With no card available, the long press resets RAM stats and displays “Stats reset”.
+If the ride has no GPS points, the device shows **No GPS track**, clears counters, and still writes a `.SUM` sidecar when wheel data exists. With no card available, the long press resets RAM stats and displays **Stats reset**.
 
 ## Ride files
 
 
-| File           | Contents                                                                            |
-| -------------- | ----------------------------------------------------------------------------------- |
-| `CURRENT.GPX`  | Current GPS track                                                                   |
-| `TRIP.DAT`     | CRC-checked checkpoint of wheel counters, timings, maximum speed and track position |
-| `YYMMDDHH.GPX` | First-choice archive name, based on available GPS UTC time when saving              |
-| `YYMMDDnn.GPX` | Collision fallback; the final pair is a sequence, not necessarily an hour           |
-| `RIDEnnnn.GPX` | Numbered fallback when a date-based name is unavailable                             |
+| File           | Contents                                                                                         |
+| -------------- | ------------------------------------------------------------------------------------------------ |
+| `CURRENT.GPX`  | Current GPS track                                                                                |
+| `TRIP_A.DAT` / `TRIP_B.DAT` | Alternating CRC-checked checkpoints (sequence + counters + track position)          |
+| `YYMMDDHH.GPX` | First-choice archive name, based on available GPS UTC time when saving                           |
+| `YYMMDDnn.GPX` | Collision fallback; `nn` is 24–99 (sequence), not a clock hour                                   |
+| `RIDEnnnn.GPX` | Numbered fallback when a date-based name is unavailable                                          |
+| `*.SUM`        | Sidecar ride summary: revolutions, distance, moving/elapsed time, max speed, point count, UTC end |
 
 
-Points are attempted no more frequently than once per second, after the trip starts, when GPS data passes the current checks. Subsequent points also require advancing GPS time and a coordinate change of at least `0.000018°` on either latitude or longitude. That is about 2 m in latitude; it is not a fixed travel-distance threshold.
+Points are attempted no more frequently than once per second while moving, after the trip starts, when GPS data passes the current checks (including u-blox `gnssFixOK`). Stop and resume add endpoint points; drift while parked is not logged. Subsequent moving points also require advancing GPS time and a coordinate change of at least `0.000018°` on either latitude or longitude.
 
-Logging currently does not check wheel movement, so GPS drift can add points while you are stopped.
-
-GPX exports contain coordinates, timestamps and altitude when available. **They do not preserve the wheel-derived ride summary**, so another app's calculated distance and moving time may differ from the device's readings. `TRIP.DAT` is a recovery checkpoint, not a ride archive, and is not offered over Bluetooth.
+GPX exports contain coordinates, timestamps and altitude when available. Wheel-derived totals are stored in the matching `.SUM` sidecar. Checkpoints are for recovery only and are not offered over Bluetooth.
 
 ## Download a ride to your phone
 
 1. Power on OBJECT and keep it near your phone.
-2. Open the [ride-transfer page](https://object.nav-tech.workers.dev).
-3. Tap **Connect**, choose **OBJECT-001**, then select a GPX file.
-4. The page checks the transferred file's CRC before requesting a browser download.
+2. While stopped, **double short-press** the button so the footer shows `Transfer`.
+3. Open the [ride-transfer page](https://object.nav-tech.workers.dev).
+4. Tap **Connect**, choose **OBJECT-001**, then select a GPX file.
+5. The page checks the transferred file's CRC before requesting a browser download.
 
-You can also download `CURRENT.GPX` without finishing the ride. The device sends a snapshot ending at the point where the transfer began. The page's “Recording” badge identifies that filename; it is not a live recording-health indicator.
+You can also download `CURRENT.GPX` without finishing the ride. The device sends a snapshot ending at the point where the transfer began. The page's **Current ride** badge identifies that filename; it is not a live recording-health indicator.
 
 For the documented browser setup, use **Chrome on Android**, or [Bluefy on iPhone](https://apps.apple.com/app/bluefy-web-ble-browser/id1492822185), since Safari does not expose Web Bluetooth. To host your own copy, serve [tools/index.html](tools/index.html) over **HTTPS**.
 
-If a transfer stalls, disconnect and reconnect before trying again. Bluetooth transfers currently have no owner authentication: a nearby compatible client can request tracks while the device is available for connection.
+LIST/GET require an open transfer window on the device. If a transfer stalls, the page aborts the firmware transfer; you can retry while the window is still open.
 
 ## Current limitations
 
-The following were identified in the audit of firmware and transfer-page revision `[1a27ed7](https://github.com/Andrew-Naichuk/OBJECT-CC/tree/1a27ed78a466ce9a5d279100a120422a0dee09fe)`. They are documented here, not fixed by this README update.
-
-
 | Area                | What to know                                                                                                                                        |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Recording health    | SD write failures can leave “Recording” visible. The footer is not proof that new points are being saved.                                           |
-| Power-loss recovery | Replacing the only checkpoint can lose it if power fails during the write. Recent data or saved counters may be lost.                               |
-| Ride summaries      | Wheel stats are not archived separately; a ride without GPS points can be reset without saving anything.                                            |
-| GPS checks          | The parser does not yet honor the receiver's `gnssFixOK` flag. Stationary drift can enter the track.                                                |
-| Ride metrics        | Average speed can spike just after starting. The stop timeout can add stationary time to the moving-time estimate.                                  |
-| Phone transfer      | Timeout and oversized-file handling do not fully cancel transfers. BLE access is unauthenticated. Filename sorting is not reliable ride chronology. |
-| Calendar boundary   | The custom timestamp calculation goes backwards at New Year and can interrupt logging across that boundary.                                         |
 | Battery operation   | GPS supply can fall below its specified minimum. Full-discharge operation and runtime have not been established here.                               |
+| BLE pairing         | Transfer uses a physical button window, not LE Secure Connections bonding. A nearby person cannot list tracks unless the window is open.            |
+| Summary format      | `.SUM` is a plain-text sidecar for this project; third-party GPX apps will not read those wheel stats automatically.                                |
 
 
 ## Firmware

@@ -35,9 +35,10 @@
  *   Hold 4 s while stopped: save the ride and start a new one.
  *
  * BLE file download (no extra wiring):
- *   Advertises as "OBJECT-001". tools/index.html lists root *.GPX files
- *   and saves them on the phone. TRIP.DAT is not offered. Open that page
- *   over HTTPS (Android Chrome, or a Web Bluetooth browser on iPhone).
+ *   Advertises as "OBJECT-001". Double short-press while stopped opens a
+ *   transfer window; tools/index.html then lists root *.GPX files and saves
+ *   them on the phone. Checkpoints (TRIP_A/TRIP_B) are not offered. Open
+ *   that page over HTTPS (Android Chrome, or a Web Bluetooth browser on iPhone).
  *
  * Libraries (Arduino Library Manager):
  *   Adafruit ILI9341, Adafruit GFX Library, Adafruit BusIO
@@ -150,11 +151,18 @@ static const unsigned long GPX_MIN_MS = 1000;
 static const unsigned long TRIP_DAT_MS = 5000;
 // ~2 m of latitude in NAV-PVT 1e-7 deg units.
 static const int32_t GPX_MIN_E7 = 180;
+static const unsigned AVG_MIN_REVS = 5;
+static const unsigned long AVG_MIN_MOVING_MS = 10000;
+static const unsigned long BLE_XFER_WINDOW_MS = 90000;
+static const unsigned long BTN_DOUBLE_MS = 600;
 
 static const char GPX_NAME[] = "CURRENT.GPX";
-static const char DAT_NAME[] = "TRIP.DAT";
+static const char DAT_NAME_A[] = "TRIP_A.DAT";
+static const char DAT_NAME_B[] = "TRIP_B.DAT";
+static const char DAT_NAME_LEGACY[] = "TRIP.DAT";
 static const uint32_t TRIP_MAGIC = 0x50495254UL;  // "TRIP"
-static const uint16_t TRIP_VERSION = 1;
+static const uint16_t TRIP_VERSION = 2;
+static const uint16_t TRIP_VERSION_LEGACY = 1;
 
 static const char GPX_HEADER[] =
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -187,6 +195,7 @@ static unsigned long lastLoopMs = 0;
 static float maxSpeedKmh = 0.0f;
 
 static bool sdReady = false;
+static bool sdWriteOk = true;
 static uint32_t gpxBodyEnd = 0;
 static unsigned long lastGpxMs = 0;
 static unsigned long lastDatMs = 0;
@@ -194,8 +203,18 @@ static unsigned long gpxPointCount = 0;
 static int32_t lastGpxLatE7 = 0;
 static int32_t lastGpxLonE7 = 0;
 static bool lastGpxPosValid = false;
-static uint32_t lastGpxStamp = 0;
+static uint16_t lastGpxYear = 0;
+static uint8_t lastGpxMonth = 0;
+static uint8_t lastGpxDay = 0;
+static uint8_t lastGpxHour = 0;
+static uint8_t lastGpxMinute = 0;
+static uint8_t lastGpxSec = 0;
 static bool lastGpxStampValid = false;
+static bool gpxLogStopped = true;
+static uint32_t tripDatSeq = 0;
+static unsigned long movingSeenRev = 0;
+static unsigned long bleXferWindowUntil = 0;
+static unsigned long btnLastShortMs = 0;
 
 static bool btnSample = false;
 static bool btnHeld = false;
@@ -246,6 +265,7 @@ struct TripDat {
   uint32_t magic;
   uint16_t version;
   uint16_t reserved;
+  uint32_t seq;
   uint32_t revCount;
   uint32_t movingMs;
   uint32_t elapsedMs;
@@ -612,12 +632,13 @@ static void gpsHandleNavPvt(const uint8_t *p, uint16_t len) {
   uint8_t sec = p[10];
   uint8_t validFlags = p[11];
   uint8_t fixType = p[20];
+  uint8_t flags = p[21];
   uint8_t numSV = p[23];
   int32_t lonE7 = leI32(p + 24);
   int32_t latE7 = leI32(p + 28);
   int32_t hMslMm = leI32(p + 36);
-  (void)p[21];
-  bool valid = (fixType >= 2) && (fixType <= 4);
+  // fixType 2..4 plus gnssFixOK (flags bit 0): position meets receiver masks.
+  bool valid = (fixType >= 2) && (fixType <= 4) && ((flags & 0x01) != 0);
   gps.ubxOk++;
   gps.fixType = fixType;
   gpsApplyFix(valid, true, numSV, valid, (float)hMslMm / 1000.0f, "UBX");
@@ -789,39 +810,30 @@ static void formatE7(int32_t e7, char *buf, size_t buflen) {
   }
 }
 
-static bool tripDatSave(uint32_t revCount, uint32_t elapsedMsNow) {
-  if (!sdReady) {
-    return false;
+static void sdNoteWrite(bool ok) {
+  if (ok) {
+    sdWriteOk = true;
+  } else {
+    sdWriteOk = false;
   }
-
-  TripDat d;
-  memset(&d, 0, sizeof(d));
-  d.magic = TRIP_MAGIC;
-  d.version = TRIP_VERSION;
-  d.revCount = revCount;
-  d.movingMs = (uint32_t)movingMs;
-  d.elapsedMs = elapsedMsNow;
-  d.maxSpeedKmh = maxSpeedKmh;
-  d.gpxBodyEnd = gpxBodyEnd;
-  d.crc = crc32((const uint8_t *)&d, offsetof(TripDat, crc));
-
-  gpsDrain();
-  File32 f;
-  if (!f.open(DAT_NAME, O_RDWR | O_CREAT | O_TRUNC)) {
-    gpsDrain();
-    return false;
-  }
-  bool ok = f.write(&d, sizeof(d)) == sizeof(d);
-  f.flush();
-  f.close();
-  gpsDrain();
-  lastDatMs = millis();
-  return ok;
 }
 
-static bool tripDatLoad(TripDat *out) {
+static bool sdFileSync(File32 &f) {
+  // flush() pushes the cache; sync() also updates the directory entry.
+  f.flush();
+  return f.sync();
+}
+
+static bool tripDatValidate(const TripDat *d, uint16_t expectVersion) {
+  if (d->magic != TRIP_MAGIC || d->version != expectVersion) {
+    return false;
+  }
+  return crc32((const uint8_t *)d, offsetof(TripDat, crc)) == d->crc;
+}
+
+static bool tripDatLoadSlot(const char *name, TripDat *out) {
   File32 f;
-  if (!f.open(DAT_NAME, O_RDONLY)) {
+  if (!f.open(name, O_RDONLY)) {
     return false;
   }
   TripDat d;
@@ -830,24 +842,172 @@ static bool tripDatLoad(TripDat *out) {
   if (n != (int)sizeof(d)) {
     return false;
   }
-  if (d.magic != TRIP_MAGIC || d.version != TRIP_VERSION) {
-    return false;
-  }
-  if (crc32((const uint8_t *)&d, offsetof(TripDat, crc)) != d.crc) {
+  if (!tripDatValidate(&d, TRIP_VERSION)) {
     return false;
   }
   *out = d;
   return true;
 }
 
-static uint32_t gpxTimeStamp() {
-  uint32_t days = (uint32_t)(gps.year - 2020) * 366u
-                  + (uint32_t)gps.month * 31u
-                  + (uint32_t)gps.day;
-  uint32_t tod = (uint32_t)gps.hour * 3600u
-                 + (uint32_t)gps.minute * 60u
-                 + (uint32_t)gps.sec;
-  return days * 86400u + tod;
+// One-shot migration from the old single-file O_TRUNC checkpoint.
+static bool tripDatLoadLegacy(TripDat *out) {
+  File32 f;
+  if (!f.open(DAT_NAME_LEGACY, O_RDONLY)) {
+    return false;
+  }
+#pragma pack(push, 1)
+  struct TripDatV1 {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t reserved;
+    uint32_t revCount;
+    uint32_t movingMs;
+    uint32_t elapsedMs;
+    float maxSpeedKmh;
+    uint32_t gpxBodyEnd;
+    uint32_t crc;
+  } v1;
+#pragma pack(pop)
+  int n = f.read(&v1, sizeof(v1));
+  f.close();
+  if (n != (int)sizeof(v1)) {
+    return false;
+  }
+  if (v1.magic != TRIP_MAGIC || v1.version != TRIP_VERSION_LEGACY) {
+    return false;
+  }
+  if (crc32((const uint8_t *)&v1, offsetof(TripDatV1, crc)) != v1.crc) {
+    return false;
+  }
+  memset(out, 0, sizeof(*out));
+  out->magic = TRIP_MAGIC;
+  out->version = TRIP_VERSION;
+  out->seq = 1;
+  out->revCount = v1.revCount;
+  out->movingMs = v1.movingMs;
+  out->elapsedMs = v1.elapsedMs;
+  out->maxSpeedKmh = v1.maxSpeedKmh;
+  out->gpxBodyEnd = v1.gpxBodyEnd;
+  out->crc = crc32((const uint8_t *)out, offsetof(TripDat, crc));
+  return true;
+}
+
+static bool tripDatLoad(TripDat *out) {
+  TripDat a;
+  TripDat b;
+  bool ha = tripDatLoadSlot(DAT_NAME_A, &a);
+  bool hb = tripDatLoadSlot(DAT_NAME_B, &b);
+  if (ha && hb) {
+    *out = (a.seq >= b.seq) ? a : b;
+    return true;
+  }
+  if (ha) {
+    *out = a;
+    return true;
+  }
+  if (hb) {
+    *out = b;
+    return true;
+  }
+  if (tripDatLoadLegacy(out)) {
+    Serial.println("SD migrated legacy TRIP.DAT");
+    return true;
+  }
+  return false;
+}
+
+static bool tripDatSave(uint32_t revCount, uint32_t elapsedMsNow) {
+  if (!sdReady) {
+    return false;
+  }
+
+  uint32_t nextSeq = tripDatSeq + 1u;
+  if (nextSeq == 0) {
+    nextSeq = 1;
+  }
+
+  TripDat d;
+  memset(&d, 0, sizeof(d));
+  d.magic = TRIP_MAGIC;
+  d.version = TRIP_VERSION;
+  d.seq = nextSeq;
+  d.revCount = revCount;
+  d.movingMs = (uint32_t)movingMs;
+  d.elapsedMs = elapsedMsNow;
+  d.maxSpeedKmh = maxSpeedKmh;
+  d.gpxBodyEnd = gpxBodyEnd;
+  d.crc = crc32((const uint8_t *)&d, offsetof(TripDat, crc));
+
+  // Alternate slots so a torn write cannot destroy the last good checkpoint.
+  const char *name = (nextSeq & 1u) ? DAT_NAME_A : DAT_NAME_B;
+
+  gpsDrain();
+  File32 f;
+  if (!f.open(name, O_RDWR | O_CREAT | O_TRUNC)) {
+    gpsDrain();
+    sdNoteWrite(false);
+    return false;
+  }
+  bool ok = f.write(&d, sizeof(d)) == sizeof(d);
+  if (ok) {
+    ok = sdFileSync(f);
+  }
+  f.close();
+  gpsDrain();
+  if (ok) {
+    tripDatSeq = nextSeq;
+    lastDatMs = millis();
+    // Best-effort cleanup of the pre-A/B single file.
+    if (sd.exists(DAT_NAME_LEGACY)) {
+      sd.remove(DAT_NAME_LEGACY);
+    }
+  }
+  sdNoteWrite(ok);
+  return ok;
+}
+
+static int gpsTimeCmp(uint16_t y1, uint8_t mo1, uint8_t d1,
+                      uint8_t h1, uint8_t mi1, uint8_t s1,
+                      uint16_t y2, uint8_t mo2, uint8_t d2,
+                      uint8_t h2, uint8_t mi2, uint8_t s2) {
+  if (y1 != y2) {
+    return (y1 < y2) ? -1 : 1;
+  }
+  if (mo1 != mo2) {
+    return (mo1 < mo2) ? -1 : 1;
+  }
+  if (d1 != d2) {
+    return (d1 < d2) ? -1 : 1;
+  }
+  if (h1 != h2) {
+    return (h1 < h2) ? -1 : 1;
+  }
+  if (mi1 != mi2) {
+    return (mi1 < mi2) ? -1 : 1;
+  }
+  if (s1 != s2) {
+    return (s1 < s2) ? -1 : 1;
+  }
+  return 0;
+}
+
+static bool gpsTimeAdvanced() {
+  if (!lastGpxStampValid) {
+    return true;
+  }
+  return gpsTimeCmp(gps.year, gps.month, gps.day, gps.hour, gps.minute, gps.sec,
+                    lastGpxYear, lastGpxMonth, lastGpxDay,
+                    lastGpxHour, lastGpxMinute, lastGpxSec) > 0;
+}
+
+static void gpxNoteStamp() {
+  lastGpxYear = gps.year;
+  lastGpxMonth = gps.month;
+  lastGpxDay = gps.day;
+  lastGpxHour = gps.hour;
+  lastGpxMinute = gps.minute;
+  lastGpxSec = gps.sec;
+  lastGpxStampValid = true;
 }
 
 static bool gpxWriteHeader() {
@@ -863,8 +1023,105 @@ static bool gpxWriteHeader() {
   if (gpxFile.write(GPX_FOOTER, fsz) != fsz) {
     return false;
   }
-  gpxFile.flush();
+  return sdFileSync(gpxFile);
+}
+
+// Prefer the last complete </trkpt> over size-minus-footer (which can leave a tear).
+static bool gpxRecoverBodyEnd(uint32_t *outEnd) {
+  uint32_t sz = (uint32_t)gpxFile.fileSize();
+  size_t headerLen = strlen(GPX_HEADER);
+  if (sz <= headerLen) {
+    *outEnd = (uint32_t)headerLen;
+    return sz >= headerLen;
+  }
+
+  const char marker[] = "</trkpt>";
+  const size_t markerLen = sizeof(marker) - 1;
+  const size_t chunkMax = 2048;
+  uint8_t buf[2048];
+  uint32_t best = 0;
+  uint32_t pos = (sz > chunkMax) ? (sz - (uint32_t)chunkMax) : 0;
+  // Walk overlapping windows from the start of the last 8 KiB toward EOF.
+  uint32_t scanFrom = (sz > 8192u) ? (sz - 8192u) : 0;
+  pos = scanFrom;
+  while (pos < sz) {
+    uint32_t want = sz - pos;
+    if (want > chunkMax) {
+      want = (uint32_t)chunkMax;
+    }
+    if (!gpxFile.seekSet(pos)) {
+      return false;
+    }
+    int n = gpxFile.read(buf, want);
+    if (n <= 0) {
+      break;
+    }
+    for (int i = 0; i + (int)markerLen <= n; i++) {
+      if (memcmp(buf + i, marker, markerLen) == 0) {
+        uint32_t end = pos + (uint32_t)i + (uint32_t)markerLen;
+        // Optional trailing newline after the tag.
+        if (i + (int)markerLen < n && buf[i + (int)markerLen] == '\n') {
+          end++;
+        } else if (end < sz) {
+          // Peek one byte if the newline fell outside this read.
+          uint8_t nl = 0;
+          if (gpxFile.seekSet(end) && gpxFile.read(&nl, 1) == 1 && nl == '\n') {
+            end++;
+          }
+        }
+        if (end > best) {
+          best = end;
+        }
+      }
+    }
+    if (want < chunkMax) {
+      break;
+    }
+    // Overlap so a marker straddling the boundary is not missed.
+    pos += (uint32_t)chunkMax - (uint32_t)markerLen;
+  }
+
+  if (best >= headerLen) {
+    *outEnd = best;
+    return true;
+  }
+  *outEnd = (uint32_t)headerLen;
   return true;
+}
+
+static bool gpxBodyEndLooksComplete(uint32_t bodyEnd) {
+  size_t headerLen = strlen(GPX_HEADER);
+  if (bodyEnd == headerLen) {
+    return true;
+  }
+  if (bodyEnd < headerLen + 8) {
+    return false;
+  }
+  const char marker[] = "</trkpt>";
+  const size_t markerLen = sizeof(marker) - 1;
+  uint8_t tail[16];
+  uint32_t from = bodyEnd - (uint32_t)markerLen;
+  // Allow an optional '\n' after the marker.
+  if (bodyEnd >= headerLen + markerLen + 1) {
+    from = bodyEnd - (uint32_t)markerLen - 1;
+  }
+  if (!gpxFile.seekSet(from)) {
+    return false;
+  }
+  int n = gpxFile.read(tail, sizeof(tail));
+  if (n < (int)markerLen) {
+    return false;
+  }
+  for (int i = 0; i + (int)markerLen <= n; i++) {
+    if (memcmp(tail + i, marker, markerLen) == 0) {
+      uint32_t end = from + (uint32_t)i + (uint32_t)markerLen;
+      if (i + (int)markerLen < n && tail[i + (int)markerLen] == '\n') {
+        end++;
+      }
+      return end == bodyEnd;
+    }
+  }
+  return false;
 }
 
 static bool gpxOpenOrCreate() {
@@ -879,21 +1136,28 @@ static bool gpxOpenOrCreate() {
   if (sz == 0) {
     if (!gpxWriteHeader()) {
       Serial.println("SD GPX header write failed");
+      sdNoteWrite(false);
       return false;
     }
+    sdNoteWrite(true);
     Serial.println("SD new CURRENT.GPX");
     return true;
   }
-  if (gpxBodyEnd == 0 || gpxBodyEnd > sz) {
-    size_t foot = strlen(GPX_FOOTER);
-    if (sz > foot) {
-      gpxBodyEnd = sz - (uint32_t)foot;
-    } else {
-      if (!gpxWriteHeader()) {
-        return false;
-      }
+
+  size_t headerLen = strlen(GPX_HEADER);
+  bool bodyOk = (gpxBodyEnd >= headerLen && gpxBodyEnd <= sz &&
+                 gpxBodyEndLooksComplete(gpxBodyEnd));
+  if (!bodyOk) {
+    uint32_t recovered = 0;
+    if (!gpxRecoverBodyEnd(&recovered)) {
+      Serial.println("SD GPX recover failed");
+      return false;
     }
+    gpxBodyEnd = recovered;
+    Serial.print("SD CURRENT.GPX recovered bodyEnd=");
+    Serial.println(gpxBodyEnd);
   }
+
   Serial.print("SD CURRENT.GPX bodyEnd=");
   Serial.println(gpxBodyEnd);
   return true;
@@ -910,23 +1174,29 @@ static bool gpxFinalize() {
   gpsDrain();
   if (!gpxFile.seekSet(gpxBodyEnd)) {
     gpsDrain();
+    sdNoteWrite(false);
     return false;
   }
   size_t fsz = strlen(GPX_FOOTER);
   if (gpxFile.write(GPX_FOOTER, fsz) != fsz) {
     gpsDrain();
+    sdNoteWrite(false);
     return false;
   }
   uint32_t finalSize = gpxBodyEnd + (uint32_t)fsz;
   if (!gpxFile.truncate(finalSize)) {
     gpsDrain();
+    sdNoteWrite(false);
     return false;
   }
-  gpxFile.flush();
+  bool ok = sdFileSync(gpxFile);
   gpsDrain();
-  Serial.print("SD GPX finalized size=");
-  Serial.println(finalSize);
-  return true;
+  sdNoteWrite(ok);
+  if (ok) {
+    Serial.print("SD GPX finalized size=");
+    Serial.println(finalSize);
+  }
+  return ok;
 }
 
 static bool gpxAppendPoint() {
@@ -963,55 +1233,97 @@ static bool gpxAppendPoint() {
   gpsDrain();
   if (!gpxFile.seekSet(gpxBodyEnd)) {
     gpsDrain();
+    sdNoteWrite(false);
     return false;
   }
   if (gpxFile.write(line, (size_t)n) != (size_t)n) {
     gpsDrain();
+    sdNoteWrite(false);
     return false;
   }
-  gpxBodyEnd = (uint32_t)gpxFile.curPosition();
+  uint32_t newBody = (uint32_t)gpxFile.curPosition();
   size_t fsz = strlen(GPX_FOOTER);
   bool ok = gpxFile.write(GPX_FOOTER, fsz) == fsz;
-  gpxFile.flush();
+  if (ok) {
+    ok = sdFileSync(gpxFile);
+  }
   gpsDrain();
   if (ok) {
+    gpxBodyEnd = newBody;
     gpxPointCount++;
     lastGpxLatE7 = gps.latE7;
     lastGpxLonE7 = gps.lonE7;
     lastGpxPosValid = true;
-    lastGpxStamp = gpxTimeStamp();
-    lastGpxStampValid = true;
+    gpxNoteStamp();
   }
+  sdNoteWrite(ok);
   return ok;
 }
 
-static void tripLogGps(unsigned long now, uint32_t revCount, uint32_t elapsedMsNow) {
+static bool bleXferWindowOpen(unsigned long now) {
+  return bleXferWindowUntil != 0 && (long)(now - bleXferWindowUntil) < 0;
+}
+
+static void bleArmXferWindow(unsigned long now) {
+  bleXferWindowUntil = now + BLE_XFER_WINDOW_MS;
+}
+
+static void bleCloseXferWindow() {
+  bleXferWindowUntil = 0;
+}
+
+static void tripLogGps(unsigned long now, uint32_t revCount, uint32_t elapsedMsNow,
+                       unsigned long lastPulseMs) {
   if (!sdReady || !tripStarted || !gpsIsLive(now) || !gps.posKnown || !gps.timeKnown) {
     return;
   }
-  if (now - lastGpxMs < GPX_MIN_MS) {
-    return;
-  }
-  if (lastGpxPosValid) {
-    int32_t dlat = gps.latE7 - lastGpxLatE7;
-    int32_t dlon = gps.lonE7 - lastGpxLonE7;
-    if (dlat < 0) {
-      dlat = -dlat;
-    }
-    if (dlon < 0) {
-      dlon = -dlon;
-    }
-    if (dlat < GPX_MIN_E7 && dlon < GPX_MIN_E7) {
+
+  bool stopped = (lastPulseMs == 0) || ((now - lastPulseMs) >= STOPPED_MS);
+  bool forceEndpoint = false;
+
+  if (stopped) {
+    if (gpxLogStopped) {
       return;
     }
+    forceEndpoint = true;
+  } else {
+    if (gpxLogStopped) {
+      forceEndpoint = true;
+    }
   }
-  if (lastGpxStampValid && gpxTimeStamp() <= lastGpxStamp) {
+
+  if (!forceEndpoint) {
+    if (now - lastGpxMs < GPX_MIN_MS) {
+      return;
+    }
+    if (lastGpxPosValid) {
+      int32_t dlat = gps.latE7 - lastGpxLatE7;
+      int32_t dlon = gps.lonE7 - lastGpxLonE7;
+      if (dlat < 0) {
+        dlat = -dlat;
+      }
+      if (dlon < 0) {
+        dlon = -dlon;
+      }
+      if (dlat < GPX_MIN_E7 && dlon < GPX_MIN_E7) {
+        return;
+      }
+    }
+  } else if (now - lastGpxMs < 200) {
+    // Avoid double-writing stop/resume within the same blink of an eye.
     return;
   }
-  lastGpxMs = now;
+
+  if (!gpsTimeAdvanced()) {
+    return;
+  }
+
   if (gpxAppendPoint()) {
+    lastGpxMs = now;
+    gpxLogStopped = stopped;
     tripDatSave(revCount, elapsedMsNow);
   }
+  // On failure leave lastGpxMs / gpxLogStopped alone so the next loop can retry.
 }
 
 static void tripMaybeSave(unsigned long now, uint32_t revCount, uint32_t elapsedMsNow) {
@@ -1029,17 +1341,19 @@ static const char *tripResumeSd() {
   bool haveDat = tripDatLoad(&d);
   if (haveDat) {
     gpxBodyEnd = d.gpxBodyEnd;
+    tripDatSeq = d.seq;
   }
 
   if (!gpxOpenOrCreate()) {
     sdReady = false;
+    sdWriteOk = false;
     gpxFile.close();
     return "No card";
   }
 
   if (!haveDat) {
     tripDatSave(0, 0);
-    Serial.println("SD new TRIP.DAT");
+    Serial.println("SD new trip checkpoint");
     return "Card ready";
   }
 
@@ -1049,6 +1363,7 @@ static const char *tripResumeSd() {
   g_prevPulseMs = 0;
   interrupts();
   movingMs = d.movingMs;
+  movingSeenRev = d.revCount;
   // Drop a previously saved noise spike so resume does not keep 200+ km/h Max.
   maxSpeedKmh = (d.maxSpeedKmh > 0.0f && d.maxSpeedKmh <= MAX_SPEED_KMH)
                     ? d.maxSpeedKmh
@@ -1058,6 +1373,7 @@ static const char *tripResumeSd() {
     elapsedBaseMs = d.elapsedMs;
     elapsedAnchorMs = millis();
   }
+  gpxLogStopped = true;
 
   Serial.print("SD resume revs=");
   Serial.print(d.revCount);
@@ -1081,6 +1397,7 @@ static void tripResetRam() {
   elapsedBaseMs = 0;
   elapsedAnchorMs = 0;
   movingMs = 0;
+  movingSeenRev = 0;
   maxSpeedKmh = 0.0f;
   lastGpxMs = 0;
   lastDatMs = 0;
@@ -1088,8 +1405,79 @@ static void tripResetRam() {
   lastGpxLatE7 = 0;
   lastGpxLonE7 = 0;
   lastGpxPosValid = false;
-  lastGpxStamp = 0;
   lastGpxStampValid = false;
+  gpxLogStopped = true;
+}
+
+static void sumStemFromGpx(const char *gpxName, char *stem, size_t stemLen) {
+  stem[0] = '\0';
+  if (!gpxName || stemLen < 2) {
+    return;
+  }
+  const char *dot = strrchr(gpxName, '.');
+  size_t n = dot ? (size_t)(dot - gpxName) : strlen(gpxName);
+  if (n >= stemLen) {
+    n = stemLen - 1;
+  }
+  memcpy(stem, gpxName, n);
+  stem[n] = '\0';
+}
+
+static bool tripWriteSummary(const char *gpxName, uint32_t revCount,
+                             uint32_t elapsedMsNow, unsigned long points) {
+  char stem[9];
+  sumStemFromGpx(gpxName, stem, sizeof(stem));
+  if (stem[0] == '\0') {
+    return false;
+  }
+  char sumName[13];
+  snprintf(sumName, sizeof(sumName), "%s.SUM", stem);
+
+  float distanceM = (revCount * WHEEL_CIRC_MM) / 1000.0f;
+  char body[256];
+  int n = snprintf(body, sizeof(body),
+                   "rev=%lu\n"
+                   "distance_m=%.1f\n"
+                   "moving_ms=%lu\n"
+                   "elapsed_ms=%lu\n"
+                   "max_kmh=%.2f\n"
+                   "points=%lu\n"
+                   "end=%04u-%02u-%02uT%02u:%02u:%02uZ\n",
+                   (unsigned long)revCount,
+                   (double)distanceM,
+                   (unsigned long)movingMs,
+                   (unsigned long)elapsedMsNow,
+                   (double)maxSpeedKmh,
+                   (unsigned long)points,
+                   gps.timeKnown ? (unsigned)gps.year : 0u,
+                   gps.timeKnown ? (unsigned)gps.month : 0u,
+                   gps.timeKnown ? (unsigned)gps.day : 0u,
+                   gps.timeKnown ? (unsigned)gps.hour : 0u,
+                   gps.timeKnown ? (unsigned)gps.minute : 0u,
+                   gps.timeKnown ? (unsigned)gps.sec : 0u);
+  if (n <= 0 || n >= (int)sizeof(body)) {
+    return false;
+  }
+
+  gpsDrain();
+  File32 f;
+  if (!f.open(sumName, O_RDWR | O_CREAT | O_TRUNC)) {
+    gpsDrain();
+    sdNoteWrite(false);
+    return false;
+  }
+  bool ok = f.write(body, (size_t)n) == (size_t)n;
+  if (ok) {
+    ok = sdFileSync(f);
+  }
+  f.close();
+  gpsDrain();
+  sdNoteWrite(ok);
+  if (ok) {
+    Serial.print("SD wrote ");
+    Serial.println(sumName);
+  }
+  return ok;
 }
 
 static bool tripPickArchiveName(char *buf, size_t buflen) {
@@ -1101,11 +1489,13 @@ static bool tripPickArchiveName(char *buf, size_t buflen) {
     unsigned yy = (unsigned)(gps.year % 100);
     unsigned mo = (unsigned)gps.month;
     unsigned dd = (unsigned)gps.day;
-    snprintf(buf, buflen, "%02u%02u%02u%02u.GPX", yy, mo, dd, (unsigned)gps.hour);
+    unsigned hh = (unsigned)gps.hour;
+    snprintf(buf, buflen, "%02u%02u%02u%02u.GPX", yy, mo, dd, hh);
     if (!sd.exists(buf)) {
       return true;
     }
-    for (unsigned seq = 0; seq < 100; seq++) {
+    // Hours are 00-23; 24-99 are collision sequence slots (not clock hours).
+    for (unsigned seq = 24; seq < 100; seq++) {
       snprintf(buf, buflen, "%02u%02u%02u%02u.GPX", yy, mo, dd, seq);
       if (!sd.exists(buf)) {
         return true;
@@ -1125,17 +1515,29 @@ static bool tripPickArchiveName(char *buf, size_t buflen) {
   return false;
 }
 
-// NEW_RIDE_SAVED / NEW_RIDE_RESET (no card) / NEW_RIDE_FAIL (keep RAM).
+// NEW_RIDE_SAVED / NEW_RIDE_NO_GPS / NEW_RIDE_RESET / NEW_RIDE_FAIL.
 enum {
   NEW_RIDE_FAIL = 0,
   NEW_RIDE_RESET,
-  NEW_RIDE_SAVED
+  NEW_RIDE_SAVED,
+  NEW_RIDE_NO_GPS
 };
 
 static void bleStopForNewRide();
 
 static int tripStartNewRide() {
   bleStopForNewRide();
+  bleCloseXferWindow();
+
+  noInterrupts();
+  uint32_t revSnap = (uint32_t)g_revCount;
+  interrupts();
+  unsigned long elapsedSnap = 0;
+  if (tripStarted) {
+    elapsedSnap = elapsedBaseMs + (millis() - elapsedAnchorMs);
+  }
+  unsigned long pointsSnap = gpxPointCount;
+
   if (!sdReady) {
     tripResetRam();
     gpxBodyEnd = 0;
@@ -1153,8 +1555,9 @@ static int tripStartNewRide() {
   gpxFile.close();
   gpsDrain();
 
+  char dest[13];
+  dest[0] = '\0';
   if (hasPoints) {
-    char dest[13];
     if (!tripPickArchiveName(dest, sizeof(dest))) {
       Serial.println("SD archive name failed");
       if (!gpxOpenOrCreate()) {
@@ -1176,8 +1579,15 @@ static int tripStartNewRide() {
     gpsDrain();
     Serial.print("SD archived ");
     Serial.println(dest);
+    tripWriteSummary(dest, revSnap, (uint32_t)elapsedSnap, pointsSnap);
   } else {
     Serial.println("SD empty GPX — skip archive");
+    if (revSnap > 0) {
+      char sumDest[13];
+      if (tripPickArchiveName(sumDest, sizeof(sumDest))) {
+        tripWriteSummary(sumDest, revSnap, (uint32_t)elapsedSnap, 0);
+      }
+    }
   }
 
   gpxBodyEnd = 0;
@@ -1192,8 +1602,10 @@ static int tripStartNewRide() {
     if (!gpxWriteHeader()) {
       gpsDrain();
       Serial.println("SD CURRENT.GPX header reset failed");
+      sdNoteWrite(false);
       return NEW_RIDE_FAIL;
     }
+    sdNoteWrite(true);
     gpsDrain();
   } else if (!gpxOpenOrCreate()) {
     sdReady = false;
@@ -1203,9 +1615,9 @@ static int tripStartNewRide() {
 
   tripResetRam();
   if (!tripDatSave(0, 0)) {
-    Serial.println("SD TRIP.DAT reset failed — GPX archived, stats cleared");
+    Serial.println("SD checkpoint reset failed — archive kept, stats cleared");
   }
-  return NEW_RIDE_SAVED;
+  return hasPoints ? NEW_RIDE_SAVED : NEW_RIDE_NO_GPS;
 }
 
 static bool bikeStopped(unsigned long now, unsigned long lastPulseMs) {
@@ -1273,6 +1685,8 @@ static void btnHandle(unsigned long now, unsigned long lastPulseMs) {
     int result = tripStartNewRide();
     if (result == NEW_RIDE_SAVED) {
       btnFlash("Ride saved", now);
+    } else if (result == NEW_RIDE_NO_GPS) {
+      btnFlash("No GPS track", now);
     } else if (result == NEW_RIDE_RESET) {
       btnFlash("Stats reset", now);
     } else {
@@ -1282,12 +1696,22 @@ static void btnHandle(unsigned long now, unsigned long lastPulseMs) {
 
   // Release before the new-ride countdown starts. A cancelled hold, or a
   // hold that already saved the ride, leaves the backlight alone.
+  // Double short-press while stopped opens the BLE transfer window.
   if (btnReleased) {
     bool didExec = btnReleaseDidExec;
     unsigned long held = btnReleasedHeldMs;
     btnReleased = false;
     if (!didExec && held < BTN_ARM_MS) {
-      backlightNext();
+      if (stopped && btnLastShortMs != 0 &&
+          (now - btnLastShortMs) <= BTN_DOUBLE_MS) {
+        btnLastShortMs = 0;
+        bleArmXferWindow(now);
+        btnFlash("Transfer on", now);
+        Serial.println("BLE transfer window armed");
+      } else {
+        btnLastShortMs = now;
+        backlightNext();
+      }
     }
   }
 }
@@ -1303,7 +1727,10 @@ static void sdBeginShared() {
   sdReady = sd.begin(cfg);
   gpsDrain();
   if (!sdReady) {
+    sdWriteOk = false;
     Serial.println("SD begin failed — riding without log");
+  } else {
+    sdWriteOk = true;
   }
 }
 
@@ -1817,6 +2244,10 @@ static void paintFooter(unsigned long now) {
 
   if (!sdReady) {
     drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSansBold9pt7b, "", "No card", MARK_ALERT, COL_FG);
+  } else if (!sdWriteOk) {
+    drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSansBold9pt7b, "", "Write failed", MARK_ALERT, COL_FG);
+  } else if (bleXferWindowOpen(now)) {
+    drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSans9pt7b, "", "Transfer", MARK_PILL, COL_FG);
   } else if (blePhoneConnected()) {
     drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSans9pt7b, "", "Phone", MARK_DOT, COL_FG);
   } else if (tripStarted && live && gps.posKnown && gps.timeKnown) {
@@ -1827,8 +2258,8 @@ static void paintFooter(unsigned long now) {
 }
 
 static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
-                           float maxKmh, unsigned long elapsedMs, unsigned long moveMs,
-                           unsigned long now) {
+                           bool avgValid, float maxKmh, unsigned long elapsedMs,
+                           unsigned long moveMs, unsigned long now) {
   ensureChrome();
 
   char buf[24];
@@ -1859,8 +2290,10 @@ static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
   } else {
     if (sending) {
       snprintf(right, sizeof(right), "Sending %u%%", (unsigned)sendPct);
-    } else {
+    } else if (avgValid) {
       snprintf(right, sizeof(right), "Avg %.1f", (double)avgSpeedKmh);
+    } else {
+      snprintf(right, sizeof(right), "Avg --");
     }
     drawSlot(SLOT_CAPTION, &txtCaption, &FreeSans9pt7b, "km/h", right, MARK_NONE, COL_DIM);
   }
@@ -1938,7 +2371,8 @@ enum {
   BLE_ERR_NAME = 2,
   BLE_ERR_NOT_FOUND = 3,
   BLE_ERR_IO = 4,
-  BLE_ERR_ABORT = 5
+  BLE_ERR_ABORT = 5,
+  BLE_ERR_LOCKED = 6
 };
 
 enum {
@@ -2282,10 +2716,17 @@ static bool blePumpSend() {
 static void bleBeginList() {
   bleResetXfer();
   bleErrorPending = 0;
+  if (!bleXferWindowOpen(millis())) {
+    bleQueueError(BLE_ERR_LOCKED);
+    Serial.println("BLE list denied — transfer window closed");
+    return;
+  }
   if (!sdReady) {
     bleQueueError(BLE_ERR_NO_SD);
     return;
   }
+  // Activity extends the owner-approved window.
+  bleArmXferWindow(millis());
   bleJob = BLE_JOB_LIST;
   Serial.println("BLE list");
 }
@@ -2294,6 +2735,11 @@ static void bleBeginGet(const char *rawName) {
   char name[13];
   if (!bleNormalizeGpx(rawName, name, sizeof(name))) {
     bleQueueError(BLE_ERR_NAME);
+    return;
+  }
+  if (!bleXferWindowOpen(millis())) {
+    bleQueueError(BLE_ERR_LOCKED);
+    Serial.println("BLE get denied — transfer window closed");
     return;
   }
   if (!sdReady) {
@@ -2317,6 +2763,7 @@ static void bleBeginGet(const char *rawName) {
   bleCrc = 0xFFFFFFFFUL;
   bleOffset = 0;
   bleStartSent = false;
+  bleArmXferWindow(millis());
   bleJob = BLE_JOB_SEND;
   Serial.print("BLE get ");
   Serial.print(name);
@@ -2447,6 +2894,7 @@ static void bleOnDisconnect(uint16_t conn_hdl, uint8_t reason) {
   (void)conn_hdl;
   (void)reason;
   bleLinkLost = 1;
+  // Keep the physical transfer window so the owner can reconnect within it.
 }
 
 static void bleStart() {
@@ -2593,9 +3041,15 @@ void loop() {
     elapsedAnchorMs = lastPulseMs;
   }
 
-  unsigned long loopDt = now - lastLoopMs;
-  if (speedKmh > 0.0f) {
-    movingMs += loopDt;
+  // Moving time from pulse intervals (aligned with distance), not loopDt.
+  if (revCount > movingSeenRev) {
+    if (revCount >= 2 && prevPulseMs != 0) {
+      unsigned long dtMs = lastPulseMs - prevPulseMs;
+      if (dtMs >= MIN_REV_MS && dtMs < STOPPED_MS) {
+        movingMs += dtMs;
+      }
+    }
+    movingSeenRev = revCount;
   }
   lastLoopMs = now;
 
@@ -2605,7 +3059,8 @@ void loop() {
 
   // Avg = distance / moving time (stops do not dilute Avg).
   float avgSpeedKmh = 0.0f;
-  if (movingMs > 0) {
+  bool avgValid = (revCount >= AVG_MIN_REVS) && (movingMs >= AVG_MIN_MOVING_MS);
+  if (avgValid) {
     avgSpeedKmh = distanceKm / (movingMs / 3600000.0f);
   }
 
@@ -2614,10 +3069,11 @@ void loop() {
     elapsedMs = elapsedBaseMs + (now - elapsedAnchorMs);
   }
 
-  tripLogGps(now, (uint32_t)revCount, (uint32_t)elapsedMs);
+  tripLogGps(now, (uint32_t)revCount, (uint32_t)elapsedMs, lastPulseMs);
   tripMaybeSave(now, (uint32_t)revCount, (uint32_t)elapsedMs);
 
-  drawRideScreen(speedKmh, distanceKm, avgSpeedKmh, maxSpeedKmh, elapsedMs, movingMs, now);
+  drawRideScreen(speedKmh, distanceKm, avgSpeedKmh, avgValid, maxSpeedKmh,
+                 elapsedMs, movingMs, now);
   gpsDrain();
 
   digitalWrite(LED_BUILTIN, (speedKmh > 0.05f) ? LOW : HIGH);
