@@ -1,0 +1,226 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 720" width="1100" height="720" role="img" aria-labelledby="title desc">
+  <title id="title">OBJECT cycling computer ? principal schematic</title>
+  <desc id="desc">Electrical schematic connecting Seeed XIAO nRF52840 Sense to ILI9341 TFT with microSD, reed switch, tact button, and HGLRC M100 Pro GPS.</desc>
+
+  <defs>
+    <style type="text/css"><![CDATA[
+      .bg { fill: #ffffff; }
+      .box { fill: #fafafa; stroke: #111111; stroke-width: 1.5; }
+      .wire { fill: none; stroke: #111111; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+      .rail { fill: none; stroke: #111111; stroke-width: 1.8; }
+      .sym { fill: none; stroke: #111111; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+      .pin { fill: #111111; }
+      .junc { fill: #111111; }
+      .label { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; fill: #111111; }
+      .label-sm { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px; fill: #333333; }
+      .title { font-family: -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 600; fill: #111111; }
+      .subtitle { font-family: -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif; font-size: 11px; fill: #555555; }
+      .ref { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; font-weight: 700; fill: #111111; }
+      .val { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px; fill: #333333; }
+      .note { font-family: -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif; font-size: 10px; fill: #555555; }
+    ]]></style>
+  </defs>
+
+  <rect class="bg" width="1100" height="720"/>
+
+  <!-- Title block -->
+  <text class="title" x="24" y="28">OBJECT ? principal schematic</text>
+  <text class="subtitle" x="24" y="46">Seeed XIAO nRF52840 Sense ? ILI9341 3.2 in SPI TFT + microSD ? HGLRC M100 Pro ? reed ? button</text>
+  <text class="subtitle" x="980" y="28">Rev A</text>
+  <text class="subtitle" x="960" y="46">3.3 V logic</text>
+
+  <!-- Power rails -->
+  <line class="rail" x1="40" y1="80" x2="1060" y2="80"/>
+  <text class="ref" x="40" y="72">+5V</text>
+  <line class="rail" x1="40" y1="100" x2="1060" y2="100"/>
+  <text class="ref" x="40" y="94">+3V3</text>
+  <line class="rail" x1="40" y1="680" x2="1060" y2="680"/>
+
+  <!-- GND earth symbol -->
+  <g transform="translate(60,680)">
+    <line class="sym" x1="0" y1="0" x2="0" y2="8"/>
+    <line class="sym" x1="-10" y1="8" x2="10" y2="8"/>
+    <line class="sym" x1="-6" y1="12" x2="6" y2="12"/>
+    <line class="sym" x1="-2" y1="16" x2="2" y2="16"/>
+  </g>
+  <text class="ref" x="78" y="694">GND</text>
+
+  <!-- ========== U1 XIAO ========== -->
+  <rect class="box" x="380" y="200" width="200" height="340" rx="2"/>
+  <text class="ref" x="400" y="222">U1</text>
+  <text class="label" x="430" y="222">XIAO nRF52840 Sense</text>
+  <text class="label-sm" x="400" y="240">MCU / BLE / USB</text>
+
+  <!-- Left pin labels -->
+  <text class="label" x="370" y="278" text-anchor="end">D0</text>
+  <text class="label" x="370" y="318" text-anchor="end">D4</text>
+  <text class="label" x="370" y="378" text-anchor="end">3V3</text>
+  <text class="label" x="370" y="418" text-anchor="end">5V</text>
+  <text class="label" x="370" y="458" text-anchor="end">GND</text>
+  <circle class="pin" cx="380" cy="274" r="2.5"/>
+  <circle class="pin" cx="380" cy="314" r="2.5"/>
+  <circle class="pin" cx="380" cy="374" r="2.5"/>
+  <circle class="pin" cx="380" cy="414" r="2.5"/>
+  <circle class="pin" cx="380" cy="454" r="2.5"/>
+
+  <!-- Right pin labels -->
+  <text class="label" x="590" y="258">D1</text>
+  <text class="label" x="590" y="288">D2</text>
+  <text class="label" x="590" y="318">D3</text>
+  <text class="label" x="590" y="348">D5</text>
+  <text class="label" x="590" y="378">D6</text>
+  <text class="label" x="590" y="408">D7</text>
+  <text class="label" x="590" y="438">D8</text>
+  <text class="label" x="590" y="468">D9</text>
+  <text class="label" x="590" y="498">D10</text>
+  <text class="label" x="590" y="528">GND</text>
+  <text class="label-sm" x="620" y="258">LCD_CS</text>
+  <text class="label-sm" x="620" y="288">LCD_DC</text>
+  <text class="label-sm" x="620" y="318">LCD_BL</text>
+  <text class="label-sm" x="620" y="348">SD_CS</text>
+  <text class="label-sm" x="620" y="378">TX to GPS RX</text>
+  <text class="label-sm" x="620" y="408">RX from GPS TX</text>
+  <text class="label-sm" x="620" y="438">SCK</text>
+  <text class="label-sm" x="620" y="468">MISO</text>
+  <text class="label-sm" x="620" y="498">MOSI</text>
+  <circle class="pin" cx="580" cy="254" r="2.5"/>
+  <circle class="pin" cx="580" cy="284" r="2.5"/>
+  <circle class="pin" cx="580" cy="314" r="2.5"/>
+  <circle class="pin" cx="580" cy="344" r="2.5"/>
+  <circle class="pin" cx="580" cy="374" r="2.5"/>
+  <circle class="pin" cx="580" cy="404" r="2.5"/>
+  <circle class="pin" cx="580" cy="434" r="2.5"/>
+  <circle class="pin" cx="580" cy="464" r="2.5"/>
+  <circle class="pin" cx="580" cy="494" r="2.5"/>
+  <circle class="pin" cx="580" cy="524" r="2.5"/>
+
+  <text class="note" x="400" y="510">D0, D4: INPUT_PULLUP</text>
+  <text class="note" x="400" y="526">Serial1 115200 8N1</text>
+
+  <!-- ========== SW1 Reed ========== -->
+  <text class="ref" x="48" y="250">SW1</text>
+  <text class="val" x="48" y="264">Reed</text>
+  <text class="note" x="118" y="248">wheel magnet</text>
+  <rect class="sym" x="138" y="232" width="22" height="10" rx="1"/>
+  <text class="label-sm" x="141" y="241">N/S</text>
+  <!-- NO reed contact -->
+  <line class="sym" x1="100" y1="274" x2="130" y2="274"/>
+  <circle class="pin" cx="130" cy="274" r="2"/>
+  <line class="sym" x1="130" y1="274" x2="155" y2="258"/>
+  <circle class="pin" cx="170" cy="274" r="2"/>
+  <line class="sym" x1="170" y1="274" x2="200" y2="274"/>
+  <path class="wire" d="M200 274 H380"/>
+  <path class="wire" d="M100 274 V680"/>
+  <circle class="junc" cx="100" cy="680" r="3"/>
+
+  <!-- ========== SW2 Button ========== -->
+  <text class="ref" x="48" y="300">SW2</text>
+  <text class="val" x="48" y="314">Tact</text>
+  <line class="sym" x1="100" y1="314" x2="128" y2="314"/>
+  <line class="sym" x1="128" y1="304" x2="128" y2="324"/>
+  <line class="sym" x1="146" y1="300" x2="146" y2="328"/>
+  <line class="sym" x1="146" y1="314" x2="170" y2="314"/>
+  <circle class="pin" cx="128" cy="314" r="2"/>
+  <circle class="pin" cx="170" cy="314" r="2"/>
+  <line class="sym" x1="170" y1="314" x2="200" y2="314"/>
+  <path class="wire" d="M200 314 H380"/>
+  <path class="wire" d="M100 314 V680"/>
+  <circle class="junc" cx="100" cy="314" r="3"/>
+
+  <!-- Power into U1 -->
+  <path class="wire" d="M340 100 V374 H380"/>
+  <circle class="junc" cx="340" cy="100" r="3"/>
+  <path class="wire" d="M320 80 V414 H380"/>
+  <circle class="junc" cx="320" cy="80" r="3"/>
+  <path class="wire" d="M340 454 H300 V680"/>
+  <circle class="junc" cx="300" cy="680" r="3"/>
+
+  <!-- ========== U2 Display ========== -->
+  <rect class="box" x="780" y="160" width="260" height="280" rx="2"/>
+  <text class="ref" x="798" y="182">U2</text>
+  <text class="label" x="828" y="182">ILI9341 3.2 in TFT</text>
+  <text class="label-sm" x="798" y="200">SPI display + onboard microSD</text>
+
+  <text class="label" x="770" y="228" text-anchor="end">VCC</text>
+  <text class="label" x="770" y="248" text-anchor="end">GND</text>
+  <text class="label" x="770" y="278" text-anchor="end">LCD_CS</text>
+  <text class="label" x="770" y="308" text-anchor="end">LCD_RS</text>
+  <text class="label" x="770" y="338" text-anchor="end">LCD_RST</text>
+  <text class="label" x="770" y="368" text-anchor="end">MOSI</text>
+  <text class="label" x="770" y="388" text-anchor="end">SCK</text>
+  <text class="label" x="770" y="408" text-anchor="end">MISO</text>
+  <text class="label" x="770" y="428" text-anchor="end">LED</text>
+  <text class="label" x="770" y="448" text-anchor="end">SD_CS</text>
+  <circle class="pin" cx="780" cy="224" r="2.5"/>
+  <circle class="pin" cx="780" cy="244" r="2.5"/>
+  <circle class="pin" cx="780" cy="274" r="2.5"/>
+  <circle class="pin" cx="780" cy="304" r="2.5"/>
+  <circle class="pin" cx="780" cy="334" r="2.5"/>
+  <circle class="pin" cx="780" cy="364" r="2.5"/>
+  <circle class="pin" cx="780" cy="384" r="2.5"/>
+  <circle class="pin" cx="780" cy="404" r="2.5"/>
+  <circle class="pin" cx="780" cy="424" r="2.5"/>
+  <circle class="pin" cx="780" cy="444" r="2.5"/>
+  <text class="note" x="798" y="464">microSD shares SCK / MOSI / MISO</text>
+
+  <!-- R1 7k pull-up on LCD_RST -->
+  <text class="ref" x="688" y="300">R1</text>
+  <text class="val" x="688" y="314">7k</text>
+  <path class="wire" d="M720 100 V300"/>
+  <circle class="junc" cx="720" cy="100" r="3"/>
+  <path class="sym" d="M720 300 l8 5 l-16 8 l16 8 l-16 8 l16 8 l-8 5"/>
+  <path class="wire" d="M720 344 H780"/>
+  <circle class="junc" cx="720" cy="344" r="3"/>
+  <text class="note" x="628" y="358">held out of reset</text>
+  <text class="note" x="628" y="370">(no MCU GPIO)</text>
+
+  <!-- U2 power -->
+  <path class="wire" d="M760 100 V224 H780"/>
+  <circle class="junc" cx="760" cy="100" r="3"/>
+  <path class="wire" d="M750 244 H730 V680"/>
+  <circle class="junc" cx="730" cy="680" r="3"/>
+
+  <!-- U1 to U2 signals -->
+  <path class="wire" d="M580 254 H700 V274 H780"/>
+  <path class="wire" d="M580 284 H690 V304 H780"/>
+  <path class="wire" d="M580 314 H680 V424 H780"/>
+  <path class="wire" d="M580 344 H670 V444 H780"/>
+  <path class="wire" d="M580 434 H660 V384 H780"/>
+  <path class="wire" d="M580 464 H650 V404 H780"/>
+  <path class="wire" d="M580 494 H640 V364 H780"/>
+
+  <!-- ========== U3 GPS ========== -->
+  <rect class="box" x="780" y="500" width="260" height="140" rx="2"/>
+  <text class="ref" x="798" y="522">U3</text>
+  <text class="label" x="828" y="522">HGLRC M100 Pro</text>
+  <text class="label-sm" x="798" y="540">u-blox GPS / UART 115200 8N1</text>
+
+  <text class="label" x="770" y="568" text-anchor="end">5V</text>
+  <text class="label" x="770" y="588" text-anchor="end">GND</text>
+  <text class="label" x="770" y="608" text-anchor="end">RX</text>
+  <text class="label" x="770" y="628" text-anchor="end">TX</text>
+  <circle class="pin" cx="780" cy="564" r="2.5"/>
+  <circle class="pin" cx="780" cy="584" r="2.5"/>
+  <circle class="pin" cx="780" cy="604" r="2.5"/>
+  <circle class="pin" cx="780" cy="624" r="2.5"/>
+  <text class="note" x="798" y="620">compass SCL/SDA unused</text>
+
+  <path class="wire" d="M740 80 V564 H780"/>
+  <circle class="junc" cx="740" cy="80" r="3"/>
+  <path class="wire" d="M760 584 H745 V680"/>
+  <circle class="junc" cx="745" cy="680" r="3"/>
+  <path class="wire" d="M580 374 H630 V604 H780"/>
+  <path class="wire" d="M580 404 H620 V624 H780"/>
+  <path class="wire" d="M580 524 H610 V680"/>
+  <circle class="junc" cx="610" cy="680" r="3"/>
+
+  <!-- Notes -->
+  <rect class="box" x="40" y="520" width="280" height="130" rx="2"/>
+  <text class="ref" x="56" y="542">Notes</text>
+  <text class="note" x="56" y="562">1. SPI shared: SCK / MOSI / MISO</text>
+  <text class="note" x="56" y="578">2. Chip-selects: D1 = LCD, D5 = SD</text>
+  <text class="note" x="56" y="594">3. SW1 / SW2 active-low, internal PU</text>
+  <text class="note" x="56" y="610">4. LCD_RST tied high via R1 (no GPIO)</text>
+  <text class="note" x="56" y="626">5. Backlight PWM on D3</text>
+  <text class="note" x="56" y="642">6. Wheel circ. set in firmware (2155 mm)</text>
+</svg>

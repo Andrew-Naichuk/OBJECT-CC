@@ -24,8 +24,15 @@ A DIY cycling computer built on the **Seeed XIAO nRF52840 Sense**. It shows live
 
 ### Wiring
 
-**Display**
+Principal schematic (all nets, power rails, and discrete parts):
 
+![OBJECT principal schematic](docs/schematic.svg)
+
+*[SVG source](docs/schematic.svg)* — open in a browser or any vector editor if you need to zoom or print.
+
+SPI bus (`SCK`/`MOSI`/`MISO`) is shared by the TFT and the microSD card; each device has its own chip-select (`D1` LCD, `D5` SD). Reed and button use the MCU’s internal pull-ups (active low). GPS compass pins are unused.
+
+**Display**
 
 | Module          | XIAO                           |
 | --------------- | ------------------------------ |
@@ -40,13 +47,11 @@ A DIY cycling computer built on the **Seeed XIAO nRF52840 Sense**. It shows live
 | LED (backlight) | D3                             |
 | SD_CS           | D5                             |
 
-
 **Reed switch** — one side to **D0**, other to **GND** (internal pull-up; falling edge = pulse).
 
 **Button** — one side to **D4**, other to **GND**.
 
 **GPS (Serial1, 115200 8N1)**
-
 
 | GPS | XIAO    |
 | --- | ------- |
@@ -132,6 +137,7 @@ Confirm the port with `arduino-cli board list` if upload fails.
 xiao_oled/     Cycling computer firmware
 xiao_blink/    LED blink hardware check
 tools/         Web Bluetooth ride-transfer page
+docs/          Principal schematic (SVG)
 AGENTS.md      Notes for automated agents (compile/upload)
 ```
 
