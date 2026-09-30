@@ -70,6 +70,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <stddef.h>
+#include "finish_txn.h"
+#include "ble_proto.h"
 
 static const int PIN_LCD_CS = D1;
 static const int PIN_LCD_DC = D2;
@@ -160,14 +162,6 @@ static const char GPX_NAME[] = "CURRENT.GPX";
 static const char DAT_NAME_A[] = "TRIP_A.DAT";
 static const char DAT_NAME_B[] = "TRIP_B.DAT";
 static const char DAT_NAME_LEGACY[] = "TRIP.DAT";
-static const char FINISH_NAME[] = "FINISH.DAT";
-static const uint32_t TRIP_MAGIC = 0x50495254UL;  // "TRIP"
-static const uint32_t FINISH_MAGIC = 0x48534E46UL;  // "FNSH"
-static const uint16_t TRIP_VERSION = 3;
-static const uint16_t TRIP_VERSION_V2 = 2;
-static const uint16_t TRIP_VERSION_LEGACY = 1;
-static const uint16_t FINISH_VERSION = 1;
-
 static const char GPX_HEADER[] =
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
     "<gpx version=\"1.1\" creator=\"XIAO cycling computer\""
@@ -220,6 +214,15 @@ static bool lastGpxStampValid = false;
 static bool gpxLogStopped = true;
 static uint32_t tripDatSeq = 0;
 static uint32_t tripRideGen = 1;
+static char gpxTrackName[13] = "CURRENT.GPX";
+static char gpxOpenName[13];
+static bool gFinishRecord = true;
+static bool gFinishPendingUi = false;
+static bool gFinishErrorUi = false;
+static bool gJournalLive = false;
+static bool gCkptAuth = false;
+static bool gTrackMarked = false;
+static FinishTxn gFinish;
 static unsigned long bleXferWindowUntil = 0;
 static unsigned long btnLastShortMs = 0;
 static bool btnPendingBacklight = false;
@@ -268,58 +271,6 @@ static char heroShown[8];
 static bool heroValid = false;
 static int gaugeLit = -1;
 static bool uiChromeDrawn = false;
-
-#pragma pack(push, 1)
-struct TripDatV2 {
-  uint32_t magic;
-  uint16_t version;
-  uint16_t reserved;
-  uint32_t seq;
-  uint32_t revCount;
-  uint32_t movingMs;
-  uint32_t elapsedMs;
-  float maxSpeedKmh;
-  uint32_t gpxBodyEnd;
-  uint32_t crc;
-};
-
-struct TripDat {
-  uint32_t magic;
-  uint16_t version;
-  uint16_t reserved;
-  uint32_t seq;
-  uint32_t revCount;
-  uint32_t movingMs;
-  uint32_t elapsedMs;
-  float maxSpeedKmh;
-  uint32_t gpxBodyEnd;
-  uint32_t rideGen;
-  uint32_t crc;
-};
-
-enum {
-  FINISH_PHASE_ARCHIVING = 1,
-  FINISH_PHASE_SUM_DONE = 2,
-  FINISH_PHASE_TRACK_READY = 3,
-  FINISH_PHASE_CHECKPOINT_DONE = 4
-};
-
-struct FinishDat {
-  uint32_t magic;
-  uint16_t version;
-  uint16_t phase;
-  char dest[13];
-  uint8_t hasPoints;
-  uint8_t needSum;
-  uint32_t revCount;
-  uint32_t movingMs;
-  uint32_t elapsedMs;
-  float maxSpeedKmh;
-  uint32_t points;
-  uint32_t fromRideGen;
-  uint32_t crc;
-};
-#pragma pack(pop)
 
 enum {
   GPS_IDLE = 0,
@@ -830,21 +781,6 @@ static bool gpsIsLive(unsigned long now) {
   return gps.valid && gpsFrameFresh(now);
 }
 
-static uint32_t crc32Update(uint32_t c, const uint8_t *data, size_t len) {
-  for (size_t i = 0; i < len; i++) {
-    c ^= data[i];
-    for (int b = 0; b < 8; b++) {
-      uint32_t mask = (uint32_t)-(int32_t)(c & 1UL);
-      c = (c >> 1) ^ (0xEDB88320UL & mask);
-    }
-  }
-  return c;
-}
-
-static uint32_t crc32(const uint8_t *data, size_t len) {
-  return ~crc32Update(0xFFFFFFFFUL, data, len);
-}
-
 static void formatE7(int32_t e7, char *buf, size_t buflen) {
   char sign = 0;
   uint32_t v;
@@ -885,34 +821,6 @@ static bool sdFileSync(File32 &f) {
   return f.sync();
 }
 
-static bool tripDatValidateV2(const TripDatV2 *d) {
-  if (d->magic != TRIP_MAGIC || d->version != TRIP_VERSION_V2) {
-    return false;
-  }
-  return crc32((const uint8_t *)d, offsetof(TripDatV2, crc)) == d->crc;
-}
-
-static bool tripDatValidate(const TripDat *d) {
-  if (d->magic != TRIP_MAGIC || d->version != TRIP_VERSION) {
-    return false;
-  }
-  return crc32((const uint8_t *)d, offsetof(TripDat, crc)) == d->crc;
-}
-
-static void tripDatFromV2(const TripDatV2 *v2, TripDat *out) {
-  memset(out, 0, sizeof(*out));
-  out->magic = TRIP_MAGIC;
-  out->version = TRIP_VERSION;
-  out->seq = v2->seq;
-  out->revCount = v2->revCount;
-  out->movingMs = v2->movingMs;
-  out->elapsedMs = v2->elapsedMs;
-  out->maxSpeedKmh = v2->maxSpeedKmh;
-  out->gpxBodyEnd = v2->gpxBodyEnd;
-  out->rideGen = 1;
-  out->crc = crc32((const uint8_t *)out, offsetof(TripDat, crc));
-}
-
 static bool tripDatLoadSlot(const char *name, TripDat *out) {
   File32 f;
   if (!f.open(name, O_RDONLY)) {
@@ -949,42 +857,13 @@ static bool tripDatLoadLegacy(TripDat *out) {
   if (!f.open(DAT_NAME_LEGACY, O_RDONLY)) {
     return false;
   }
-#pragma pack(push, 1)
-  struct TripDatV1 {
-    uint32_t magic;
-    uint16_t version;
-    uint16_t reserved;
-    uint32_t revCount;
-    uint32_t movingMs;
-    uint32_t elapsedMs;
-    float maxSpeedKmh;
-    uint32_t gpxBodyEnd;
-    uint32_t crc;
-  } v1;
-#pragma pack(pop)
-  int n = f.read(&v1, sizeof(v1));
+  uint8_t buf[sizeof(TripDatV1)];
+  int n = f.read(buf, sizeof(buf));
   f.close();
-  if (n != (int)sizeof(v1)) {
+  if (n != (int)sizeof(buf)) {
     return false;
   }
-  if (v1.magic != TRIP_MAGIC || v1.version != TRIP_VERSION_LEGACY) {
-    return false;
-  }
-  if (crc32((const uint8_t *)&v1, offsetof(TripDatV1, crc)) != v1.crc) {
-    return false;
-  }
-  memset(out, 0, sizeof(*out));
-  out->magic = TRIP_MAGIC;
-  out->version = TRIP_VERSION;
-  out->seq = 1;
-  out->revCount = v1.revCount;
-  out->movingMs = v1.movingMs;
-  out->elapsedMs = v1.elapsedMs;
-  out->maxSpeedKmh = v1.maxSpeedKmh;
-  out->gpxBodyEnd = v1.gpxBodyEnd;
-  out->rideGen = 1;
-  out->crc = crc32((const uint8_t *)out, offsetof(TripDat, crc));
-  return true;
+  return tripDatFromLegacyBytes(buf, sizeof(buf), out);
 }
 
 static bool tripDatLoad(TripDat *out) {
@@ -1048,7 +927,7 @@ static bool tripDatSave(uint32_t revCount, uint32_t elapsedMsNow) {
   d.maxSpeedKmh = maxSpeedKmh;
   d.gpxBodyEnd = gpxBodyEnd;
   d.rideGen = tripRideGen;
-  d.crc = crc32((const uint8_t *)&d, offsetof(TripDat, crc));
+  tripDatSeal(&d);
 
   // Alternate slots so a torn write cannot destroy the last good checkpoint.
   const char *name = (nextSeq & 1u) ? DAT_NAME_A : DAT_NAME_B;
@@ -1066,53 +945,6 @@ static bool tripDatSave(uint32_t revCount, uint32_t elapsedMsNow) {
   return ok;
 }
 
-// Write zeroed checkpoints to both slots so finish cannot revive the old ride.
-static bool tripDatZeroBoth(uint32_t newRideGen) {
-  if (!sdReady) {
-    return false;
-  }
-
-  uint32_t s1 = tripDatSeq + 1u;
-  if (s1 == 0) {
-    s1 = 1;
-  }
-  uint32_t s2 = s1 + 1u;
-  if (s2 == 0) {
-    s2 = 1;
-  }
-
-  TripDat d;
-  memset(&d, 0, sizeof(d));
-  d.magic = TRIP_MAGIC;
-  d.version = TRIP_VERSION;
-  d.rideGen = newRideGen;
-  d.gpxBodyEnd = gpxBodyEnd;
-
-  d.seq = s1;
-  d.crc = crc32((const uint8_t *)&d, offsetof(TripDat, crc));
-  const char *n1 = (s1 & 1u) ? DAT_NAME_A : DAT_NAME_B;
-  if (!tripDatWriteSlot(n1, &d)) {
-    sdNoteCheck(false);
-    return false;
-  }
-
-  d.seq = s2;
-  d.crc = crc32((const uint8_t *)&d, offsetof(TripDat, crc));
-  const char *n2 = (s2 & 1u) ? DAT_NAME_A : DAT_NAME_B;
-  if (!tripDatWriteSlot(n2, &d)) {
-    sdNoteCheck(false);
-    return false;
-  }
-
-  tripDatSeq = s2;
-  tripRideGen = newRideGen;
-  lastDatMs = millis();
-  if (sd.exists(DAT_NAME_LEGACY)) {
-    sd.remove(DAT_NAME_LEGACY);
-  }
-  sdNoteCheck(true);
-  return true;
-}
 
 static int gpsTimeCmp(uint16_t y1, uint8_t mo1, uint8_t d1,
                       uint8_t h1, uint8_t mi1, uint8_t s1,
@@ -1274,12 +1106,17 @@ static bool gpxBodyEndLooksComplete(uint32_t bodyEnd) {
 
 static bool gpxOpenOrCreate() {
   if (gpxFile.isOpen()) {
-    return true;
+    if (strcmp(gpxOpenName, gpxTrackName) == 0) {
+      return true;
+    }
+    gpxFile.close();
   }
-  if (!gpxFile.open(GPX_NAME, O_RDWR | O_CREAT)) {
-    Serial.println("SD CURRENT.GPX open failed");
+  if (!gpxFile.open(gpxTrackName, O_RDWR | O_CREAT)) {
+    Serial.println("SD track open failed");
     return false;
   }
+  strncpy(gpxOpenName, gpxTrackName, sizeof(gpxOpenName) - 1);
+  gpxOpenName[sizeof(gpxOpenName) - 1] = '\0';
   uint32_t sz = (uint32_t)gpxFile.fileSize();
   if (sz == 0) {
     if (!gpxWriteHeader()) {
@@ -1422,6 +1259,10 @@ static void bleCloseXferWindow() {
 
 static void tripLogGps(unsigned long now, uint32_t revCount, uint32_t elapsedMsNow,
                        unsigned long lastPulseMs) {
+  // Until the continuation file is open, points from after the cut go nowhere.
+  if (!gFinishRecord || gFinishErrorUi) {
+    return;
+  }
   if (!sdReady || !tripStarted || !gpsIsLive(now) || !gps.posKnown || !gps.timeKnown) {
     return;
   }
@@ -1469,13 +1310,19 @@ static void tripLogGps(unsigned long now, uint32_t revCount, uint32_t elapsedMsN
   if (gpxAppendPoint()) {
     lastGpxMs = now;
     gpxLogStopped = stopped;
-    tripDatSave(revCount, elapsedMsNow);
+    // While the journal is the authority, continuation counts stay in journal slots.
+    if (!(gJournalLive && !gCkptAuth)) {
+      tripDatSave(revCount, elapsedMsNow);
+    }
   }
   // On failure leave lastGpxMs / gpxLogStopped alone so the next loop can retry.
 }
 
 static void tripMaybeSave(unsigned long now, uint32_t revCount, uint32_t elapsedMsNow) {
-  if (!sdReady || !tripStarted) {
+  if (!sdReady || !tripStarted || !gFinishRecord) {
+    return;
+  }
+  if (gJournalLive && !gCkptAuth) {
     return;
   }
   if (now - lastDatMs < TRIP_DAT_MS) {
@@ -1512,56 +1359,6 @@ static bool tripStemFree(const char *gpxName) {
   return !sd.exists(sumName);
 }
 
-static bool finishValidate(const FinishDat *d) {
-  if (d->magic != FINISH_MAGIC || d->version != FINISH_VERSION) {
-    return false;
-  }
-  return crc32((const uint8_t *)d, offsetof(FinishDat, crc)) == d->crc;
-}
-
-static bool finishLoad(FinishDat *out) {
-  File32 f;
-  if (!f.open(FINISH_NAME, O_RDONLY)) {
-    return false;
-  }
-  FinishDat d;
-  int n = f.read(&d, sizeof(d));
-  f.close();
-  if (n != (int)sizeof(d) || !finishValidate(&d)) {
-    return false;
-  }
-  *out = d;
-  return true;
-}
-
-static bool finishSave(FinishDat *d) {
-  d->magic = FINISH_MAGIC;
-  d->version = FINISH_VERSION;
-  d->crc = crc32((const uint8_t *)d, offsetof(FinishDat, crc));
-  gpsDrain();
-  File32 f;
-  if (!f.open(FINISH_NAME, O_RDWR | O_CREAT | O_TRUNC)) {
-    gpsDrain();
-    sdNoteArchive(false);
-    return false;
-  }
-  bool ok = f.write(d, sizeof(*d)) == sizeof(*d);
-  if (ok) {
-    ok = sdFileSync(f);
-  }
-  f.close();
-  gpsDrain();
-  sdNoteArchive(ok);
-  return ok;
-}
-
-static void finishClear() {
-  gpsDrain();
-  if (sd.exists(FINISH_NAME)) {
-    sd.remove(FINISH_NAME);
-  }
-  gpsDrain();
-}
 
 static void tripResetRam() {
   noInterrupts();
@@ -1586,74 +1383,16 @@ static void tripResetRam() {
   gpxLogStopped = true;
 }
 
-static bool tripWriteSummary(const char *gpxName, uint32_t revCount,
-                             uint32_t elapsedMsNow, unsigned long points,
-                             uint32_t movingMsSnap, float maxSnap,
-                             bool allowReplace) {
-  char stem[9];
-  sumStemFromGpx(gpxName, stem, sizeof(stem));
-  if (stem[0] == '\0') {
-    return false;
-  }
-  char sumName[13];
-  snprintf(sumName, sizeof(sumName), "%s.SUM", stem);
 
-  float distanceM = (revCount * WHEEL_CIRC_MM) / 1000.0f;
-  char body[256];
-  int n = snprintf(body, sizeof(body),
-                   "rev=%lu\n"
-                   "distance_m=%.1f\n"
-                   "moving_ms=%lu\n"
-                   "elapsed_ms=%lu\n"
-                   "max_kmh=%.2f\n"
-                   "points=%lu\n"
-                   "end=%04u-%02u-%02uT%02u:%02u:%02uZ\n",
-                   (unsigned long)revCount,
-                   (double)distanceM,
-                   (unsigned long)movingMsSnap,
-                   (unsigned long)elapsedMsNow,
-                   (double)maxSnap,
-                   (unsigned long)points,
-                   gps.timeKnown ? (unsigned)gps.year : 0u,
-                   gps.timeKnown ? (unsigned)gps.month : 0u,
-                   gps.timeKnown ? (unsigned)gps.day : 0u,
-                   gps.timeKnown ? (unsigned)gps.hour : 0u,
-                   gps.timeKnown ? (unsigned)gps.minute : 0u,
-                   gps.timeKnown ? (unsigned)gps.sec : 0u);
-  if (n <= 0 || n >= (int)sizeof(body)) {
-    return false;
-  }
+// NEW_RIDE_SAVED / NEW_RIDE_NO_GPS / NEW_RIDE_RESET / NEW_RIDE_FAIL.
+enum {
+  NEW_RIDE_FAIL = 0,
+  NEW_RIDE_RESET,
+  NEW_RIDE_SAVED,
+  NEW_RIDE_NO_GPS
+};
 
-  gpsDrain();
-  File32 f;
-  const int flags = allowReplace ? (O_RDWR | O_CREAT | O_TRUNC)
-                               : (O_RDWR | O_CREAT | O_EXCL);
-  if (!f.open(sumName, flags)) {
-    gpsDrain();
-    // Retry path: exclusive create failed because a prior attempt left a file.
-    if (!allowReplace && sd.exists(sumName)) {
-      if (!f.open(sumName, O_RDWR | O_CREAT | O_TRUNC)) {
-        sdNoteArchive(false);
-        return false;
-      }
-    } else {
-      sdNoteArchive(false);
-      return false;
-    }
-  }
-  bool ok = f.write(body, (size_t)n) == (size_t)n;
-  if (ok) {
-    ok = sdFileSync(f);
-  }
-  f.close();
-  gpsDrain();
-  sdNoteArchive(ok);
-  if (ok) {
-    Serial.print("SD wrote ");
-    Serial.println(sumName);
-  }
-  return ok;
-}
+static void bleStopForNewRide();
 
 static bool tripPickArchiveName(char *buf, size_t buflen) {
   if (buflen < 13) {
@@ -1690,143 +1429,316 @@ static bool tripPickArchiveName(char *buf, size_t buflen) {
   return false;
 }
 
-// NEW_RIDE_SAVED / NEW_RIDE_NO_GPS / NEW_RIDE_RESET / NEW_RIDE_FAIL.
-enum {
-  NEW_RIDE_FAIL = 0,
-  NEW_RIDE_RESET,
-  NEW_RIDE_SAVED,
-  NEW_RIDE_NO_GPS
-};
-
-static void bleStopForNewRide();
-
-static bool tripEnsureNewCurrent(bool hasPoints) {
-  gpxBodyEnd = 0;
-  if (!hasPoints) {
-    gpsDrain();
-    if (gpxFile.isOpen()) {
-      gpxFile.close();
-    }
-    if (!gpxFile.open(GPX_NAME, O_RDWR | O_CREAT | O_TRUNC)) {
-      gpsDrain();
-      sdReady = false;
-      Serial.println("SD CURRENT.GPX reset failed");
-      sdNoteTrack(false);
-      return false;
-    }
-    if (!gpxWriteHeader()) {
-      gpsDrain();
-      Serial.println("SD CURRENT.GPX header reset failed");
-      sdNoteTrack(false);
-      return false;
-    }
-    sdNoteTrack(true);
-    gpsDrain();
-    return true;
+static int finishDevStat(void *ctx, const char *name) {
+  (void)ctx;
+  if (!sdReady) {
+    return -1;
   }
-  if (!gpxOpenOrCreate()) {
-    sdReady = false;
-    Serial.println("SD new CURRENT.GPX failed after archive");
-    sdNoteTrack(false);
-    return false;
+  gpsDrain();
+  File32 root;
+  if (!root.open("/")) {
+    gpsDrain();
+    return -1;
   }
-  return true;
+  root.close();
+  bool ex = sd.exists(name);
+  gpsDrain();
+  return ex ? 1 : 0;
 }
 
-// Advance an in-progress finish journal. RAM counters stay until checkpoints
-// for the new ride are committed to both slots.
-static int tripFinishAdvance(FinishDat *fin) {
-  if (fin->phase == FINISH_PHASE_ARCHIVING) {
-    bool allowReplaceSum = false;
-    if (fin->needSum && fin->dest[0] != '\0') {
-      char stem[9];
-      sumStemFromGpx(fin->dest, stem, sizeof(stem));
-      char sumName[13];
-      snprintf(sumName, sizeof(sumName), "%s.SUM", stem);
-      allowReplaceSum = sd.exists(sumName);
-    }
+static int finishDevRead(void *ctx, const char *name, void *buf, uint32_t cap, uint32_t *len) {
+  (void)ctx;
+  gpsDrain();
+  File32 f;
+  if (!f.open(name, O_RDONLY)) {
+    gpsDrain();
+    return -1;
+  }
+  uint32_t sz = (uint32_t)f.fileSize();
+  if (len) {
+    *len = sz;
+  }
+  uint32_t n = sz < cap ? sz : cap;
+  int got = 0;
+  if (n > 0) {
+    got = f.read(buf, n);
+  }
+  f.close();
+  gpsDrain();
+  if (n > 0 && got != (int)n) {
+    return -1;
+  }
+  return 0;
+}
 
-    if (fin->hasPoints) {
-      if (sd.exists(GPX_NAME) && fin->dest[0] != '\0') {
-        gpsDrain();
-        if (!sd.rename(GPX_NAME, fin->dest)) {
-          gpsDrain();
-          // Already renamed on a prior attempt.
-          if (!sd.exists(fin->dest)) {
-            Serial.print("SD rename failed -> ");
-            Serial.println(fin->dest);
-            sdNoteArchive(false);
-            return NEW_RIDE_FAIL;
-          }
-        }
-        gpsDrain();
-        Serial.print("SD archived ");
-        Serial.println(fin->dest);
-      }
-    } else {
-      Serial.println("SD empty GPX — skip archive");
-    }
+static int finishDevWrite(void *ctx, const char *name, const void *data, uint32_t len, int excl) {
+  (void)ctx;
+  gpsDrain();
+  File32 f;
+  oflag_t flags = O_RDWR | O_CREAT | (excl ? O_EXCL : O_TRUNC);
+  if (!f.open(name, flags)) {
+    gpsDrain();
+    return -1;
+  }
+  bool ok = f.write(data, len) == len;
+  if (ok) {
+    ok = sdFileSync(f);
+  }
+  f.close();
+  gpsDrain();
+  return ok ? 0 : -1;
+}
 
-    if (fin->needSum) {
-      if (fin->dest[0] == '\0') {
-        sdNoteArchive(false);
-        return NEW_RIDE_FAIL;
-      }
-      if (!tripWriteSummary(fin->dest, fin->revCount, fin->elapsedMs, fin->points,
-                            fin->movingMs, fin->maxSpeedKmh, allowReplaceSum)) {
-        return NEW_RIDE_FAIL;
-      }
-    }
+static int finishDevRename(void *ctx, const char *from, const char *to) {
+  (void)ctx;
+  gpsDrain();
+  bool ok = sd.rename(from, to);
+  gpsDrain();
+  return ok ? 0 : -1;
+}
 
-    fin->phase = FINISH_PHASE_SUM_DONE;
-    if (!finishSave(fin)) {
-      return NEW_RIDE_FAIL;
-    }
+static int finishDevRemove(void *ctx, const char *name) {
+  (void)ctx;
+  gpsDrain();
+  if (!sd.exists(name)) {
+    gpsDrain();
+    return 0;
+  }
+  bool ok = sd.remove(name);
+  gpsDrain();
+  return ok ? 0 : -1;
+}
+
+static FinishFs finishFs() {
+  FinishFs fs;
+  memset(&fs, 0, sizeof(fs));
+  fs.stat = finishDevStat;
+  fs.read = finishDevRead;
+  fs.write = finishDevWrite;
+  fs.rename = finishDevRename;
+  fs.remove = finishDevRemove;
+  return fs;
+}
+
+static FinishCfg finishCfg() {
+  FinishCfg cfg;
+  cfg.gpxHeader = GPX_HEADER;
+  cfg.gpxFooter = GPX_FOOTER;
+  cfg.wheelMm = WHEEL_CIRC_MM;
+  return cfg;
+}
+
+static void finishCloseTrack() {
+  if (gpxFile.isOpen()) {
+    gpxFile.close();
+  }
+  gpxOpenName[0] = '\0';
+}
+
+static void finishNoteRam() {
+  noInterrupts();
+  uint32_t rev = (uint32_t)g_revCount;
+  uint32_t acc = (uint32_t)g_movingAccMs;
+  interrupts();
+  FinishContRam c;
+  memset(&c, 0, sizeof(c));
+  c.rev = rev;
+  c.movingMs = (uint32_t)movingMs + acc;
+  c.elapsedMs = 0;
+  if (tripStarted) {
+    c.elapsedMs = (uint32_t)(elapsedBaseMs + (millis() - elapsedAnchorMs));
+  }
+  c.maxSpeed = maxSpeedKmh;
+  c.points = (uint32_t)gpxPointCount;
+  c.gpxEnd = gpxBodyEnd;
+  finishTxnNoteCont(&gFinish, &c);
+}
+
+static void finishApplyView() {
+  gFinishPendingUi = gFinish.out.showPending;
+  gFinishErrorUi = gFinish.out.showError;
+  gFinishRecord = gFinish.out.recordGps;
+  gJournalLive = gFinish.out.journalLive;
+  gCkptAuth = gFinish.out.checkpointsAuthoritative;
+  if (gFinish.out.showError || (gFinish.out.showPending && !gFinish.out.recordGps)) {
+    sdNoteArchive(false);
+  } else if (gFinish.out.archiveHealthy) {
+    sdNoteArchive(true);
   }
 
-  if (fin->phase == FINISH_PHASE_SUM_DONE) {
-    if (!tripEnsureNewCurrent(fin->hasPoints != 0)) {
-      return NEW_RIDE_FAIL;
+  if (gFinish.out.folded) {
+    noInterrupts();
+    g_revCount += gFinish.out.foldedFrom.revCount;
+    interrupts();
+    movingMs += gFinish.out.foldedFrom.movingMs;
+    if (gFinish.out.foldedFrom.maxSpeedKmh > maxSpeedKmh &&
+        gFinish.out.foldedFrom.maxSpeedKmh <= MAX_SPEED_KMH) {
+      maxSpeedKmh = gFinish.out.foldedFrom.maxSpeedKmh;
     }
-    fin->phase = FINISH_PHASE_TRACK_READY;
-    if (!finishSave(fin)) {
-      return NEW_RIDE_FAIL;
+    gpxPointCount += gFinish.out.foldedFrom.points;
+    gpxBodyEnd = gFinish.out.foldedFrom.gpxBodyEnd;
+    tripRideGen = gFinish.out.foldedFrom.fromRideGen ? gFinish.out.foldedFrom.fromRideGen : 1;
+    if (gFinish.out.foldedFrom.revCount > 0 || gFinish.out.foldedFrom.elapsedMs > 0 ||
+        gFinish.out.foldedFrom.movingMs > 0) {
+      tripStarted = true;
+      elapsedBaseMs = gFinish.out.foldedFrom.elapsedMs;
+      elapsedAnchorMs = millis();
     }
+    gFinishRecord = true;
+    gFinishPendingUi = false;
+    gFinishErrorUi = false;
+    gJournalLive = false;
+    FinishFs fs = finishFs();
+    finishActiveTrackName(&fs, tripRideGen, gpxTrackName, sizeof(gpxTrackName));
+    gTrackMarked = true;
+    return;
   }
 
-  if (fin->phase == FINISH_PHASE_TRACK_READY) {
-    uint32_t newGen = fin->fromRideGen + 1u;
-    if (newGen == 0) {
-      newGen = 1;
-    }
-    if (!tripDatZeroBoth(newGen)) {
-      Serial.println("SD checkpoint reset failed — keeping finish journal");
-      return NEW_RIDE_FAIL;
-    }
-    fin->phase = FINISH_PHASE_CHECKPOINT_DONE;
-    if (!finishSave(fin)) {
-      // Checkpoints are already zeroed; still clear RAM and journal best-effort.
-    }
+  if (gFinish.out.code == FINISH_ABSENT) {
+    return;
   }
 
-  tripResetRam();
-  finishClear();
-  sdNoteArchive(true);
-  return fin->hasPoints ? NEW_RIDE_SAVED : NEW_RIDE_NO_GPS;
+  if (!gFinish.out.recordGps) {
+    finishCloseTrack();
+    gTrackMarked = false;
+    return;
+  }
+
+  noInterrupts();
+  uint32_t ramRev = (uint32_t)g_revCount;
+  interrupts();
+  uint32_t rev = gFinish.out.revCount;
+  if (ramRev > rev) {
+    rev = ramRev;
+  }
+  noInterrupts();
+  g_revCount = rev;
+  interrupts();
+  if (gFinish.out.movingMs > movingMs) {
+    movingMs = gFinish.out.movingMs;
+  }
+  if (gFinish.out.maxSpeedKmh > maxSpeedKmh && gFinish.out.maxSpeedKmh <= MAX_SPEED_KMH) {
+    maxSpeedKmh = gFinish.out.maxSpeedKmh;
+  }
+  if ((unsigned long)gFinish.out.points > gpxPointCount) {
+    gpxPointCount = gFinish.out.points;
+  }
+  if (gFinish.out.trackKnown) {
+    finishCopyName(gpxTrackName, sizeof(gpxTrackName), gFinish.out.track);
+    gpxBodyEnd = gFinish.out.gpxBodyEnd;
+    tripRideGen = gFinish.out.rideGen ? gFinish.out.rideGen : 1;
+    gTrackMarked = true;
+  }
+  if (rev > 0 || gFinish.out.elapsedMs > 0 || gFinish.out.movingMs > 0) {
+    tripStarted = true;
+    if (elapsedAnchorMs == 0) {
+      elapsedBaseMs = gFinish.out.elapsedMs;
+      elapsedAnchorMs = millis();
+    }
+  }
+}
+
+static int finishPump() {
+  FinishFs fs = finishFs();
+  FinishCfg cfg = finishCfg();
+  for (int i = 0; i < 48; i++) {
+    if (gFinish.committed) {
+      finishNoteRam();
+      finishTxnSyncCont(&gFinish, &fs);
+    }
+    int code = finishTxnStep(&gFinish, &fs, &cfg);
+    if (code != FINISH_YIELD) {
+      return code;
+    }
+  }
+  gFinish.out.recordGps = false;
+  return finishSet(&gFinish, FINISH_ERROR);
+}
+
+static int finishResultCode(int code) {
+  if (code == FINISH_SAVED) {
+    return NEW_RIDE_SAVED;
+  }
+  if (code == FINISH_NO_GPS) {
+    return NEW_RIDE_NO_GPS;
+  }
+  return NEW_RIDE_FAIL;
+}
+
+static const char *finishStatusLine(int code) {
+  if (code == FINISH_ERROR || gFinishErrorUi) {
+    return "Finish error";
+  }
+  if ((code == FINISH_PENDING || gFinishPendingUi) && !gFinishRecord) {
+    return "Finish pending";
+  }
+  if (code == FINISH_SAVED || code == FINISH_NO_GPS) {
+    return "Card ready";
+  }
+  return NULL;
+}
+
+static void finishFoldCut(uint32_t revSnap, uint32_t movingSnap, unsigned long elapsedSnap,
+                          float maxSnap, unsigned long pointsSnap, uint32_t bodySnap) {
+  noInterrupts();
+  g_revCount += revSnap;
+  interrupts();
+  movingMs += movingSnap;
+  if (maxSnap > maxSpeedKmh && maxSnap <= MAX_SPEED_KMH) {
+    maxSpeedKmh = maxSnap;
+  }
+  gpxPointCount += pointsSnap;
+  gpxBodyEnd = bodySnap;
+  if (revSnap > 0 || elapsedSnap > 0 || movingSnap > 0) {
+    tripStarted = true;
+    elapsedBaseMs = (uint32_t)elapsedSnap;
+    elapsedAnchorMs = millis();
+  }
+  gFinishRecord = true;
+  gFinishPendingUi = false;
+  gFinishErrorUi = false;
+  gJournalLive = false;
 }
 
 static int tripStartNewRide() {
   bleStopForNewRide();
   bleCloseXferWindow();
 
-  FinishDat existing;
-  if (sdReady && finishLoad(&existing)) {
-    Serial.println("SD resuming interrupted finish");
-    return tripFinishAdvance(&existing);
+  if (!sdReady) {
+    tripResetRam();
+    gpxBodyEnd = 0;
+    gFinishRecord = true;
+    gFinishPendingUi = false;
+    gFinishErrorUi = false;
+    gJournalLive = false;
+    Serial.println("New ride — no SD, stats reset");
+    return NEW_RIDE_RESET;
   }
 
+  FinishFs fs = finishFs();
+  FinishCfg cfg = finishCfg();
+  FinishLoad existing;
+  if (finishLoadJournal(&fs, &existing) != LD_ABSENT) {
+    finishTxnInit(&gFinish);
+    int code = finishTxnBoot(&gFinish, &fs, &cfg);
+    finishApplyView();
+    if (gFinish.out.recordGps && gFinish.out.trackKnown && !gpxOpenOrCreate()) {
+      sdReady = false;
+      sdTrackOk = false;
+      return NEW_RIDE_FAIL;
+    }
+    Serial.println("SD resuming interrupted finish");
+    return finishResultCode(code);
+  }
+
+  // Cut once, in RAM, before the journal or any rename.
   noInterrupts();
+  movingMs += g_movingAccMs;
+  g_movingAccMs = 0;
   uint32_t revSnap = (uint32_t)g_revCount;
+  g_revCount = 0;
+  g_lastPulseMs = 0;
+  g_prevPulseMs = 0;
   interrupts();
   unsigned long elapsedSnap = 0;
   if (tripStarted) {
@@ -1835,39 +1747,57 @@ static int tripStartNewRide() {
   unsigned long pointsSnap = gpxPointCount;
   uint32_t movingSnap = (uint32_t)movingMs;
   float maxSnap = maxSpeedKmh;
+  uint32_t bodySnap = gpxBodyEnd;
+  uint32_t genSnap = tripRideGen == 0 ? 1u : tripRideGen;
 
-  if (!sdReady) {
-    tripResetRam();
-    gpxBodyEnd = 0;
-    Serial.println("New ride — no SD, stats reset");
-    return NEW_RIDE_RESET;
-  }
+  movingMs = 0;
+  maxSpeedKmh = 0.0f;
+  gpxPointCount = 0;
+  tripStarted = false;
+  elapsedBaseMs = 0;
+  elapsedAnchorMs = 0;
+  lastGpxMs = 0;
+  lastDatMs = 0;
+  lastGpxPosValid = false;
+  lastGpxStampValid = false;
+  gpxLogStopped = true;
 
   gpsDrain();
   if (!gpxFinalize()) {
     Serial.println("SD GPX finalize failed");
+    finishFoldCut(revSnap, movingSnap, elapsedSnap, maxSnap, pointsSnap, bodySnap);
     return NEW_RIDE_FAIL;
   }
-
-  bool hasPoints = gpxBodyEnd > (uint32_t)strlen(GPX_HEADER);
-  gpxFile.close();
+  bool hasPoints = bodySnap > (uint32_t)strlen(GPX_HEADER);
+  finishCloseTrack();
+  gpxBodyEnd = 0;
   gpsDrain();
 
-  FinishDat fin;
-  memset(&fin, 0, sizeof(fin));
-  fin.phase = FINISH_PHASE_ARCHIVING;
-  fin.hasPoints = hasPoints ? 1 : 0;
-  fin.needSum = (hasPoints || revSnap > 0) ? 1 : 0;
-  fin.revCount = revSnap;
-  fin.movingMs = movingSnap;
-  fin.elapsedMs = (uint32_t)elapsedSnap;
-  fin.maxSpeedKmh = maxSnap;
-  fin.points = hasPoints ? (uint32_t)pointsSnap : 0;
-  fin.fromRideGen = tripRideGen;
-
-  if (fin.needSum) {
-    if (!tripPickArchiveName(fin.dest, sizeof(fin.dest))) {
+  FinishSnap snap;
+  memset(&snap, 0, sizeof(snap));
+  snap.revCount = revSnap;
+  snap.movingMs = movingSnap;
+  snap.elapsedMs = (uint32_t)elapsedSnap;
+  snap.maxSpeedKmh = maxSnap;
+  snap.points = hasPoints ? (uint32_t)pointsSnap : 0;
+  snap.fromRideGen = genSnap;
+  snap.gpxBodyEnd = bodySnap;
+  snap.hasPoints = hasPoints ? 1 : 0;
+  snap.needSum = (hasPoints || revSnap > 0) ? 1 : 0;
+  if (gps.timeKnown) {
+    snap.endTimeKnown = 1;
+    snap.endYear = gps.year;
+    snap.endMonth = gps.month;
+    snap.endDay = gps.day;
+    snap.endHour = gps.hour;
+    snap.endMin = gps.minute;
+    snap.endSec = gps.sec;
+  }
+  if (snap.needSum) {
+    if (!tripPickArchiveName(snap.dest, sizeof(snap.dest))) {
       Serial.println("SD archive name failed");
+      gpxBodyEnd = bodySnap;
+      finishFoldCut(revSnap, movingSnap, elapsedSnap, maxSnap, pointsSnap, bodySnap);
       if (!gpxOpenOrCreate()) {
         sdReady = false;
       }
@@ -1876,53 +1806,50 @@ static int tripStartNewRide() {
     }
   }
 
-  if (!finishSave(&fin)) {
+  finishTxnInit(&gFinish);
+  int code = finishTxnBegin(&gFinish, &fs, &cfg, &snap);
+  if (code == FINISH_YIELD) {
+    code = finishPump();
+  }
+  finishApplyView();
+  if (code == FINISH_ROLLED_BACK) {
     if (!gpxOpenOrCreate()) {
       sdReady = false;
     }
     return NEW_RIDE_FAIL;
   }
-
-  return tripFinishAdvance(&fin);
+  if (gFinish.out.recordGps && gFinish.out.trackKnown && !gpxOpenOrCreate()) {
+    sdReady = false;
+    sdTrackOk = false;
+    return NEW_RIDE_FAIL;
+  }
+  return finishResultCode(code);
 }
 
 static const char *tripResumeSd() {
-  FinishDat fin;
-  if (finishLoad(&fin)) {
-    Serial.println("SD finish journal present — reconciling");
-    int result = tripFinishAdvance(&fin);
-    if (result == NEW_RIDE_FAIL) {
-      sdArchiveOk = false;
-      // Keep snapped stats from the journal visible until a later retry.
-      noInterrupts();
-      g_revCount = fin.revCount;
-      g_lastPulseMs = 0;
-      g_prevPulseMs = 0;
-      g_movingAccMs = 0;
-      interrupts();
-      movingMs = fin.movingMs;
-      maxSpeedKmh = (fin.maxSpeedKmh > 0.0f && fin.maxSpeedKmh <= MAX_SPEED_KMH)
-                        ? fin.maxSpeedKmh
-                        : 0.0f;
-      if (fin.revCount >= 1 || fin.elapsedMs > 0 || fin.movingMs > 0) {
-        tripStarted = true;
-        elapsedBaseMs = fin.elapsedMs;
-        elapsedAnchorMs = millis();
-      }
-      if (!gpxFile.isOpen() && !gpxOpenOrCreate()) {
-        sdReady = false;
-        sdTrackOk = false;
-        return "No card";
-      }
-      return "Finish pending";
-    }
-    if (!gpxFile.isOpen() && !gpxOpenOrCreate()) {
+  FinishFs fs = finishFs();
+  FinishCfg cfg = finishCfg();
+  finishTxnInit(&gFinish);
+  int code = finishTxnBoot(&gFinish, &fs, &cfg);
+  if (code != FINISH_ABSENT) {
+    finishApplyView();
+    if (gFinish.out.recordGps && gFinish.out.trackKnown && !gpxOpenOrCreate()) {
       sdReady = false;
       sdTrackOk = false;
       return "No card";
     }
-    return "Card ready";
+    const char *line = finishStatusLine(code);
+    if (line) {
+      return line;
+    }
+    return tripStarted ? "Resuming ride" : "Card ready";
   }
+
+  gFinishRecord = true;
+  gFinishPendingUi = false;
+  gFinishErrorUi = false;
+  gJournalLive = false;
+  gCkptAuth = true;
 
   TripDat d;
   bool haveDat = tripDatLoad(&d);
@@ -1930,7 +1857,11 @@ static const char *tripResumeSd() {
     gpxBodyEnd = d.gpxBodyEnd;
     tripDatSeq = d.seq;
     tripRideGen = (d.rideGen == 0) ? 1 : d.rideGen;
+  } else {
+    tripRideGen = 1;
   }
+  finishActiveTrackName(&fs, tripRideGen, gpxTrackName, sizeof(gpxTrackName));
+  gTrackMarked = true;
 
   if (!gpxOpenOrCreate()) {
     sdReady = false;
@@ -1953,7 +1884,6 @@ static const char *tripResumeSd() {
   g_movingAccMs = 0;
   interrupts();
   movingMs = d.movingMs;
-  // Drop a previously saved noise spike so resume does not keep 200+ km/h Max.
   maxSpeedKmh = (d.maxSpeedKmh > 0.0f && d.maxSpeedKmh <= MAX_SPEED_KMH)
                     ? d.maxSpeedKmh
                     : 0.0f;
@@ -2617,13 +2547,17 @@ static void paintFooter(unsigned long now) {
 
   if (!sdReady) {
     drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSansBold9pt7b, "", "No card", MARK_ALERT, COL_FG);
+  } else if (gFinishErrorUi) {
+    drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSansBold9pt7b, "", "Finish error", MARK_ALERT, COL_FG);
+  } else if (gFinishPendingUi && !gFinishRecord) {
+    drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSansBold9pt7b, "", "Finish pending", MARK_ALERT, COL_FG);
   } else if (!sdPersistenceOk()) {
     drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSansBold9pt7b, "", "Write failed", MARK_ALERT, COL_FG);
   } else if (bleXferWindowOpen(now)) {
     drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSans9pt7b, "", "Transfer", MARK_PILL, COL_FG);
   } else if (blePhoneConnected()) {
     drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSans9pt7b, "", "Phone", MARK_DOT, COL_FG);
-  } else if (tripStarted && live && gps.posKnown && gps.timeKnown && sdTrackOk) {
+  } else if (gFinishRecord && tripStarted && live && gps.posKnown && gps.timeKnown && sdTrackOk) {
     drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSans9pt7b, "", "Recording", MARK_PILL, COL_FG);
   } else {
     drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSans9pt7b, "", "", MARK_NONE, COL_DIM);
@@ -2724,12 +2658,7 @@ static const char BLE_RIDE_SVC_UUID[]  = "7A1E0001-4C8B-4D2E-9F63-1B5A0C7E8D24";
 static const char BLE_RIDE_CMD_UUID[]  = "7A1E0002-4C8B-4D2E-9F63-1B5A0C7E8D24";
 static const char BLE_RIDE_META_UUID[] = "7A1E0003-4C8B-4D2E-9F63-1B5A0C7E8D24";
 static const char BLE_RIDE_DATA_UUID[] = "7A1E0004-4C8B-4D2E-9F63-1B5A0C7E8D24";
-
-enum {
-  BLE_OP_LIST = 0x01,
-  BLE_OP_GET = 0x02,
-  BLE_OP_ABORT = 0x03
-};
+static const char BLE_RIDE_VER_UUID[]  = "7A1E0005-4C8B-4D2E-9F63-1B5A0C7E8D24";
 
 enum {
   BLE_META_ENTRY = 0x01,
@@ -2756,16 +2685,23 @@ enum {
 };
 
 static BLEService bleSvc(BLE_RIDE_SVC_UUID);
-static BLECharacteristic bleCmd(BLE_RIDE_CMD_UUID, CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP, 13);
-static BLECharacteristic bleMeta(BLE_RIDE_META_UUID, CHR_PROPS_NOTIFY, 17);
+static BLECharacteristic bleCmd(BLE_RIDE_CMD_UUID, CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP, 20);
+static BLECharacteristic bleMeta(BLE_RIDE_META_UUID, CHR_PROPS_NOTIFY, 24);
 static BLECharacteristic bleData(BLE_RIDE_DATA_UUID, CHR_PROPS_NOTIFY, 244);
+static BLECharacteristic bleVer(BLE_RIDE_VER_UUID, CHR_PROPS_READ, 2);
 
 static bool bleReady = false;
 static volatile uint8_t bleCmdPending = 0;
 static volatile uint8_t bleLinkLost = 0;
 static volatile uint8_t bleLinkUpEdge = 0;
+static volatile uint8_t bleLegacyPending = 0;
+static uint8_t bleCmdKind = 0;
 static uint8_t bleCmdOp = 0;
+static uint16_t bleCmdReq = 0;
 static char bleCmdName[13];
+static uint16_t bleJobReq = 0;
+static uint16_t bleLastReq = 0;
+static uint16_t bleErrorReq = 0;
 static uint8_t bleJob = BLE_JOB_IDLE;
 static uint8_t bleErrorPending = 0;
 static File32 bleFile;
@@ -2857,11 +2793,19 @@ static void bleResetXfer() {
   bleFooterFromRam = false;
   bleStartSent = false;
   bleCrc = 0xFFFFFFFFUL;
+  bleJobReq = 0;
 }
 
 static void bleQueueError(uint8_t code) {
+  uint16_t req = bleJobReq;
   bleResetXfer();
   bleErrorPending = code;
+  bleErrorReq = req;
+}
+
+static void bleReject(uint16_t req, uint8_t code) {
+  bleErrorPending = code;
+  bleErrorReq = req;
 }
 
 static void bleStopForNewRide() {
@@ -2879,7 +2823,7 @@ static uint32_t bleDownloadSize(File32 &f, const char *name, bool *footerFromRam
   if (footerFromRam) {
     *footerFromRam = false;
   }
-  if (strcmp(name, GPX_NAME) == 0 && gpxBodyEnd > 0 && gpxBodyEnd <= sz) {
+  if (gTrackMarked && strcmp(name, gpxTrackName) == 0 && gpxBodyEnd > 0 && gpxBodyEnd <= sz) {
     if (footerFromRam) {
       *footerFromRam = true;
     }
@@ -2895,19 +2839,26 @@ static bool bleNotifyMeta(const uint8_t *data, uint16_t len) {
   return bleMeta.notify(data, len);
 }
 
-static bool bleNotifyNamed(uint8_t type, const char *name, uint32_t size) {
-  uint8_t buf[17];
+static void blePutReq(uint8_t *dst, uint16_t req) {
+  dst[0] = (uint8_t)(req & 0xff);
+  dst[1] = (uint8_t)((req >> 8) & 0xff);
+}
+
+static bool bleNotifyNamed(uint8_t type, const char *name, uint32_t size, uint8_t flags) {
+  uint8_t buf[20];
   memset(buf, 0, sizeof(buf));
   buf[0] = type;
+  blePutReq(buf + 1, bleJobReq);
   size_t n = strlen(name);
   if (n > 12) {
     n = 12;
   }
-  memcpy(buf + 1, name, n);
-  buf[13] = (uint8_t)(size & 0xff);
-  buf[14] = (uint8_t)((size >> 8) & 0xff);
-  buf[15] = (uint8_t)((size >> 16) & 0xff);
-  buf[16] = (uint8_t)((size >> 24) & 0xff);
+  memcpy(buf + 3, name, n);
+  buf[15] = (uint8_t)(size & 0xff);
+  buf[16] = (uint8_t)((size >> 8) & 0xff);
+  buf[17] = (uint8_t)((size >> 16) & 0xff);
+  buf[18] = (uint8_t)((size >> 24) & 0xff);
+  buf[19] = flags;
   return bleNotifyMeta(buf, sizeof(buf));
 }
 
@@ -2970,12 +2921,13 @@ static uint32_t sumReadEndUtc(const char *gpxName) {
 }
 
 static bool bleNotifyEndTime(uint32_t endUtc) {
-  uint8_t buf[5];
+  uint8_t buf[7];
   buf[0] = BLE_META_END_TIME;
-  buf[1] = (uint8_t)(endUtc & 0xff);
-  buf[2] = (uint8_t)((endUtc >> 8) & 0xff);
-  buf[3] = (uint8_t)((endUtc >> 16) & 0xff);
-  buf[4] = (uint8_t)((endUtc >> 24) & 0xff);
+  blePutReq(buf + 1, bleJobReq);
+  buf[3] = (uint8_t)(endUtc & 0xff);
+  buf[4] = (uint8_t)((endUtc >> 8) & 0xff);
+  buf[5] = (uint8_t)((endUtc >> 16) & 0xff);
+  buf[6] = (uint8_t)((endUtc >> 24) & 0xff);
   return bleNotifyMeta(buf, sizeof(buf));
 }
 
@@ -3018,8 +2970,10 @@ static bool bleScanOneEntry() {
 }
 
 static bool bleFinishList() {
-  uint8_t endb = BLE_META_LIST_END;
-  if (!bleNotifyMeta(&endb, 1)) {
+  uint8_t endb[3];
+  endb[0] = BLE_META_LIST_END;
+  blePutReq(endb + 1, bleJobReq);
+  if (!bleNotifyMeta(endb, sizeof(endb))) {
     return false;
   }
   bleCloseFiles();
@@ -3056,7 +3010,8 @@ static bool blePumpList() {
     }
   }
   if (!bleListNeedTime) {
-    if (!bleNotifyNamed(BLE_META_ENTRY, bleListName, bleListSize)) {
+    uint8_t flags = (gTrackMarked && strcmp(bleListName, gpxTrackName) == 0) ? 1 : 0;
+    if (!bleNotifyNamed(BLE_META_ENTRY, bleListName, bleListSize, flags)) {
       return false;
     }
     bleListNeedTime = true;
@@ -3082,19 +3037,19 @@ static uint16_t blePayloadMax() {
     mtu = 23;
   }
   uint16_t att = mtu - 3;
-  if (att <= 4) {
+  if (att <= 6) {
     return 1;
   }
-  uint16_t payload = att - 4;
-  if (payload > 240) {
-    payload = 240;
+  uint16_t payload = att - 6;
+  if (payload > 238) {
+    payload = 238;
   }
   return payload;
 }
 
 static bool blePumpSend() {
   if (!bleStartSent) {
-    if (!bleNotifyNamed(BLE_META_START, bleSendName, bleSize)) {
+    if (!bleNotifyNamed(BLE_META_START, bleSendName, bleSize, 0)) {
       return false;
     }
     bleStartSent = true;
@@ -3102,12 +3057,13 @@ static bool blePumpSend() {
   }
   if (bleOffset >= bleSize) {
     uint32_t crc = ~bleCrc;
-    uint8_t buf[5];
+    uint8_t buf[7];
     buf[0] = BLE_META_DONE;
-    buf[1] = (uint8_t)(crc & 0xff);
-    buf[2] = (uint8_t)((crc >> 8) & 0xff);
-    buf[3] = (uint8_t)((crc >> 16) & 0xff);
-    buf[4] = (uint8_t)((crc >> 24) & 0xff);
+    blePutReq(buf + 1, bleJobReq);
+    buf[3] = (uint8_t)(crc & 0xff);
+    buf[4] = (uint8_t)((crc >> 8) & 0xff);
+    buf[5] = (uint8_t)((crc >> 16) & 0xff);
+    buf[6] = (uint8_t)((crc >> 24) & 0xff);
     if (!bleNotifyMeta(buf, sizeof(buf))) {
       return false;
     }
@@ -3127,7 +3083,7 @@ static bool blePumpSend() {
     payload = (uint16_t)remain;
   }
 
-  uint8_t *dst = bleChunk + 4;
+  uint8_t *dst = bleChunk + 6;
   uint16_t filled = 0;
   if (bleOffset < bleFileLimit) {
     uint32_t avail = bleFileLimit - bleOffset;
@@ -3156,12 +3112,13 @@ static bool blePumpSend() {
     filled = (uint16_t)(filled + n);
   }
 
-  bleChunk[0] = (uint8_t)(bleOffset & 0xff);
-  bleChunk[1] = (uint8_t)((bleOffset >> 8) & 0xff);
-  bleChunk[2] = (uint8_t)((bleOffset >> 16) & 0xff);
-  bleChunk[3] = (uint8_t)((bleOffset >> 24) & 0xff);
+  blePutReq(bleChunk, bleJobReq);
+  bleChunk[2] = (uint8_t)(bleOffset & 0xff);
+  bleChunk[3] = (uint8_t)((bleOffset >> 8) & 0xff);
+  bleChunk[4] = (uint8_t)((bleOffset >> 16) & 0xff);
+  bleChunk[5] = (uint8_t)((bleOffset >> 24) & 0xff);
 
-  if (!bleData.notifyEnabled() || !bleData.notify(bleChunk, (uint16_t)(4 + filled))) {
+  if (!bleData.notifyEnabled() || !bleData.notify(bleChunk, (uint16_t)(6 + filled))) {
     return false;
   }
   bleCrc = crc32Update(bleCrc, dst, filled);
@@ -3169,41 +3126,43 @@ static bool blePumpSend() {
   return true;
 }
 
-static void bleBeginList() {
-  bleResetXfer();
-  bleErrorPending = 0;
+static void bleBeginList(uint16_t req) {
   if (!bleXferWindowOpen(millis())) {
-    bleQueueError(BLE_ERR_LOCKED);
+    bleReject(req, BLE_ERR_LOCKED);
     Serial.println("BLE list denied — transfer window closed");
     return;
   }
   if (!sdReady) {
-    bleQueueError(BLE_ERR_NO_SD);
+    bleReject(req, BLE_ERR_NO_SD);
     return;
   }
+  bleResetXfer();
+  bleErrorPending = 0;
+  bleJobReq = req;
   // Activity extends the owner-approved window.
   bleArmXferWindow(millis());
   bleJob = BLE_JOB_LIST;
   Serial.println("BLE list");
 }
 
-static void bleBeginGet(const char *rawName) {
+static void bleBeginGet(uint16_t req, const char *rawName) {
   char name[13];
   if (!bleNormalizeGpx(rawName, name, sizeof(name))) {
-    bleQueueError(BLE_ERR_NAME);
+    bleReject(req, BLE_ERR_NAME);
     return;
   }
   if (!bleXferWindowOpen(millis())) {
-    bleQueueError(BLE_ERR_LOCKED);
+    bleReject(req, BLE_ERR_LOCKED);
     Serial.println("BLE get denied — transfer window closed");
     return;
   }
   if (!sdReady) {
-    bleQueueError(BLE_ERR_NO_SD);
+    bleReject(req, BLE_ERR_NO_SD);
     return;
   }
   bleResetXfer();
   bleErrorPending = 0;
+  bleJobReq = req;
   gpsDrain();
   bool opened = bleFile.open(name, O_RDONLY);
   gpsDrain();
@@ -3228,30 +3187,46 @@ static void bleBeginGet(const char *rawName) {
 }
 
 static void bleTakeCommand() {
+  uint8_t kind;
   uint8_t op;
+  uint16_t req;
   char name[13];
   noInterrupts();
+  kind = bleCmdKind;
   op = bleCmdOp;
+  req = bleCmdReq;
   memcpy(name, bleCmdName, sizeof(name));
   bleCmdPending = 0;
   interrupts();
 
+  if (kind == BLE_PARSE_LEGACY) {
+    bleLegacyPending = 1;
+    return;
+  }
+  if (kind != BLE_PARSE_V2) {
+    return;
+  }
   if (op == BLE_OP_ABORT) {
-    if (bleJob != BLE_JOB_IDLE || bleErrorPending != 0) {
+    if (req != 0 && req == bleJobReq && bleJob != BLE_JOB_IDLE) {
       bleQueueError(BLE_ERR_ABORT);
       Serial.println("BLE abort");
     }
     return;
   }
+  if (!bleReqIsNew(bleLastReq, req)) {
+    bleReject(req, BLE_ERR_NAME);
+    return;
+  }
+  bleLastReq = req;
   if (op == BLE_OP_LIST) {
-    bleBeginList();
+    bleBeginList(req);
     return;
   }
   if (op == BLE_OP_GET) {
-    bleBeginGet(name);
+    bleBeginGet(req, name);
     return;
   }
-  bleQueueError(BLE_ERR_NAME);
+  bleReject(req, BLE_ERR_NAME);
 }
 
 static bool bleActive() {
@@ -3278,6 +3253,8 @@ static bool bleService() {
 
   if (bleLinkUpEdge) {
     bleLinkUpEdge = 0;
+    bleLastReq = 0;
+    bleJobReq = 0;
     Serial.println("BLE connected");
   }
   if (bleLinkLost || (bleJob != BLE_JOB_IDLE && !Bluefruit.connected())) {
@@ -3286,6 +3263,8 @@ static bool bleService() {
     bleCmdPending = 0;
     interrupts();
     bleErrorPending = 0;
+    bleLegacyPending = 0;
+    bleLastReq = 0;
     bleResetXfer();
     Serial.println("BLE disconnected");
     return false;
@@ -3295,8 +3274,23 @@ static bool bleService() {
     bleTakeCommand();
     return true;
   }
+  if (bleLegacyPending) {
+    bleLegacyPending = 0;
+    overlayFlashMsg = "Update page";
+    overlayFlashUntilMs = millis() + BTN_FLASH_MS;
+    uint8_t legacy[2] = {BLE_META_ERROR, BLE_ERR_NAME};
+    if (!bleNotifyMeta(legacy, sizeof(legacy))) {
+      bleLegacyPending = 1;
+      return false;
+    }
+    Serial.println("BLE update page");
+    return true;
+  }
   if (bleErrorPending) {
-    uint8_t buf[2] = {BLE_META_ERROR, bleErrorPending};
+    uint8_t buf[4];
+    buf[0] = BLE_META_ERROR;
+    blePutReq(buf + 1, bleErrorReq);
+    buf[3] = bleErrorPending;
     if (!bleNotifyMeta(buf, sizeof(buf))) {
       return false;
     }
@@ -3317,21 +3311,18 @@ static bool bleService() {
 static void bleOnWrite(uint16_t conn_hdl, BLECharacteristic *chr, uint8_t *data, uint16_t len) {
   (void)conn_hdl;
   (void)chr;
-  if (len < 1 || len > 13) {
+  if (len < 1 || len > 20) {
     return;
   }
-  uint8_t op = data[0];
+  uint8_t op = 0;
+  uint16_t req = 0;
   char name[13];
   memset(name, 0, sizeof(name));
-  if (op == BLE_OP_GET && len > 1) {
-    uint16_t n = (uint16_t)(len - 1);
-    if (n > 12) {
-      n = 12;
-    }
-    memcpy(name, data + 1, n);
-  }
+  int kind = bleParseCommand(data, len, &op, &req, name, sizeof(name));
   noInterrupts();
+  bleCmdKind = (uint8_t)kind;
   bleCmdOp = op;
+  bleCmdReq = req;
   memcpy(bleCmdName, name, sizeof(bleCmdName));
   bleCmdPending = 1;
   interrupts();
@@ -3374,10 +3365,14 @@ static void bleStart() {
   bleCmd.setWriteCallback(bleOnWrite, true);
   bleMeta.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
   bleData.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  bleVer.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
   bleSvc.begin();
   bleCmd.begin();
   bleMeta.begin();
   bleData.begin();
+  bleVer.begin();
+  uint8_t verBytes[2] = {BLE_PROTO_VERSION, 0};
+  bleVer.write(verBytes, sizeof(verBytes));
 
   Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
   Bluefruit.Advertising.addTxPower();
@@ -3522,6 +3517,14 @@ void loop() {
   }
 
   tripLogGps(now, (uint32_t)revCount, (uint32_t)elapsedMs, lastPulseMs);
+  if (sdReady && gJournalLive && !gCkptAuth && (now - lastDatMs >= TRIP_DAT_MS)) {
+    finishNoteRam();
+    FinishFs contFs = finishFs();
+    if (gFinish.committed) {
+      finishTxnSyncCont(&gFinish, &contFs);
+    }
+    lastDatMs = now;
+  }
   tripMaybeSave(now, (uint32_t)revCount, (uint32_t)elapsedMs);
 
   drawRideScreen(speedKmh, distanceKm, avgSpeedKmh, avgValid, maxSpeedKmh,

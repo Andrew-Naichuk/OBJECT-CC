@@ -368,7 +368,7 @@
       <ul id="files"></ul>
     </section>
 
-    <p class="note">Works in Chrome on Android when this page is served over HTTPS. Safari on iPhone has no Bluetooth; open the page in Bluefy instead. Transfers need an open window on the computer: double short-press the button while stopped.</p>
+    <p class="note">Works in Chrome on Android when this page is served over HTTPS. Safari on iPhone has no Bluetooth; open the page in Bluefy instead. Transfers need an open window on the computer: double short-press the button while stopped. This copy speaks protocol version 2. The public transfer page stays on the previous protocol until it is republished.</p>
   </main>
   <script>
     // Same bytes as xiao_oled.ino.
@@ -376,6 +376,10 @@
     const CMD = "7a1e0002-4c8b-4d2e-9f63-1b5a0c7e8d24";
     const META = "7a1e0003-4c8b-4d2e-9f63-1b5a0c7e8d24";
     const DATA = "7a1e0004-4c8b-4d2e-9f63-1b5a0c7e8d24";
+    const VER = "7a1e0005-4c8b-4d2e-9f63-1b5a0c7e8d24";
+    const PROTO_MAGIC = 0xa5;
+    const PROTO_VER = 2;
+    const FIRMWARE_MSG = "Update the firmware on the computer.";
     const OP_LIST = 0x01;
     const OP_GET = 0x02;
     const OP_ABORT = 0x03;
@@ -412,7 +416,10 @@
     let device = null;
     let cmdChar = null;
     let phase = "idle";
-    let transferGen = 0;
+    let abortId = 0;
+    let expectedId = 0;
+    let connGen = 0;
+    let nextReqId = 1;
     let rides = [];
     let fileBuf = null;
     let fileName = "";
@@ -507,11 +514,44 @@
       return (~c) >>> 0;
     }
 
+    function u16le(bytes, offset) {
+      return (bytes[offset] | (bytes[offset + 1] << 8)) & 0xffff;
+    }
+
     function u32le(bytes, offset) {
       return (bytes[offset] |
         (bytes[offset + 1] << 8) |
         (bytes[offset + 2] << 16) |
         (bytes[offset + 3] << 24)) >>> 0;
+    }
+
+    function protocolIsV2(view) {
+      return !!(view && view.byteLength >= 1 && view.getUint8(0) === PROTO_VER);
+    }
+
+    function allocReqId() {
+      if (nextReqId < 1 || nextReqId > 0xffff) {
+        setStatus("Reconnect to the computer to continue.", true);
+        return 0;
+      }
+      const id = nextReqId;
+      nextReqId++;
+      if (nextReqId > 0xffff) nextReqId = 0;
+      return id;
+    }
+
+    function encodeCmd(op, reqId, name) {
+      const extra = name ? name.length : 0;
+      const body = new Uint8Array(5 + extra);
+      body[0] = PROTO_MAGIC;
+      body[1] = PROTO_VER;
+      body[2] = op;
+      body[3] = reqId & 0xff;
+      body[4] = (reqId >> 8) & 0xff;
+      if (name) {
+        for (let i = 0; i < name.length; i++) body[5 + i] = name.charCodeAt(i) & 0xff;
+      }
+      return body;
     }
 
     function readName(bytes) {
@@ -544,6 +584,8 @@
     // Prefer .SUM end time from META_END_TIME. Unknown times sort after known
     // ones; filename digits are only a tie-breaker (collision slots are not hours).
     function rideCompare(a, b) {
+      if (a.current && !b.current) return -1;
+      if (b.current && !a.current) return 1;
       if (a.name === "CURRENT.GPX") return -1;
       if (b.name === "CURRENT.GPX") return 1;
       const ta = a.endUtc || 0;
@@ -583,7 +625,7 @@
         extEl.className = "ext";
         extEl.textContent = ext.toLowerCase();
         name.append(extEl);
-        if (ride.name === "CURRENT.GPX") {
+        if (ride.current) {
           const tag = document.createElement("span");
           tag.className = "tag";
           tag.textContent = "Current ride";
@@ -623,31 +665,32 @@
     async function abortTransfer(message, isError) {
       clearTimeout(stallTimer);
       const wasBusy = phase === "listing" || phase === "downloading";
-      const gen = ++transferGen;
+      const cancelId = expectedId;
+      abortId = cancelId;
+      expectedId = 0;
       phase = "idle";
       pendingListEndUtc = null;
       resetTransfer();
       if (message) setStatus(message, !!isError);
       else syncUI();
       renderRides();
-      if (wasBusy && cmdChar) {
+      if (wasBusy && cmdChar && cancelId) {
         try {
           await Promise.race([
-            writeCmd(new Uint8Array([OP_ABORT])),
+            writeCmd(encodeCmd(OP_ABORT, cancelId)),
             new Promise((_, reject) => setTimeout(() => reject(new Error("abort timeout")), ABORT_WRITE_MS))
           ]);
         } catch (e) {}
       }
-      // A late abort response must not affect a newer transfer.
-      void gen;
     }
 
-    function saveFile(gen) {
-      if (gen !== transferGen) return;
+    function saveFile() {
+      if (!expectedId) return;
       if (phase !== "downloading" || !fileBuf) return;
       const crc = crc32(fileBuf);
       if (crc !== doneCrc) {
         setStatus("CRC mismatch for " + fileName + ". File not saved.", true);
+        expectedId = 0;
         phase = "idle";
         resetTransfer();
         renderRides();
@@ -661,50 +704,50 @@
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 4000);
       setStatus("Saved " + fileName + ".");
+      expectedId = 0;
       phase = "idle";
       resetTransfer();
       renderRides();
     }
 
-    function maybeFinish(gen) {
-      if (gen !== transferGen || phase !== "downloading") return;
+    function maybeFinish() {
+      if (!expectedId || phase !== "downloading") return;
       if (doneCrc === null || !fileBuf || received !== fileBuf.length) return;
       clearTimeout(stallTimer);
-      saveFile(gen);
+      saveFile();
     }
 
-    function takeBytes(payload, offset, gen) {
-      if (gen !== transferGen || phase !== "downloading") return;
+    function takeBytes(payload, offset) {
+      if (!expectedId || phase !== "downloading") return;
       if (!fileBuf || offset !== received) return;
       if (offset + payload.length > fileBuf.length) return;
       fileBuf.set(payload, offset);
       received += payload.length;
       showProgress(fileName, received, fileBuf.length);
-      maybeFinish(gen);
+      maybeFinish();
     }
 
-    function onMeta(event) {
+    function onMeta(event, gen) {
       const view = event.target.value;
       const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-      if (bytes.length < 1) return;
+      if (gen !== connGen || bytes.length < 3) return;
       const type = bytes[0];
-      const gen = transferGen;
-      // Ignore leftovers after abort/idle except ERROR (always useful).
-      if (phase === "idle" && type !== META_ERROR) return;
-      if (phase !== "listing" && phase !== "downloading" && type !== META_ERROR) return;
+      const reqId = u16le(bytes, 1);
+      if (!expectedId || reqId !== expectedId) return;
+      if (phase !== "listing" && phase !== "downloading") return;
       noteActivity();
-      if (type === META_ENTRY && bytes.length >= 17) {
-        if (phase !== "listing" || gen !== transferGen) return;
-        const name = readName(bytes.subarray(1, 13));
-        const size = u32le(bytes, 13);
+      if (type === META_ENTRY && bytes.length >= 20) {
+        if (phase !== "listing") return;
+        const name = readName(bytes.subarray(3, 15));
+        const size = u32le(bytes, 15);
         pendingListEndUtc = 0;
-        rides.push({ name, size, endUtc: 0 });
+        rides.push({ name, size, endUtc: 0, current: (bytes[19] & 1) !== 0 });
         syncUI();
         return;
       }
-      if (type === META_END_TIME && bytes.length >= 5) {
-        if (phase !== "listing" || gen !== transferGen) return;
-        const endUtc = u32le(bytes, 1);
+      if (type === META_END_TIME && bytes.length >= 7) {
+        if (phase !== "listing") return;
+        const endUtc = u32le(bytes, 3);
         if (rides.length) {
           rides[rides.length - 1].endUtc = endUtc;
         }
@@ -712,18 +755,17 @@
         return;
       }
       if (type === META_LIST_END) {
-        if (gen !== transferGen) return;
         clearTimeout(stallTimer);
         phase = "idle";
+        expectedId = 0;
         pendingListEndUtc = null;
         setStatus(rides.length ? rides.length + " ride" + (rides.length === 1 ? "" : "s") + " on the card." : "No GPX files on the card.");
         renderRides();
         return;
       }
-      if (type === META_START && bytes.length >= 17) {
-        if (gen !== transferGen) return;
-        fileName = readName(bytes.subarray(1, 13));
-        const size = u32le(bytes, 13);
+      if (type === META_START && bytes.length >= 19) {
+        fileName = readName(bytes.subarray(3, 15));
+        const size = u32le(bytes, 15);
         if (size > MAX_FILE) {
           abortTransfer("File is too large to download here.", true);
           return;
@@ -735,42 +777,43 @@
         showProgress(fileName, 0, size);
         const queued = early;
         early = [];
-        for (const chunk of queued) takeBytes(chunk.payload, chunk.offset, gen);
-        maybeFinish(gen);
+        for (const chunk of queued) takeBytes(chunk.payload, chunk.offset);
+        maybeFinish();
         renderRides();
         return;
       }
-      if (type === META_DONE && bytes.length >= 5) {
-        if (phase !== "downloading" || gen !== transferGen) return;
-        doneCrc = u32le(bytes, 1);
-        maybeFinish(gen);
+      if (type === META_DONE && bytes.length >= 7) {
+        if (phase !== "downloading") return;
+        doneCrc = u32le(bytes, 3);
+        maybeFinish();
         return;
       }
-      if (type === META_ERROR && bytes.length >= 2) {
+      if (type === META_ERROR && bytes.length >= 4) {
         clearTimeout(stallTimer);
-        transferGen++;
+        expectedId = 0;
         phase = "idle";
         resetTransfer();
-        setStatus(ERRORS[bytes[1]] || "Transfer failed.", true);
+        setStatus(ERRORS[bytes[3]] || "Transfer failed.", true);
         renderRides();
       }
     }
 
-    function onData(event) {
-      if (phase !== "downloading") return;
-      const gen = transferGen;
+    function onData(event, gen) {
+      if (gen !== connGen || !expectedId || phase !== "downloading") return;
       const view = event.target.value;
       const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-      if (bytes.length < 4) return;
+      if (bytes.length < 6) return;
+      const reqId = u16le(bytes, 0);
+      if (reqId !== expectedId) return;
       noteActivity();
-      const offset = u32le(bytes, 0);
-      const payload = bytes.subarray(4);
+      const offset = u32le(bytes, 2);
+      const payload = bytes.subarray(6);
       const copy = new Uint8Array(payload);
       if (!fileBuf) {
         if (early.length < 64) early.push({ offset, payload: copy });
         return;
       }
-      takeBytes(copy, offset, gen);
+      takeBytes(copy, offset);
     }
 
     async function writeCmd(bytes) {
@@ -779,7 +822,9 @@
 
     async function listRides() {
       if (!cmdChar || phase !== "idle") return;
-      transferGen++;
+      const id = allocReqId();
+      if (!id) return;
+      expectedId = id;
       rides = [];
       pendingListEndUtc = null;
       filesEl.replaceChildren();
@@ -788,12 +833,14 @@
       renderRides();
       setStatus("Reading the card…");
       noteActivity();
-      await writeCmd(new Uint8Array([OP_LIST]));
+      await writeCmd(encodeCmd(OP_LIST, id));
     }
 
     async function downloadRide(name) {
       if (!cmdChar || phase !== "idle") return;
-      transferGen++;
+      const id = allocReqId();
+      if (!id) return;
+      expectedId = id;
       phase = "downloading";
       resetTransfer();
       fileName = name;
@@ -801,10 +848,7 @@
       setStatus("Saving " + name + "…");
       showProgress(name, 0, 1);
       noteActivity();
-      const body = new Uint8Array(1 + name.length);
-      body[0] = OP_GET;
-      for (let i = 0; i < name.length; i++) body[i + 1] = name.charCodeAt(i);
-      await writeCmd(body);
+      await writeCmd(encodeCmd(OP_GET, id, name));
     }
 
     async function connect() {
@@ -822,12 +866,30 @@
         device.addEventListener("gattserverdisconnected", onDisconnected);
         setStatus("Connecting…");
         const server = await device.gatt.connect();
+        connGen++;
+        nextReqId = 1;
+        expectedId = 0;
+        abortId = 0;
+        const myGen = connGen;
         const service = await server.getPrimaryService(SERVICE);
+        let verView = null;
+        try {
+          const ver = await service.getCharacteristic(VER);
+          verView = await ver.readValue();
+        } catch (e) {
+          verView = null;
+        }
+        if (!protocolIsV2(verView)) {
+          setStatus(FIRMWARE_MSG, true);
+          try { device.gatt.disconnect(); } catch (e) {}
+          cmdChar = null;
+          return;
+        }
         cmdChar = await service.getCharacteristic(CMD);
         const meta = await service.getCharacteristic(META);
         const data = await service.getCharacteristic(DATA);
-        meta.addEventListener("characteristicvaluechanged", onMeta);
-        data.addEventListener("characteristicvaluechanged", onData);
+        meta.addEventListener("characteristicvaluechanged", (event) => onMeta(event, myGen));
+        data.addEventListener("characteristicvaluechanged", (event) => onData(event, myGen));
         await meta.startNotifications();
         await data.startNotifications();
         refreshBtn.disabled = false;
@@ -850,6 +912,9 @@
 
     function onDisconnected() {
       clearTimeout(stallTimer);
+      connGen++;
+      expectedId = 0;
+      abortId = 0;
       cmdChar = null;
       phase = "idle";
       rides = [];

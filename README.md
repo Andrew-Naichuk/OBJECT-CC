@@ -139,16 +139,20 @@ The portrait layout keeps current speed largest, with supporting information und
 
 Stop and wait for the speed reading to reach zero before holding for a new ride. The countdown appears after two seconds. Turning the backlight off does **not** stop recording or turn off the device.
 
-If the ride has no GPS points, the device shows **No GPS track**, clears counters, and still writes a `.SUM` sidecar when wheel data exists. With no card available, the long press resets RAM stats and displays **Stats reset**.
+If the ride has no GPS points, the device shows **No GPS track** and still writes a `.SUM` sidecar when wheel data exists. With no card available, the long press resets RAM stats and displays **Stats reset**.
+
+Finishing a ride writes the journal before renaming the track. The summary uses the clock time from that moment; a later retry does not pick a new end time. If the first journal write does not commit, the ride continues. If it might have committed, or an invalid journal is found on the next boot, the footer shows **Finish pending** or **Finish error** and the files stay on the card. Wheel counts that arrive while a finish is still being written are kept in memory and in the newest journal slot that sync confirmed. A power loss drops whatever had not reached that slot or a checkpoint. That is not zero-loss recovery.
 
 ## Ride files
 
 
 | File           | Contents                                                                                         |
 | -------------- | ------------------------------------------------------------------------------------------------ |
-| `CURRENT.GPX`  | Current GPS track                                                                                |
+| `CURRENT.GPX`  | Legacy current GPS track, for a ride that never received a generation filename                   |
+| `C` + 7 hex digits + `.GPX` | Current track for a ride this firmware started. Example: generation `0x2A` is `C000002A.GPX` |
+| `G` + the same digits + `.ID` | Sidecar written once with that file: generation, GPX name, and track position            |
 | `TRIP_A.DAT` / `TRIP_B.DAT` | Alternating CRC-checked checkpoints (sequence + ride generation + counters + track position) |
-| `FINISH.DAT`   | Short-lived finish journal used to recover an interrupted save                                   |
+| `FINISH_A.DAT` / `FINISH_B.DAT` | Finish journal. The slot that is not the newest valid record is the one rewritten   |
 | `YYMMDDHH.GPX` | First-choice archive name, based on available GPS UTC time when saving                           |
 | `YYMMDDnn.GPX` | Collision fallback; `nn` is 24–99 (sequence), not a clock hour                                   |
 | `RIDEnnnn.GPX` | Numbered fallback when a date-based name is unavailable                                          |
@@ -163,11 +167,13 @@ GPX exports contain coordinates, timestamps and altitude when available. Wheel-d
 
 1. Power on OBJECT and keep it near your phone.
 2. While stopped, **double short-press** the button so the footer shows `Transfer`.
-3. Open the [ride-transfer page](https://object.nav-tech.workers.dev).
+3. Open a local copy of [tools/index.html](tools/index.html) over HTTPS. The public page at `https://object.nav-tech.workers.dev` still speaks the previous protocol.
 4. Tap **Connect**, choose **OBJECT-001**, then select a GPX file.
 5. The page checks the transferred file's CRC before requesting a browser download.
 
-You can also download `CURRENT.GPX` without finishing the ride. The device sends a snapshot ending at the point where the transfer began. The page's **Current ride** badge identifies that filename; it is not a live recording-health indicator.
+You can also download the ride in progress without finishing it. The device sends a snapshot ending at the point where the transfer began. The list marks exactly one current file, either the generation track or legacy `CURRENT.GPX`, and the page badges that entry. The filename alone is not a live recording-health indicator.
+
+The transfer page in this repository speaks protocol version 2 (a `0xA5` prefix, version byte, and a request id on every command and notification). The public page at `https://object.nav-tech.workers.dev` stays on the previous protocol until that copy is republished. Until then, test transfers with a local copy of [tools/index.html](tools/index.html). A new page against older firmware shows **Update the firmware on the computer** and does not send a version-2 command. New firmware against the previous page does not start a transfer; the device shows **Update page**.
 
 For the documented browser setup, use **Chrome on Android**, or [Bluefy on iPhone](https://apps.apple.com/app/bluefy-web-ble-browser/id1492822185), since Safari does not expose Web Bluetooth. To host your own copy, serve [tools/index.html](tools/index.html) over **HTTPS**.
 
@@ -183,7 +189,7 @@ The ride list prefers end timestamps from matching `.SUM` files when the firmwar
 | BLE access          | Transfer uses a physical button window and inactivity re-arm, not LE Secure Connections bonding or per-owner credentials.                           |
 | Summary transfer    | `.SUM` sidecars are not listed or downloaded over Bluetooth; copy them from the microSD card if you need wheel stats off the device.              |
 | Summary format      | `.SUM` is a plain-text sidecar for this project; third-party GPX apps will not read those wheel stats automatically.                                |
-| On-device validation | Host regressions and compile checks cover recent storage/transfer fixes; slow-ride moving-time and finish/backlight checks on hardware are pending. |
+| On-device validation | Host regressions cover the finish journal and transfer identity. A physical power cut, and Bluetooth against a phone, still need to be checked on the device. |
 
 
 ## Firmware
