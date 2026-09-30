@@ -1,15 +1,18 @@
 /*
- * GME128128-01 1.5" OLED (SH1107, 128x128) on Seeed XIAO nRF52840 Sense.
+ * 3.2" IPS SPI TFT (ILI9341, 240x320) on Seeed XIAO nRF52840 Sense.
  * Cycling computer: reed-switch wheel speed + trip metrics + GPS status.
  *
- * Wiring (display -> XIAO):
- *   VCC -> 3V3
- *   GND -> GND
- *   SCL -> D8 / SCK
- *   SDA -> D10 / MOSI
- *   DC  -> D2
- *   CS  -> D1
- *   RST -> D3
+ * Wiring (display module -> XIAO):
+ *   VCC     -> 3V3
+ *   GND     -> GND
+ *   LCD_CS  -> D1
+ *   LCD_RS  -> D2   (D/C)
+ *   LCD_RST -> 7k -> 3.3V (held out of reset; not a GPIO)
+ *   MOSI    -> D10
+ *   SCK     -> D8
+ *   MISO    -> D9
+ *   LED     -> D3   (backlight PWM: short press cycles bright / dim / off)
+ *   SD_CS   -> D5
  *
  * Reed switch (one pulse per wheel revolution):
  *   One side -> D0, other side -> GND
@@ -22,48 +25,87 @@
  *   GPS 5V  -> 5V
  *   Compass SCL/SDA unused.
  *
- * microSD slot (SPI shared with OLED):
- *   CLK  -> D8 / SCK
- *   MOSI -> D10 / MOSI
- *   MISO -> D9 / MISO
- *   CS   -> D5
- *   VCC  -> 3V3
- *   GND  -> GND
+ * microSD slot on the display module (SPI shared with the TFT):
+ *   CLK/MOSI/MISO are the LCD bus above, CS = SD_CS = D5.
  *
- * Tact button (new ride: hold 4 s while stopped):
+ * Tact button:
  *   One side -> D4, other side -> GND
- *   INPUT_PULLUP; pressed = LOW. Short press unused.
+ *   INPUT_PULLUP; pressed = LOW.
+ *   Short press (release before 2 s): backlight bright -> dim -> off.
+ *   Hold 4 s while stopped: save the ride and start a new one.
+ *
+ * BLE file download (no extra wiring):
+ *   Advertises as "OBJECT-001". tools/index.html lists root *.GPX files
+ *   and saves them on the phone. TRIP.DAT is not offered. Open that page
+ *   over HTTPS (Android Chrome, or a Web Bluetooth browser on iPhone).
  *
  * Libraries (Arduino Library Manager):
- *   Adafruit SH110X, Adafruit GFX Library, Adafruit BusIO
- * SdFat is bundled with the Seeeduino nRF52 core (do not install 2.3.x).
+ *   Adafruit ILI9341, Adafruit GFX Library, Adafruit BusIO
+ * SdFat and Bluefruit are bundled with the Seeeduino nRF52 core
+ * (do not install SdFat 2.3.x).
  *
  * Wheel: 700x32C (ISO 32-622) -> circumference 2155 mm.
  *
- * OLED layout (Figma 128x128): DIST/TIME | speed + avg | MOVE/MAX | GPS.
+ * TFT layout (portrait 240x320), monochrome to match the OBJECT ride page:
+ *   OBJECT | GPS state, km/h | Avg, dot-matrix speed, 24-dot gauge,
+ *   Distance / Time / Moving / Max rows, Altitude | card, phone, recording.
+ * The gauge shows speed (2 km/h a dot), the new-ride hold, or a phone
+ * download in progress.
+ * Rotation 0. If the image is upside down relative to the pin header, use 2.
  */
 
 #include <Adafruit_TinyUSB.h>
 #include <SPI.h>
 #include <SdFat.h>
+#include <bluefruit.h>
 #include <Adafruit_GFX.h>
-#include <Adafruit_SH110X.h>
+#include <Adafruit_ILI9341.h>
+#include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/FreeSansBold9pt7b.h>
+#include <Fonts/FreeSansBold12pt7b.h>
+#include <Fonts/FreeSansBold18pt7b.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <stddef.h>
 
-static const int PIN_OLED_CS  = D1;
-static const int PIN_OLED_DC  = D2;
-static const int PIN_OLED_RST = D3;
-static const int PIN_REED     = D0;
-static const int PIN_BTN      = D4;
-static const int PIN_SD_CS    = D5;
+static const int PIN_LCD_CS = D1;
+static const int PIN_LCD_DC = D2;
+static const int PIN_LCD_BL = D3;
+static const int PIN_REED   = D0;
+static const int PIN_BTN    = D4;
+static const int PIN_SD_CS  = D5;
 
-static const int SCREEN_W = 128;
-static const int SCREEN_H = 128;
-static const int PAD      = 4;
+static const int SCREEN_W = 240;
+static const int SCREEN_H = 320;
+static const int PAD      = 12;
+
+// Monochrome palette, the same one the OBJECT ride-transfer page uses.
+static const uint16_t COL_BG   = 0x0000;  // black
+static const uint16_t COL_FG   = 0xFFFF;  // white
+static const uint16_t COL_DIM  = 0x8C71;  // #8f8f8f labels and captions
+static const uint16_t COL_RULE = 0x2124;  // #242424 hairlines
+static const uint16_t COL_OFF  = 0x18E3;  // #1c1c1c unlit matrix dots
+
+// Portrait stack, top to bottom.
+static const int STATUS_BASE = 19;   // wordmark baseline
+static const int CAPTION_Y   = 34;
+static const int CAPTION_H   = 20;
+static const int HERO_Y      = 60;   // speed matrix top
+static const int HERO_PITCH  = 10;   // matrix cell
+static const int HERO_DOT    = 8;    // lit square inside the cell
+static const int GAUGE_Y     = 142;  // dot centre line
+static const int GAUGE_DOTS  = 24;
+static const int GAUGE_PITCH = 9;
+static const int GAUGE_R     = 2;
+static const float GAUGE_KMH_PER_DOT = 2.0f;
+static const int ROWS_Y      = 156;
+static const int ROW_H       = 34;
+static const int ROW_COUNT   = 4;
+static const int VALUE_X     = 96;
+static const int FOOTER_Y    = 296;
+static const int FOOTER_H    = 22;
 
 // Circumference of 700x32C (32-622), millimetres.
 static const float WHEEL_CIRC_MM = 2155.0f;
@@ -78,6 +120,16 @@ static const unsigned long BTN_DEBOUNCE_MS = 30;
 static const unsigned long BTN_ARM_MS = 2000;
 static const unsigned long BTN_EXEC_MS = 4000;
 static const unsigned long BTN_FLASH_MS = 1500;
+
+enum {
+  BL_BRIGHT = 0,
+  BL_DIM,
+  BL_OFF,
+  BL_MODE_COUNT
+};
+// Dim is ~16% so night use keeps the digits readable and cuts most of the
+// backlight current. Off leaves the panel updating with the LEDs dark.
+static const uint8_t BL_DUTY[BL_MODE_COUNT] = {255, 40, 0};
 
 static const unsigned long GPS_BAUD = 115200;
 static const unsigned long GPS_STALE_MS = 2000;
@@ -107,7 +159,8 @@ static const char GPX_HEADER[] =
     "<trk>\n<name>Ride</name>\n<type>cycling</type>\n<trkseg>\n";
 static const char GPX_FOOTER[] = "</trkseg>\n</trk>\n</gpx>\n";
 
-Adafruit_SH1107 display(SCREEN_W, SCREEN_H, &SPI, PIN_OLED_DC, PIN_OLED_RST, PIN_OLED_CS);
+// RST is tied to 3.3V. Hardware SPI: SCK D8, MOSI D10, MISO D9.
+Adafruit_ILI9341 display(PIN_LCD_CS, PIN_LCD_DC, -1);
 
 SdFat sd;
 File32 gpxFile;
@@ -141,10 +194,45 @@ static bool btnSample = false;
 static bool btnHeld = false;
 static bool btnArmed = false;
 static bool btnDidExec = false;
+static bool btnReleased = false;
+static bool btnReleaseDidExec = false;
 static unsigned long btnDebounceMs = 0;
 static unsigned long btnHoldStartMs = 0;
+static unsigned long btnReleasedHeldMs = 0;
+static uint8_t blMode = BL_BRIGHT;
 static unsigned long overlayFlashUntilMs = 0;
 static const char *overlayFlashMsg = NULL;
+
+struct TextCache {
+  char text[40];
+  uint16_t color;
+  uint8_t mark;
+  bool valid;
+};
+
+struct Slot {
+  int16_t x;
+  int16_t y;
+  int16_t w;
+  int16_t h;
+  int16_t base;
+};
+
+struct DotGlyph {
+  char ch;
+  uint8_t cols;
+  uint8_t rows[7];
+};
+
+static TextCache txtStatus;
+static TextCache txtCaption;
+static TextCache txtRow[ROW_COUNT];
+static TextCache txtFootL;
+static TextCache txtFootR;
+static char heroShown[8];
+static bool heroValid = false;
+static int gaugeLit = -1;
+static bool uiChromeDrawn = false;
 
 #pragma pack(push, 1)
 struct TripDat {
@@ -280,7 +368,7 @@ static void gpsSetMsgRate(uint8_t cls, uint8_t id, uint8_t rate) {
 
 // Quiet the M100 Pro: 1 Hz, UBX NAV-PVT + NMEA GGA only.
 // Serial1's RX ring is 64 bytes; 10 Hz PVT (~102 B) plus NMEA overruns it
-// during OLED refresh, so we never see another valid frame after the first.
+// during TFT refresh, so we never see another valid frame after the first.
 static void gpsConfigure() {
   const uint8_t rate[] = {0xE8, 0x03, 0x01, 0x00, 0x01, 0x00};  // 1000 ms
   gpsSendUbx(0x06, 0x08, rate, sizeof(rate));
@@ -656,8 +744,7 @@ static bool gpsIsLive(unsigned long now) {
   return gps.valid && gpsFrameFresh(now);
 }
 
-static uint32_t crc32(const uint8_t *data, size_t len) {
-  uint32_t c = 0xFFFFFFFFUL;
+static uint32_t crc32Update(uint32_t c, const uint8_t *data, size_t len) {
   for (size_t i = 0; i < len; i++) {
     c ^= data[i];
     for (int b = 0; b < 8; b++) {
@@ -665,7 +752,11 @@ static uint32_t crc32(const uint8_t *data, size_t len) {
       c = (c >> 1) ^ (0xEDB88320UL & mask);
     }
   }
-  return ~c;
+  return c;
+}
+
+static uint32_t crc32(const uint8_t *data, size_t len) {
+  return ~crc32Update(0xFFFFFFFFUL, data, len);
 }
 
 static void formatE7(int32_t e7, char *buf, size_t buflen) {
@@ -931,13 +1022,13 @@ static const char *tripResumeSd() {
   if (!gpxOpenOrCreate()) {
     sdReady = false;
     gpxFile.close();
-    return "NO SD";
+    return "No card";
   }
 
   if (!haveDat) {
     tripDatSave(0, 0);
     Serial.println("SD new TRIP.DAT");
-    return "SD OK";
+    return "Card ready";
   }
 
   noInterrupts();
@@ -961,7 +1052,7 @@ static const char *tripResumeSd() {
   Serial.print(d.elapsedMs);
   Serial.print(" max=");
   Serial.println(d.maxSpeedKmh, 1);
-  return tripStarted ? "SD RESUME" : "SD OK";
+  return tripStarted ? "Resuming ride" : "Card ready";
 }
 
 static void tripResetRam() {
@@ -1026,7 +1117,10 @@ enum {
   NEW_RIDE_SAVED
 };
 
+static void bleStopForNewRide();
+
 static int tripStartNewRide() {
+  bleStopForNewRide();
   if (!sdReady) {
     tripResetRam();
     gpxBodyEnd = 0;
@@ -1103,6 +1197,15 @@ static bool bikeStopped(unsigned long now, unsigned long lastPulseMs) {
   return lastPulseMs == 0 || (now - lastPulseMs) >= STOPPED_MS;
 }
 
+static void backlightApply() {
+  analogWrite(PIN_LCD_BL, BL_DUTY[blMode]);
+}
+
+static void backlightNext() {
+  blMode = (uint8_t)((blMode + 1) % BL_MODE_COUNT);
+  backlightApply();
+}
+
 static void btnPoll(unsigned long now) {
   bool raw = digitalRead(PIN_BTN) == LOW;
   if (raw != btnSample) {
@@ -1118,6 +1221,9 @@ static void btnPoll(unsigned long now) {
     btnDidExec = false;
     btnHoldStartMs = now;
   } else if (!raw && btnHeld) {
+    btnReleased = true;
+    btnReleaseDidExec = btnDidExec;
+    btnReleasedHeldMs = now - btnHoldStartMs;
     btnHeld = false;
     btnArmed = false;
     btnDidExec = false;
@@ -1151,18 +1257,29 @@ static void btnHandle(unsigned long now, unsigned long lastPulseMs) {
     btnArmed = false;
     int result = tripStartNewRide();
     if (result == NEW_RIDE_SAVED) {
-      btnFlash("RIDE SAVED", now);
+      btnFlash("Ride saved", now);
     } else if (result == NEW_RIDE_RESET) {
-      btnFlash("RESET", now);
+      btnFlash("Stats reset", now);
     } else {
-      btnFlash("SAVE FAIL", now);
+      btnFlash("Save failed", now);
+    }
+  }
+
+  // Release before the new-ride countdown starts. A cancelled hold, or a
+  // hold that already saved the ride, leaves the backlight alone.
+  if (btnReleased) {
+    bool didExec = btnReleaseDidExec;
+    unsigned long held = btnReleasedHeldMs;
+    btnReleased = false;
+    if (!didExec && held < BTN_ARM_MS) {
+      backlightNext();
     }
   }
 }
 
 static void sdBeginShared() {
-  pinMode(PIN_OLED_CS, OUTPUT);
-  digitalWrite(PIN_OLED_CS, HIGH);
+  pinMode(PIN_LCD_CS, OUTPUT);
+  digitalWrite(PIN_LCD_CS, HIGH);
   pinMode(PIN_SD_CS, OUTPUT);
   digitalWrite(PIN_SD_CS, HIGH);
 
@@ -1249,33 +1366,378 @@ static void gpsPoll() {
   }
 }
 
-// Default GFX glyph cell is 6x8 at text size 1.
-static int textPixelWidth(const char *s, uint8_t size) {
-  return (int)strlen(s) * 6 * (int)size;
+// ---------------------------------------------------------------------------
+// Drawing. Values that change are rendered into a 1-bit canvas and pushed to
+// the panel as whole rows, background included, so nothing is cleared first
+// and nothing blinks. Each burst is short so the GPS UART ring is drained.
+
+static bool blePhoneConnected();
+static bool bleSendProgress(uint8_t *pct);
+
+static GFXcanvas1 textCanvas(SCREEN_W, 32);
+static uint16_t blitLine[SCREEN_W * 4];
+
+enum {
+  MARK_NONE = 0,
+  MARK_RING,
+  MARK_DOT,
+  MARK_ALERT,
+  MARK_PILL
+};
+
+static const Slot SLOT_STATUS  = {108, 4, SCREEN_W - PAD - 108, 22, 15};
+static const Slot SLOT_CAPTION = {PAD, CAPTION_Y, SCREEN_W - 2 * PAD, CAPTION_H, 15};
+static const Slot SLOT_FOOT_L  = {PAD, FOOTER_Y, 122, FOOTER_H, 15};
+static const Slot SLOT_FOOT_R  = {PAD + 122, FOOTER_Y, SCREEN_W - 2 * PAD - 122, FOOTER_H, 15};
+
+static const char *const ROW_LABELS[ROW_COUNT] = {"Distance", "Time", "Moving", "Max"};
+static const char *const ROW_UNITS[ROW_COUNT]  = {"km", "", "", "km/h"};
+
+// 5x7 matrix; bit (cols - 1) is the left column. ' ' is an unlit digit cell.
+static const DotGlyph DOT_FONT[] = {
+  {' ', 5, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+  {'0', 5, {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}},
+  {'1', 5, {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}},
+  {'2', 5, {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F}},
+  {'3', 5, {0x0E, 0x11, 0x01, 0x06, 0x01, 0x11, 0x0E}},
+  {'4', 5, {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}},
+  {'5', 5, {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E}},
+  {'6', 5, {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}},
+  {'7', 5, {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}},
+  {'8', 5, {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E}},
+  {'9', 5, {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C}},
+  {'-', 5, {0x00, 0x00, 0x00, 0x0E, 0x00, 0x00, 0x00}},
+  {'.', 1, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},
+  {':', 1, {0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00}},
+};
+
+static const DotGlyph *dotGlyph(char c) {
+  for (size_t i = 0; i < sizeof(DOT_FONT) / sizeof(DOT_FONT[0]); i++) {
+    if (DOT_FONT[i].ch == c) {
+      return &DOT_FONT[i];
+    }
+  }
+  return &DOT_FONT[0];
 }
 
-static void drawHRule(int y) {
-  display.drawFastHLine(PAD, y, SCREEN_W - 2 * PAD, SH110X_WHITE);
+static bool dotOn(const DotGlyph *g, int row, int col) {
+  return (g->rows[row] >> (g->cols - 1 - col)) & 1;
 }
 
-static void printLeft(int x, int y, uint8_t size, const char *s) {
-  display.setTextSize(size);
-  display.setCursor(x, y);
-  display.print(s);
+// Strip the fill so a NAV-PVT burst can be read out of the 64-byte UART ring.
+static void fillRectDrained(int x, int y, int w, int h, uint16_t color) {
+  if (w <= 0 || h <= 0) {
+    return;
+  }
+  const int strip = 8;
+  for (int yy = y; yy < y + h; yy += strip) {
+    int hh = strip;
+    if (yy + hh > y + h) {
+      hh = y + h - yy;
+    }
+    display.fillRect(x, yy, w, hh, color);
+    gpsDrain();
+  }
 }
 
-static void printRight(int rightEdge, int y, uint8_t size, const char *s) {
-  int w = textPixelWidth(s, size);
-  display.setTextSize(size);
-  display.setCursor(rightEdge - w, y);
-  display.print(s);
+static void fillScreenDrained(uint16_t color) {
+  const int band = 16;
+  for (int y = 0; y < SCREEN_H; y += band) {
+    int h = band;
+    if (y + h > SCREEN_H) {
+      h = SCREEN_H - y;
+    }
+    display.fillRect(0, y, SCREEN_W, h, color);
+    gpsDrain();
+  }
 }
 
-// Average-speed mark (diameter symbol), 7x7.
-static void drawAvgIcon(int x, int y) {
-  display.drawCircle(x + 3, y + 3, 3, SH110X_WHITE);
-  display.drawPixel(x + 3, y + 3, SH110X_WHITE);
-  display.drawLine(x + 1, y + 5, x + 5, y + 1, SH110X_WHITE);
+static void printDrained(const char *s) {
+  if (s == NULL) {
+    return;
+  }
+  while (*s) {
+    gpsDrain();
+    display.write((uint8_t)*s++);
+  }
+  gpsDrain();
+}
+
+static void drawLabel(const GFXfont *font, int x, int base, uint16_t color, const char *s) {
+  display.setFont(font);
+  display.setTextColor(color);
+  display.setCursor(x, base);
+  printDrained(s);
+  display.setFont(NULL);
+}
+
+static int trackedWidth(const GFXfont *font, int track, const char *s) {
+  int w = 0;
+  for (const char *p = s; *p; p++) {
+    uint8_t c = (uint8_t)*p;
+    if (c < font->first || c > font->last) {
+      continue;
+    }
+    w += font->glyph[c - font->first].xAdvance;
+    if (p[1]) {
+      w += track;
+    }
+  }
+  return w;
+}
+
+// The wordmark is set with extra letter spacing, like the page header.
+static void drawTracked(const GFXfont *font, int x, int base, int track,
+                        const char *s, uint16_t color) {
+  display.setFont(font);
+  display.setTextColor(color);
+  for (const char *p = s; *p; p++) {
+    display.setCursor(x, base);
+    display.write((uint8_t)*p);
+    x = display.getCursorX() + track;
+    gpsDrain();
+  }
+  display.setFont(NULL);
+}
+
+// Push a w x h region of textCanvas to the panel, 4 rows per SPI burst.
+static void blitCanvas(int x, int y, int w, int h, uint16_t fg, uint16_t bg) {
+  const uint8_t *buf = textCanvas.getBuffer();
+  const int stride = (SCREEN_W + 7) / 8;
+  for (int r0 = 0; r0 < h; r0 += 4) {
+    int rows = h - r0;
+    if (rows > 4) {
+      rows = 4;
+    }
+    uint16_t *dst = blitLine;
+    for (int r = r0; r < r0 + rows; r++) {
+      const uint8_t *row = buf + r * stride;
+      for (int c = 0; c < w; c++) {
+        *dst++ = (row[c >> 3] & (0x80 >> (c & 7))) ? fg : bg;
+      }
+    }
+    display.startWrite();
+    display.setAddrWindow(x, y + r0, w, rows);
+    display.writePixels(blitLine, (uint32_t)(w * rows));
+    display.endWrite();
+    gpsDrain();
+  }
+}
+
+static void invalidateText(TextCache *c) {
+  c->valid = false;
+  c->text[0] = '\0';
+}
+
+// One text slot: optional left text, optional right-aligned text with a
+// status mark before it (ring, dot, alert) or a filled pill around it.
+static void drawSlot(const Slot &s, TextCache *cache, const GFXfont *font,
+                     const char *left, const char *right, uint8_t mark, uint16_t fg) {
+  char key[sizeof(cache->text)];
+  snprintf(key, sizeof(key), "%s\x1f%s", left, right);
+  if (cache->valid && cache->color == fg && cache->mark == mark &&
+      strcmp(cache->text, key) == 0) {
+    return;
+  }
+
+  textCanvas.fillRect(0, 0, s.w, s.h, 0);
+  textCanvas.setTextWrap(false);
+  textCanvas.setFont(font);
+
+  if (left[0]) {
+    textCanvas.setTextColor(1);
+    textCanvas.setCursor(0, s.base);
+    textCanvas.print(left);
+  }
+
+  if (right[0]) {
+    int16_t bx, by;
+    uint16_t bw, bh;
+    textCanvas.getTextBounds(right, 0, s.base, &bx, &by, &bw, &bh);
+    int inkLeft = s.w - (int)bw;
+    uint16_t ink = 1;
+    const int cy = s.base - 6;
+
+    if (mark == MARK_PILL) {
+      const int padX = 6;
+      int pillW = (int)bw + 2 * padX;
+      int pillX = s.w - pillW;
+      textCanvas.fillRoundRect(pillX, s.base - 14, pillW, 19, 9, 1);
+      inkLeft = pillX + padX;
+      ink = 0;
+    } else if (mark == MARK_ALERT) {
+      int cx = inkLeft - 7 - 7;
+      textCanvas.fillCircle(cx, cy, 7, 1);
+      textCanvas.setFont(NULL);
+      textCanvas.setTextColor(0);
+      textCanvas.setCursor(cx - 2, cy - 3);
+      textCanvas.print('!');
+      textCanvas.setFont(font);
+    } else if (mark == MARK_DOT || mark == MARK_RING) {
+      int cx = inkLeft - 8 - 4;
+      if (mark == MARK_DOT) {
+        textCanvas.fillCircle(cx, cy, 4, 1);
+      } else {
+        textCanvas.drawCircle(cx, cy, 4, 1);
+        textCanvas.drawCircle(cx, cy, 3, 1);
+      }
+    }
+
+    textCanvas.setTextColor(ink);
+    textCanvas.setCursor(inkLeft - bx, s.base);
+    textCanvas.print(right);
+  }
+
+  blitCanvas(s.x, s.y, s.w, s.h, fg, COL_BG);
+
+  strncpy(cache->text, key, sizeof(cache->text) - 1);
+  cache->text[sizeof(cache->text) - 1] = '\0';
+  cache->color = fg;
+  cache->mark = mark;
+  cache->valid = true;
+}
+
+// Repaint only the matrix cells that changed. old == NULL paints every cell.
+static void drawDotGlyph(int x, int y, const DotGlyph *old, const DotGlyph *g) {
+  for (int r = 0; r < 7; r++) {
+    for (int c = 0; c < g->cols; c++) {
+      bool on = dotOn(g, r, c);
+      if (old && dotOn(old, r, c) == on) {
+        continue;
+      }
+      display.fillRect(x + c * HERO_PITCH, y + r * HERO_PITCH,
+                       HERO_DOT, HERO_DOT, on ? COL_FG : COL_OFF);
+    }
+    gpsDrain();
+  }
+}
+
+static int dotTextWidth(const char *s) {
+  int cols = 0;
+  int n = 0;
+  for (const char *p = s; *p; p++, n++) {
+    cols += dotGlyph(*p)->cols;
+  }
+  if (n == 0) {
+    return 0;
+  }
+  return (cols + n - 1) * HERO_PITCH - (HERO_PITCH - HERO_DOT);
+}
+
+static void paintHero(const char *s) {
+  size_t n = strlen(s);
+  bool full = !heroValid || strlen(heroShown) != n;
+  if (!full) {
+    for (size_t i = 0; i < n; i++) {
+      if (dotGlyph(heroShown[i])->cols != dotGlyph(s[i])->cols) {
+        full = true;
+        break;
+      }
+    }
+  }
+  if (!full && strcmp(heroShown, s) == 0) {
+    return;
+  }
+  if (full) {
+    fillRectDrained(0, HERO_Y, SCREEN_W, 7 * HERO_PITCH, COL_BG);
+  }
+
+  int x = (SCREEN_W - dotTextWidth(s)) / 2;
+  for (size_t i = 0; i < n; i++) {
+    const DotGlyph *g = dotGlyph(s[i]);
+    const DotGlyph *old = full ? NULL : dotGlyph(heroShown[i]);
+    if (old != g) {
+      drawDotGlyph(x, HERO_Y, old, g);
+    }
+    x += (g->cols + 1) * HERO_PITCH;
+  }
+
+  strncpy(heroShown, s, sizeof(heroShown) - 1);
+  heroShown[sizeof(heroShown) - 1] = '\0';
+  heroValid = true;
+}
+
+static void paintGauge(int lit) {
+  if (lit < 0) {
+    lit = 0;
+  }
+  if (lit > GAUGE_DOTS) {
+    lit = GAUGE_DOTS;
+  }
+  if (lit == gaugeLit) {
+    return;
+  }
+  const int x0 = (SCREEN_W - (GAUGE_DOTS - 1) * GAUGE_PITCH) / 2;
+  for (int i = 0; i < GAUGE_DOTS; i++) {
+    bool now = i < lit;
+    if (gaugeLit >= 0 && (i < gaugeLit) == now) {
+      continue;
+    }
+    display.fillCircle(x0 + i * GAUGE_PITCH, GAUGE_Y, GAUGE_R, now ? COL_FG : COL_OFF);
+  }
+  gpsDrain();
+  gaugeLit = lit;
+}
+
+// Units sit in one column flush with the right margin; values end before it.
+static int unitX() {
+  return SCREEN_W - PAD - trackedWidth(&FreeSans9pt7b, 0, "km/h");
+}
+
+static int rowTop(int i) {
+  return ROWS_Y + i * ROW_H;
+}
+
+static Slot rowSlot(int i) {
+  Slot s;
+  s.x = VALUE_X;
+  s.y = rowTop(i) + 4;
+  int right = ROW_UNITS[i][0] ? unitX() - 6 : SCREEN_W - PAD;
+  s.w = right - VALUE_X;
+  s.h = 28;
+  s.base = 21;
+  return s;
+}
+
+static void drawStaticChrome() {
+  drawTracked(&FreeSansBold9pt7b, PAD, STATUS_BASE, 3, "OBJECT", COL_FG);
+
+  for (int i = 0; i <= ROW_COUNT; i++) {
+    display.drawFastHLine(PAD, rowTop(i), SCREEN_W - 2 * PAD, COL_RULE);
+  }
+  gpsDrain();
+
+  for (int i = 0; i < ROW_COUNT; i++) {
+    const int base = rowTop(i) + 4 + 21;
+    drawLabel(&FreeSans9pt7b, PAD, base, COL_DIM, ROW_LABELS[i]);
+    if (ROW_UNITS[i][0]) {
+      drawLabel(&FreeSans9pt7b, unitX(), base, COL_DIM, ROW_UNITS[i]);
+    }
+  }
+}
+
+static void invalidateAllFields() {
+  invalidateText(&txtStatus);
+  invalidateText(&txtCaption);
+  for (int i = 0; i < ROW_COUNT; i++) {
+    invalidateText(&txtRow[i]);
+  }
+  invalidateText(&txtFootL);
+  invalidateText(&txtFootR);
+  heroValid = false;
+  heroShown[0] = '\0';
+  gaugeLit = -1;
+}
+
+static void ensureChrome() {
+  if (uiChromeDrawn) {
+    return;
+  }
+  fillScreenDrained(COL_BG);
+  display.setTextWrap(false);
+  drawStaticChrome();
+  invalidateAllFields();
+  uiChromeDrawn = true;
 }
 
 // H:MM:SS always (matches Figma samples like 7:34:12).
@@ -1287,228 +1749,739 @@ static void formatHms(unsigned long ms, char *buf, size_t buflen) {
   snprintf(buf, buflen, "%lu:%02lu:%02lu", h, m, s);
 }
 
-// Pick decimals so the string fits in maxChars (includes sign/dot).
-static void formatFloatFit(float value, int maxChars, char *buf, size_t buflen) {
-  if (value < 0.0f) {
-    value = 0.0f;
-  }
+enum {
+  OVL_NONE = 0,
+  OVL_FLASH,
+  OVL_HOLD
+};
 
-  for (int decimals = 2; decimals >= 0; decimals--) {
-    snprintf(buf, buflen, "%.*f", decimals, (double)value);
-    if ((int)strlen(buf) <= maxChars) {
-      return;
-    }
-  }
-
-  // Last resort: integer, truncated if still too wide.
-  snprintf(buf, buflen, "%.0f", (double)value);
-  if ((int)strlen(buf) > maxChars) {
-    buf[maxChars] = '\0';
-  }
-}
-
-// Choose size 2 if both sides fit with a gap; otherwise size 1.
-static uint8_t fitPairSize(const char *left, const char *right, int gap) {
-  const int avail = SCREEN_W - 2 * PAD;
-  if (textPixelWidth(left, 2) + textPixelWidth(right, 2) + gap <= avail) {
-    return 2;
-  }
-  return 1;
-}
-
-static void drawCornerPair(int labelY, int valueY,
-                           const char *leftLabel, const char *leftValue,
-                           const char *rightLabel, const char *rightValue) {
-  printLeft(PAD, labelY, 1, leftLabel);
-  printRight(SCREEN_W - PAD, labelY, 1, rightLabel);
-
-  uint8_t size = fitPairSize(leftValue, rightValue, 6);
-  printLeft(PAD, valueY, size, leftValue);
-  printRight(SCREEN_W - PAD, valueY, size, rightValue);
-}
-
-static void drawSpeedBlock(float speedKmh, float avgSpeedKmh) {
-  char speedBuf[12];
-  char avgBuf[12];
-
-  // Large speed: prefer 1 decimal; shrink size if digits won't fit beside unit.
-  formatFloatFit(speedKmh, 5, speedBuf, sizeof(speedBuf));
-  const char *unit = "KM/H";
-  const int unitW = textPixelWidth(unit, 1);
-  const int gap = 4;
-  const int maxSpeedW = SCREEN_W - 2 * PAD - unitW - gap;
-
-  uint8_t speedSize = 3;
-  while (speedSize > 1 && textPixelWidth(speedBuf, speedSize) > maxSpeedW) {
-    speedSize--;
-  }
-  // If still too wide at size 1, drop decimals further.
-  while (speedSize == 1 && textPixelWidth(speedBuf, 1) > maxSpeedW) {
-    formatFloatFit(speedKmh, (int)strlen(speedBuf) - 1, speedBuf, sizeof(speedBuf));
-  }
-
-  const int speedY = 42;
-  const int speedH = 8 * (int)speedSize;
-  printLeft(PAD, speedY, speedSize, speedBuf);
-  // Unit near the upper half of the large digits, right edge.
-  printRight(SCREEN_W - PAD, speedY + (speedH - 8) / 4, 1, unit);
-
-  // Average row: icon + value left, unit right.
-  formatFloatFit(avgSpeedKmh, 5, avgBuf, sizeof(avgBuf));
-  const int avgY = 68;
-  const int iconX = PAD;
-  drawAvgIcon(iconX, avgY + 4);
-
-  uint8_t avgSize = 2;
-  const int avgTextX = iconX + 10;
-  const int avgMaxW = SCREEN_W - PAD - unitW - gap - avgTextX;
-  while (avgSize > 1 && textPixelWidth(avgBuf, avgSize) > avgMaxW) {
-    avgSize--;
-  }
-  printLeft(avgTextX, avgY, avgSize, avgBuf);
-  const int avgH = 8 * (int)avgSize;
-  printRight(SCREEN_W - PAD, avgY + (avgH - 8) / 2, 1, unit);
-}
-
-static void drawGpsFooter(unsigned long now) {
-  char satBuf[8];
-  char altBuf[12];
-  const bool live = gpsIsLive(now);
-  const char *status = !sdReady ? "NO SD" : (live ? "LIVE" : "CONNECTING");
-
-  if (gpsFrameFresh(now) && gps.satsKnown) {
-    snprintf(satBuf, sizeof(satBuf), "%u", (unsigned)gps.sats);
-  } else {
-    memcpy(satBuf, "--", 3);
-  }
-
-  if (live && gps.altKnown) {
-    snprintf(altBuf, sizeof(altBuf), "%.0fm", (double)gps.altM);
-  } else {
-    memcpy(altBuf, "--", 3);
-  }
-
-  const int gpsY = 118;
-  printLeft(PAD, gpsY, 1, status);
-  printLeft(PAD + textPixelWidth(status, 1) + 6, gpsY, 1, satBuf);
-  printRight(SCREEN_W - PAD, gpsY, 1, altBuf);
-}
-
-static void drawOverlayBox(const char *title, const char *sub, int barFilled, int barTotal) {
-  const int boxW = 116;
-  const int boxH = 54;
-  const int x = (SCREEN_W - boxW) / 2;
-  const int y = 38;
-
-  display.fillRect(x, y, boxW, boxH, SH110X_BLACK);
-  display.drawRect(x, y, boxW, boxH, SH110X_WHITE);
-
-  int tw = textPixelWidth(title, 1);
-  printLeft(x + (boxW - tw) / 2, y + 6, 1, title);
-
-  if (sub && sub[0]) {
-    int sw = textPixelWidth(sub, 2);
-    printLeft(x + (boxW - sw) / 2, y + 18, 2, sub);
-  }
-
-  if (barTotal > 0) {
-    const int bx = x + 8;
-    const int by = y + boxH - 12;
-    const int bw = boxW - 16;
-    const int bh = 6;
-    display.drawRect(bx, by, bw, bh, SH110X_WHITE);
-    long fw = (long)(bw - 2) * (long)barFilled / (long)barTotal;
-    if (fw < 0) {
-      fw = 0;
-    }
-    if (fw > (bw - 2)) {
-      fw = bw - 2;
-    }
-    if (fw > 0) {
-      display.fillRect(bx + 1, by + 1, (int)fw, bh - 2, SH110X_WHITE);
-    }
-  }
-}
-
-static void drawBtnOverlay(unsigned long now) {
+// Hold-for-new-ride countdown, or the short message after it fires.
+static uint8_t overlayState(unsigned long now, unsigned long *remainSec, int *holdLit) {
   if (overlayFlashMsg && (long)(overlayFlashUntilMs - now) > 0) {
-    drawOverlayBox(overlayFlashMsg, "", 0, 0);
-    return;
+    return OVL_FLASH;
   }
   overlayFlashMsg = NULL;
 
   if (!btnArmed || !btnHeld || btnDidExec) {
-    return;
+    return OVL_NONE;
   }
-
   unsigned long held = now - btnHoldStartMs;
   if (held < BTN_ARM_MS || held >= BTN_EXEC_MS) {
-    return;
+    return OVL_NONE;
   }
-
   unsigned long remainMs = BTN_EXEC_MS - held;
-  unsigned long remainSec = (remainMs + 999UL) / 1000UL;
-  char sub[8];
-  snprintf(sub, sizeof(sub), "%lu", remainSec);
-  int filled = (int)(held - BTN_ARM_MS);
-  int total = (int)(BTN_EXEC_MS - BTN_ARM_MS);
-  drawOverlayBox("NEW RIDE", sub, filled, total);
+  *remainSec = (remainMs + 999UL) / 1000UL;
+  *holdLit = (int)((long)(held - BTN_ARM_MS) * GAUGE_DOTS /
+                   (long)(BTN_EXEC_MS - BTN_ARM_MS)) + 1;
+  return OVL_HOLD;
+}
+
+static void paintStatus(unsigned long now) {
+  char buf[20];
+  if (gpsIsLive(now)) {
+    if (gps.satsKnown) {
+      snprintf(buf, sizeof(buf), "%u satellites", (unsigned)gps.sats);
+    } else {
+      strcpy(buf, "GPS");
+    }
+    drawSlot(SLOT_STATUS, &txtStatus, &FreeSans9pt7b, "", buf, MARK_DOT, COL_FG);
+  } else {
+    drawSlot(SLOT_STATUS, &txtStatus, &FreeSans9pt7b, "", "Searching", MARK_RING, COL_DIM);
+  }
+}
+
+static void paintFooter(unsigned long now) {
+  char buf[24];
+  const bool live = gpsIsLive(now);
+  if (live && gps.altKnown) {
+    snprintf(buf, sizeof(buf), "Altitude %.0f m", (double)gps.altM);
+  } else {
+    strcpy(buf, "Altitude --");
+  }
+  drawSlot(SLOT_FOOT_L, &txtFootL, &FreeSans9pt7b, buf, "", MARK_NONE, COL_DIM);
+
+  if (!sdReady) {
+    drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSansBold9pt7b, "", "No card", MARK_ALERT, COL_FG);
+  } else if (blePhoneConnected()) {
+    drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSans9pt7b, "", "Phone", MARK_DOT, COL_FG);
+  } else if (tripStarted && live && gps.posKnown && gps.timeKnown) {
+    drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSans9pt7b, "", "Recording", MARK_PILL, COL_FG);
+  } else {
+    drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSans9pt7b, "", "", MARK_NONE, COL_DIM);
+  }
 }
 
 static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
                            float maxKmh, unsigned long elapsedMs, unsigned long moveMs,
                            unsigned long now) {
-  char distBuf[12];
-  char timeBuf[16];
-  char moveBuf[16];
-  char maxBuf[12];
+  ensureChrome();
 
-  // Distance: prefer 1 decimal like the mock; tighten if needed for size-2 pair.
-  formatFloatFit(distanceKm, 6, distBuf, sizeof(distBuf));
-  formatHms(elapsedMs, timeBuf, sizeof(timeBuf));
-  formatHms(moveMs, moveBuf, sizeof(moveBuf));
-  formatFloatFit(maxKmh, 5, maxBuf, sizeof(maxBuf));
+  char buf[24];
+  char right[24];
 
-  display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
-  display.setTextWrap(false);
+  // Speed: fixed "dd.d" template so the matrix only repaints changed cells.
+  float shown = speedKmh;
+  if (shown < 0.0f) {
+    shown = 0.0f;
+  }
+  if (shown > 99.9f) {
+    shown = 99.9f;
+  }
+  snprintf(buf, sizeof(buf), "%4.1f", (double)shown);
+  paintHero(buf);
 
-  // Top: DIST / TIME
-  drawCornerPair(2, 14, "DIST", distBuf, "TIME", timeBuf);
-  drawHRule(34);
+  unsigned long remainSec = 0;
+  int holdLit = 0;
+  uint8_t ovl = overlayState(now, &remainSec, &holdLit);
+  uint8_t sendPct = 0;
+  bool sending = bleSendProgress(&sendPct);
 
-  // Middle: current + average speed
-  drawSpeedBlock(speedKmh, avgSpeedKmh);
-  drawHRule(86);
+  if (ovl == OVL_FLASH) {
+    drawSlot(SLOT_CAPTION, &txtCaption, &FreeSans9pt7b, overlayFlashMsg, "", MARK_NONE, COL_FG);
+  } else if (ovl == OVL_HOLD) {
+    snprintf(right, sizeof(right), "%lu s", remainSec);
+    drawSlot(SLOT_CAPTION, &txtCaption, &FreeSans9pt7b, "Hold for new ride", right, MARK_NONE, COL_FG);
+  } else {
+    if (sending) {
+      snprintf(right, sizeof(right), "Sending %u%%", (unsigned)sendPct);
+    } else {
+      snprintf(right, sizeof(right), "Avg %.1f", (double)avgSpeedKmh);
+    }
+    drawSlot(SLOT_CAPTION, &txtCaption, &FreeSans9pt7b, "km/h", right, MARK_NONE, COL_DIM);
+  }
 
-  // Bottom: MOVE / MAX, then GPS status / sats / altitude
-  drawCornerPair(90, 100, "MOVE", moveBuf, "MAX", maxBuf);
-  drawGpsFooter(now);
+  // Gauge: new-ride hold, then phone transfer, else speed at 2 km/h a dot.
+  int lit;
+  if (ovl == OVL_HOLD) {
+    lit = holdLit;
+  } else if (sending) {
+    lit = ((int)sendPct * GAUGE_DOTS + 50) / 100;
+  } else {
+    lit = (int)(speedKmh / GAUGE_KMH_PER_DOT + 0.5f);
+  }
+  paintGauge(lit);
 
-  drawBtnOverlay(now);
+  if (distanceKm < 0.0f) {
+    distanceKm = 0.0f;
+  }
+  snprintf(buf, sizeof(buf), distanceKm < 100.0f ? "%.2f" : "%.1f", (double)distanceKm);
+  drawSlot(rowSlot(0), &txtRow[0], &FreeSansBold12pt7b, "", buf, MARK_NONE, COL_FG);
+  formatHms(elapsedMs, buf, sizeof(buf));
+  drawSlot(rowSlot(1), &txtRow[1], &FreeSansBold12pt7b, "", buf, MARK_NONE, COL_FG);
+  formatHms(moveMs, buf, sizeof(buf));
+  drawSlot(rowSlot(2), &txtRow[2], &FreeSansBold12pt7b, "", buf, MARK_NONE, COL_FG);
+  snprintf(buf, sizeof(buf), "%.1f", (double)maxKmh);
+  drawSlot(rowSlot(3), &txtRow[3], &FreeSansBold12pt7b, "", buf, MARK_NONE, COL_FG);
 
-  display.display();
+  paintStatus(now);
+  paintFooter(now);
 }
 
-static void drawSplash(const char *sdLine) {
-  display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
-  display.setTextSize(1);
-  display.setCursor(10, 40);
-  display.println("Cycling computer");
-  display.setCursor(16, 60);
-  display.println("700x32C / D0");
-  display.setCursor(28, 80);
-  display.println(sdLine);
-  display.display();
+static void drawSplash(const char *line) {
+  uiChromeDrawn = false;
+  fillScreenDrained(COL_BG);
+  display.setTextWrap(false);
+
+  const int track = 6;
+  int w = trackedWidth(&FreeSansBold18pt7b, track, "OBJECT");
+  drawTracked(&FreeSansBold18pt7b, (SCREEN_W - w) / 2, 164, track, "OBJECT", COL_FG);
+
+  display.setFont(&FreeSans9pt7b);
+  int16_t bx, by;
+  uint16_t bw, bh;
+  display.getTextBounds(line, 0, 0, &bx, &by, &bw, &bh);
+  display.setTextColor(COL_DIM);
+  display.setCursor((SCREEN_W - (int)bw) / 2 - bx, 198);
+  printDrained(line);
+  display.setFont(NULL);
+}
+
+// Phone download of root *.GPX files. Callbacks only set flags; loop()
+// does every SD read so the shared SPI bus stays on this task.
+// UUIDs share one vendor base. tools/index.html speaks the same bytes.
+static const char BLE_RIDE_SVC_UUID[]  = "7A1E0001-4C8B-4D2E-9F63-1B5A0C7E8D24";
+static const char BLE_RIDE_CMD_UUID[]  = "7A1E0002-4C8B-4D2E-9F63-1B5A0C7E8D24";
+static const char BLE_RIDE_META_UUID[] = "7A1E0003-4C8B-4D2E-9F63-1B5A0C7E8D24";
+static const char BLE_RIDE_DATA_UUID[] = "7A1E0004-4C8B-4D2E-9F63-1B5A0C7E8D24";
+
+enum {
+  BLE_OP_LIST = 0x01,
+  BLE_OP_GET = 0x02,
+  BLE_OP_ABORT = 0x03
+};
+
+enum {
+  BLE_META_ENTRY = 0x01,
+  BLE_META_LIST_END = 0x02,
+  BLE_META_START = 0x03,
+  BLE_META_DONE = 0x04,
+  BLE_META_ERROR = 0x7F
+};
+
+enum {
+  BLE_ERR_NO_SD = 1,
+  BLE_ERR_NAME = 2,
+  BLE_ERR_NOT_FOUND = 3,
+  BLE_ERR_IO = 4,
+  BLE_ERR_ABORT = 5
+};
+
+enum {
+  BLE_JOB_IDLE = 0,
+  BLE_JOB_LIST,
+  BLE_JOB_SEND
+};
+
+static BLEService bleSvc(BLE_RIDE_SVC_UUID);
+static BLECharacteristic bleCmd(BLE_RIDE_CMD_UUID, CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP, 13);
+static BLECharacteristic bleMeta(BLE_RIDE_META_UUID, CHR_PROPS_NOTIFY, 17);
+static BLECharacteristic bleData(BLE_RIDE_DATA_UUID, CHR_PROPS_NOTIFY, 244);
+
+static bool bleReady = false;
+static volatile uint8_t bleCmdPending = 0;
+static volatile uint8_t bleLinkLost = 0;
+static volatile uint8_t bleLinkUpEdge = 0;
+static uint8_t bleCmdOp = 0;
+static char bleCmdName[13];
+static uint8_t bleJob = BLE_JOB_IDLE;
+static uint8_t bleErrorPending = 0;
+static File32 bleFile;
+static File32 bleDir;
+static bool bleListHave = false;
+static bool bleListEnd = false;
+static char bleListName[13];
+static uint32_t bleListSize = 0;
+static char bleSendName[13];
+static uint32_t bleOffset = 0;
+static uint32_t bleSize = 0;
+static uint32_t bleFileLimit = 0;
+static bool bleFooterFromRam = false;
+static bool bleStartSent = false;
+static uint32_t bleCrc = 0xFFFFFFFFUL;
+static uint8_t bleChunk[244];
+
+static bool blePhoneConnected() {
+  return bleReady && Bluefruit.connected() > 0;
+}
+
+static bool bleGpxNameOk(const char *name) {
+  size_t n = strlen(name);
+  if (n < 5 || n > 12) {
+    return false;
+  }
+  const char *dot = strchr(name, '.');
+  if (!dot || strchr(dot + 1, '.')) {
+    return false;
+  }
+  size_t base = (size_t)(dot - name);
+  if (base < 1 || base > 8 || strcmp(dot, ".GPX") != 0) {
+    return false;
+  }
+  for (size_t i = 0; i < base; i++) {
+    char c = name[i];
+    if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool bleNormalizeGpx(const char *in, char *out, size_t outlen) {
+  if (!in || outlen < 13) {
+    return false;
+  }
+  size_t n = strlen(in);
+  if (n < 5 || n > 12) {
+    return false;
+  }
+  for (size_t i = 0; i < n; i++) {
+    char c = in[i];
+    if (c >= 'a' && c <= 'z') {
+      c = (char)(c - 'a' + 'A');
+    }
+    out[i] = c;
+  }
+  out[n] = '\0';
+  return bleGpxNameOk(out);
+}
+
+static void bleCloseFiles() {
+  gpsDrain();
+  if (bleFile.isOpen()) {
+    bleFile.close();
+  }
+  if (bleDir.isOpen()) {
+    bleDir.close();
+  }
+  gpsDrain();
+}
+
+static void bleResetXfer() {
+  bleCloseFiles();
+  bleJob = BLE_JOB_IDLE;
+  bleListHave = false;
+  bleListEnd = false;
+  bleListName[0] = '\0';
+  bleListSize = 0;
+  bleSendName[0] = '\0';
+  bleOffset = 0;
+  bleSize = 0;
+  bleFileLimit = 0;
+  bleFooterFromRam = false;
+  bleStartSent = false;
+  bleCrc = 0xFFFFFFFFUL;
+}
+
+static void bleQueueError(uint8_t code) {
+  bleResetXfer();
+  bleErrorPending = code;
+}
+
+static void bleStopForNewRide() {
+  if (!bleReady || (bleJob == BLE_JOB_IDLE && bleErrorPending == 0)) {
+    return;
+  }
+  bleQueueError(BLE_ERR_ABORT);
+  Serial.println("BLE transfer aborted — new ride");
+}
+
+// CURRENT.GPX grows at gpxBodyEnd. Bytes below that stay put; the footer
+// is sent from RAM so a later append cannot tear the downloaded file.
+static uint32_t bleDownloadSize(File32 &f, const char *name, bool *footerFromRam) {
+  uint32_t sz = (uint32_t)f.fileSize();
+  if (footerFromRam) {
+    *footerFromRam = false;
+  }
+  if (strcmp(name, GPX_NAME) == 0 && gpxBodyEnd > 0 && gpxBodyEnd <= sz) {
+    if (footerFromRam) {
+      *footerFromRam = true;
+    }
+    return gpxBodyEnd + (uint32_t)strlen(GPX_FOOTER);
+  }
+  return sz;
+}
+
+static bool bleNotifyMeta(const uint8_t *data, uint16_t len) {
+  if (!bleMeta.notifyEnabled()) {
+    return false;
+  }
+  return bleMeta.notify(data, len);
+}
+
+static bool bleNotifyNamed(uint8_t type, const char *name, uint32_t size) {
+  uint8_t buf[17];
+  memset(buf, 0, sizeof(buf));
+  buf[0] = type;
+  size_t n = strlen(name);
+  if (n > 12) {
+    n = 12;
+  }
+  memcpy(buf + 1, name, n);
+  buf[13] = (uint8_t)(size & 0xff);
+  buf[14] = (uint8_t)((size >> 8) & 0xff);
+  buf[15] = (uint8_t)((size >> 16) & 0xff);
+  buf[16] = (uint8_t)((size >> 24) & 0xff);
+  return bleNotifyMeta(buf, sizeof(buf));
+}
+
+static bool bleScanOneEntry() {
+  File32 ent;
+  int skipped = 0;
+  while (skipped < 8) {
+    gpsDrain();
+    if (!ent.openNext(&bleDir, O_RDONLY)) {
+      gpsDrain();
+      bleListEnd = true;
+      return false;
+    }
+    char raw[32];
+    memset(raw, 0, sizeof(raw));
+    bool isDir = ent.isDir();
+    if (!isDir) {
+      ent.getName(raw, sizeof(raw));
+    }
+    char name[13];
+    bool ok = !isDir && bleNormalizeGpx(raw, name, sizeof(name));
+    uint32_t sz = 0;
+    if (ok) {
+      sz = bleDownloadSize(ent, name, NULL);
+    }
+    ent.close();
+    gpsDrain();
+    if (!ok) {
+      skipped++;
+      continue;
+    }
+    memcpy(bleListName, name, sizeof(bleListName));
+    bleListSize = sz;
+    bleListHave = true;
+    return true;
+  }
+  return false;
+}
+
+static bool bleFinishList() {
+  uint8_t endb = BLE_META_LIST_END;
+  if (!bleNotifyMeta(&endb, 1)) {
+    return false;
+  }
+  bleCloseFiles();
+  bleJob = BLE_JOB_IDLE;
+  bleListEnd = false;
+  Serial.println("BLE list end");
+  return true;
+}
+
+static bool blePumpList() {
+  if (!sdReady) {
+    bleQueueError(BLE_ERR_NO_SD);
+    return false;
+  }
+  if (!bleDir.isOpen()) {
+    gpsDrain();
+    bool opened = bleDir.open("/");
+    gpsDrain();
+    if (!opened) {
+      bleQueueError(BLE_ERR_IO);
+      return false;
+    }
+  }
+  if (bleListEnd) {
+    return bleFinishList();
+  }
+  if (!bleListHave) {
+    bleScanOneEntry();
+    if (bleListEnd) {
+      return bleFinishList();
+    }
+    if (!bleListHave) {
+      return false;
+    }
+  }
+  if (!bleNotifyNamed(BLE_META_ENTRY, bleListName, bleListSize)) {
+    return false;
+  }
+  bleListHave = false;
+  return true;
+}
+
+static uint16_t blePayloadMax() {
+  uint16_t mtu = 23;
+  if (Bluefruit.connected()) {
+    BLEConnection *conn = Bluefruit.Connection(Bluefruit.connHandle());
+    if (conn) {
+      mtu = conn->getMtu();
+    }
+  }
+  if (mtu < 23) {
+    mtu = 23;
+  }
+  uint16_t att = mtu - 3;
+  if (att <= 4) {
+    return 1;
+  }
+  uint16_t payload = att - 4;
+  if (payload > 240) {
+    payload = 240;
+  }
+  return payload;
+}
+
+static bool blePumpSend() {
+  if (!bleStartSent) {
+    if (!bleNotifyNamed(BLE_META_START, bleSendName, bleSize)) {
+      return false;
+    }
+    bleStartSent = true;
+    return true;
+  }
+  if (bleOffset >= bleSize) {
+    uint32_t crc = ~bleCrc;
+    uint8_t buf[5];
+    buf[0] = BLE_META_DONE;
+    buf[1] = (uint8_t)(crc & 0xff);
+    buf[2] = (uint8_t)((crc >> 8) & 0xff);
+    buf[3] = (uint8_t)((crc >> 16) & 0xff);
+    buf[4] = (uint8_t)((crc >> 24) & 0xff);
+    if (!bleNotifyMeta(buf, sizeof(buf))) {
+      return false;
+    }
+    Serial.print("BLE sent ");
+    Serial.print(bleSendName);
+    Serial.print(" bytes=");
+    Serial.print(bleSize);
+    Serial.print(" crc=");
+    Serial.println(crc, HEX);
+    bleResetXfer();
+    return true;
+  }
+
+  uint16_t payload = blePayloadMax();
+  uint32_t remain = bleSize - bleOffset;
+  if ((uint32_t)payload > remain) {
+    payload = (uint16_t)remain;
+  }
+
+  uint8_t *dst = bleChunk + 4;
+  uint16_t filled = 0;
+  if (bleOffset < bleFileLimit) {
+    uint32_t avail = bleFileLimit - bleOffset;
+    uint16_t n = payload;
+    if ((uint32_t)n > avail) {
+      n = (uint16_t)avail;
+    }
+    gpsDrain();
+    bool seekOk = bleFile.seekSet(bleOffset);
+    int got = seekOk ? bleFile.read(dst, n) : -1;
+    gpsDrain();
+    if (got != (int)n) {
+      bleQueueError(BLE_ERR_IO);
+      return false;
+    }
+    filled = n;
+  }
+  if (filled < payload) {
+    uint32_t footerAt = (bleOffset + filled) - bleFileLimit;
+    uint16_t n = (uint16_t)(payload - filled);
+    if (!bleFooterFromRam || footerAt + n > (uint32_t)strlen(GPX_FOOTER)) {
+      bleQueueError(BLE_ERR_IO);
+      return false;
+    }
+    memcpy(dst + filled, GPX_FOOTER + footerAt, n);
+    filled = (uint16_t)(filled + n);
+  }
+
+  bleChunk[0] = (uint8_t)(bleOffset & 0xff);
+  bleChunk[1] = (uint8_t)((bleOffset >> 8) & 0xff);
+  bleChunk[2] = (uint8_t)((bleOffset >> 16) & 0xff);
+  bleChunk[3] = (uint8_t)((bleOffset >> 24) & 0xff);
+
+  if (!bleData.notifyEnabled() || !bleData.notify(bleChunk, (uint16_t)(4 + filled))) {
+    return false;
+  }
+  bleCrc = crc32Update(bleCrc, dst, filled);
+  bleOffset += filled;
+  return true;
+}
+
+static void bleBeginList() {
+  bleResetXfer();
+  bleErrorPending = 0;
+  if (!sdReady) {
+    bleQueueError(BLE_ERR_NO_SD);
+    return;
+  }
+  bleJob = BLE_JOB_LIST;
+  Serial.println("BLE list");
+}
+
+static void bleBeginGet(const char *rawName) {
+  char name[13];
+  if (!bleNormalizeGpx(rawName, name, sizeof(name))) {
+    bleQueueError(BLE_ERR_NAME);
+    return;
+  }
+  if (!sdReady) {
+    bleQueueError(BLE_ERR_NO_SD);
+    return;
+  }
+  bleResetXfer();
+  bleErrorPending = 0;
+  gpsDrain();
+  bool opened = bleFile.open(name, O_RDONLY);
+  gpsDrain();
+  if (!opened) {
+    bleQueueError(BLE_ERR_NOT_FOUND);
+    return;
+  }
+  bool footer = false;
+  bleSize = bleDownloadSize(bleFile, name, &footer);
+  bleFooterFromRam = footer;
+  bleFileLimit = footer ? gpxBodyEnd : bleSize;
+  memcpy(bleSendName, name, sizeof(bleSendName));
+  bleCrc = 0xFFFFFFFFUL;
+  bleOffset = 0;
+  bleStartSent = false;
+  bleJob = BLE_JOB_SEND;
+  Serial.print("BLE get ");
+  Serial.print(name);
+  Serial.print(" bytes=");
+  Serial.println(bleSize);
+}
+
+static void bleTakeCommand() {
+  uint8_t op;
+  char name[13];
+  noInterrupts();
+  op = bleCmdOp;
+  memcpy(name, bleCmdName, sizeof(name));
+  bleCmdPending = 0;
+  interrupts();
+
+  if (op == BLE_OP_ABORT) {
+    if (bleJob != BLE_JOB_IDLE || bleErrorPending != 0) {
+      bleQueueError(BLE_ERR_ABORT);
+      Serial.println("BLE abort");
+    }
+    return;
+  }
+  if (op == BLE_OP_LIST) {
+    bleBeginList();
+    return;
+  }
+  if (op == BLE_OP_GET) {
+    bleBeginGet(name);
+    return;
+  }
+  bleQueueError(BLE_ERR_NAME);
+}
+
+static bool bleActive() {
+  return bleReady && (bleJob != BLE_JOB_IDLE || bleErrorPending != 0);
+}
+
+// Percent of the file sent to the phone, while a download runs.
+static bool bleSendProgress(uint8_t *pct) {
+  if (!bleReady || bleJob != BLE_JOB_SEND || bleSize == 0) {
+    return false;
+  }
+  uint32_t p = (uint32_t)((uint64_t)bleOffset * 100u / bleSize);
+  if (p > 100) {
+    p = 100;
+  }
+  *pct = (uint8_t)p;
+  return true;
+}
+
+static bool bleService() {
+  if (!bleReady) {
+    return false;
+  }
+
+  if (bleLinkUpEdge) {
+    bleLinkUpEdge = 0;
+    Serial.println("BLE connected");
+  }
+  if (bleLinkLost || (bleJob != BLE_JOB_IDLE && !Bluefruit.connected())) {
+    bleLinkLost = 0;
+    noInterrupts();
+    bleCmdPending = 0;
+    interrupts();
+    bleErrorPending = 0;
+    bleResetXfer();
+    Serial.println("BLE disconnected");
+    return false;
+  }
+
+  if (bleCmdPending) {
+    bleTakeCommand();
+    return true;
+  }
+  if (bleErrorPending) {
+    uint8_t buf[2] = {BLE_META_ERROR, bleErrorPending};
+    if (!bleNotifyMeta(buf, sizeof(buf))) {
+      return false;
+    }
+    Serial.print("BLE error ");
+    Serial.println(bleErrorPending);
+    bleErrorPending = 0;
+    return true;
+  }
+  if (bleJob == BLE_JOB_LIST) {
+    return blePumpList();
+  }
+  if (bleJob == BLE_JOB_SEND) {
+    return blePumpSend();
+  }
+  return false;
+}
+
+static void bleOnWrite(uint16_t conn_hdl, BLECharacteristic *chr, uint8_t *data, uint16_t len) {
+  (void)conn_hdl;
+  (void)chr;
+  if (len < 1 || len > 13) {
+    return;
+  }
+  uint8_t op = data[0];
+  char name[13];
+  memset(name, 0, sizeof(name));
+  if (op == BLE_OP_GET && len > 1) {
+    uint16_t n = (uint16_t)(len - 1);
+    if (n > 12) {
+      n = 12;
+    }
+    memcpy(name, data + 1, n);
+  }
+  noInterrupts();
+  bleCmdOp = op;
+  memcpy(bleCmdName, name, sizeof(bleCmdName));
+  bleCmdPending = 1;
+  interrupts();
+}
+
+static void bleOnConnect(uint16_t conn_hdl) {
+  BLEConnection *conn = Bluefruit.Connection(conn_hdl);
+  if (conn) {
+    conn->requestMtuExchange(247);
+    conn->requestPHY(BLE_GAP_PHY_2MBPS);
+  }
+  bleLinkUpEdge = 1;
+}
+
+static void bleOnDisconnect(uint16_t conn_hdl, uint8_t reason) {
+  (void)conn_hdl;
+  (void)reason;
+  bleLinkLost = 1;
+}
+
+static void bleStart() {
+  // Keep the speed LED. Bluefruit's connect blink uses that pin.
+  Bluefruit.autoConnLed(false);
+  // MTU 247 with a short event. BANDWIDTH_MAX's event length does not fit
+  // the SoftDevice RAM this board reserves.
+  Bluefruit.configPrphConn(247, 6, 2, 1);
+  if (!Bluefruit.begin(1, 0)) {
+    Serial.println("BLE begin failed");
+    return;
+  }
+  bleReady = true;
+  Bluefruit.setTxPower(4);
+  Bluefruit.setName("OBJECT-001");
+  Bluefruit.Periph.setConnectCallback(bleOnConnect);
+  Bluefruit.Periph.setDisconnectCallback(bleOnDisconnect);
+  Bluefruit.Periph.setConnIntervalMS(15, 30);
+
+  bleCmd.setPermission(SECMODE_NO_ACCESS, SECMODE_OPEN);
+  bleCmd.setWriteCallback(bleOnWrite, true);
+  bleMeta.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  bleData.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  bleSvc.begin();
+  bleCmd.begin();
+  bleMeta.begin();
+  bleData.begin();
+
+  Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
+  Bluefruit.Advertising.addTxPower();
+  Bluefruit.Advertising.addService(bleSvc);
+  Bluefruit.ScanResponse.addName();
+  Bluefruit.Advertising.restartOnDisconnect(true);
+  Bluefruit.Advertising.setInterval(32, 244);
+  Bluefruit.Advertising.setFastTimeout(30);
+  if (!Bluefruit.Advertising.start(0)) {
+    Serial.println("BLE advertise failed");
+    return;
+  }
+  Serial.println("BLE advertising OBJECT-001");
 }
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(PIN_REED, INPUT_PULLUP);
   pinMode(PIN_BTN, INPUT_PULLUP);
-  pinMode(PIN_OLED_CS, OUTPUT);
-  digitalWrite(PIN_OLED_CS, HIGH);
+  pinMode(PIN_LCD_BL, OUTPUT);
+  backlightApply();
+  pinMode(PIN_LCD_CS, OUTPUT);
+  digitalWrite(PIN_LCD_CS, HIGH);
   pinMode(PIN_SD_CS, OUTPUT);
   digitalWrite(PIN_SD_CS, HIGH);
 
@@ -1521,28 +2494,22 @@ void setup() {
   Serial.begin(115200);
   delay(1500);
   Serial.println();
-  Serial.println("XIAO cycling computer — SH1107 + reed D0 + btn D4 + GPS Serial1 + SD D5");
+  Serial.println("XIAO cycling computer — ILI9341 + reed D0 + btn D4 + GPS Serial1 + SD D5");
 
-  // Hardware SPI: SCK=D8, MOSI=D10, MISO=D9 (SD). OLED CS=D1, SD CS=D5.
-  if (!display.begin(0x3C, true)) {
-    Serial.println("SH1107 begin() failed — check wiring / power");
-    while (true) {
-      digitalWrite(LED_BUILTIN, LOW);
-      delay(100);
-      digitalWrite(LED_BUILTIN, HIGH);
-      delay(100);
-    }
-  }
-
+  // Hardware SPI: SCK=D8, MOSI=D10, MISO=D9. LCD CS=D1, SD CS=D5.
+  // RST is tied to 3.3V; begin() sends a software reset. Backlight is D3.
+  display.begin(32000000);
   display.setRotation(0);
-  drawSplash("SD...");
+  display.invertDisplay(true);
+  display.setTextWrap(false);
+  drawSplash("Checking card");
 
   sdBeginShared();
-  const char *sdLine = "NO SD";
+  const char *sdLine = "No card";
   if (sdReady) {
     sdLine = tripResumeSd();
   } else {
-    sdLine = "NO SD";
+    sdLine = "No card";
   }
   drawSplash(sdLine);
   delay(1000);
@@ -1560,6 +2527,8 @@ void setup() {
 
   // Attach after display is up so early glitches don't race an empty UI.
   attachInterrupt(digitalPinToInterrupt(PIN_REED), reedIsr, FALLING);
+
+  bleStart();
 
   Serial.println(tripStarted ? "Ready — resuming trip" : "Ready — waiting for wheel pulses");
 }
@@ -1634,5 +2603,12 @@ void loop() {
 
   digitalWrite(LED_BUILTIN, (speedKmh > 0.05f) ? LOW : HIGH);
 
-  gpsWait(50);
+  bool bleSent = bleService();
+  if (bleSent) {
+    gpsDrain();
+  } else if (bleActive()) {
+    gpsWait(5);
+  } else {
+    gpsWait(50);
+  }
 }

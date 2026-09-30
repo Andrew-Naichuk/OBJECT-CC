@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>OBJECT — Ride transfer</title>
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=Doto:wght@900&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --paper: #ffffff;
+      --ink: #000000;
+      --quiet: #6f6f6f;
+      --rule: #e4e4e4;
+      --wash: #f2f2f2;
+      --shell: #161616;
+      --shell-edge: #2e2e2e;
+      --px: #ffffff;
+      --px-dim: rgba(255, 255, 255, 0.6);
+      --px-off: #242424;
+      --drop: 0 26px 30px -26px rgba(0, 0, 0, 0.5);
+      --sans: "Archivo", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --dots: "Doto", "Archivo", system-ui, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #000000;
+        --ink: #ffffff;
+        --quiet: #8f8f8f;
+        --rule: #232323;
+        --wash: #0f0f0f;
+        --shell: #141414;
+        --shell-edge: #333333;
+        --drop: none;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 400 1rem/1.45 var(--sans);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    button {
+      font: inherit;
+      color: inherit;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    button:disabled { cursor: default; }
+    :focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+
+    main {
+      max-width: 27rem;
+      margin: 0 auto;
+      padding:
+        max(1.25rem, env(safe-area-inset-top))
+        max(16px, env(safe-area-inset-right))
+        calc(2.5rem + env(safe-area-inset-bottom))
+        max(16px, env(safe-area-inset-left));
+    }
+
+    /* Top line: wordmark and link state */
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      margin: 0 0 2rem;
+    }
+    .brand { display: flex; align-items: baseline; gap: 0.7rem; min-width: 0; }
+    .mark {
+      margin: 0;
+      font-weight: 850;
+      font-stretch: 125%;
+      font-size: 1.3rem;
+      line-height: 1;
+      letter-spacing: 0.02em;
+    }
+    .sub { color: var(--quiet); font-size: 0.9375rem; white-space: nowrap; }
+    .link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: var(--quiet);
+      font-size: 0.9375rem;
+      white-space: nowrap;
+    }
+    .led {
+      width: 0.55rem;
+      height: 0.55rem;
+      border-radius: 50%;
+      border: 1.5px solid currentColor;
+    }
+    body[data-link="on"] .link { color: var(--ink); }
+    body[data-link="on"] .led { background: var(--ink); border-color: var(--ink); }
+    body[data-phase="pairing"] .led,
+    body[data-phase="listing"] .led,
+    body[data-phase="downloading"] .led { animation: blink 0.9s steps(2, jump-none) infinite; }
+
+    /* The object: a drawing of the computer, its screen mirrors the device */
+    .device {
+      position: relative;
+      margin: 0 0 1.75rem;
+      padding: 14px;
+      border-radius: 30px;
+      background: var(--shell);
+      box-shadow: inset 0 0 0 1px var(--shell-edge), var(--drop);
+    }
+    .device::before,
+    .device::after {
+      content: "";
+      position: absolute;
+      right: -3px;
+      width: 3px;
+      height: 13%;
+      border-radius: 0 3px 3px 0;
+      background: var(--shell-edge);
+    }
+    .device::before { top: 26%; }
+    .device::after { top: 46%; }
+
+    .screen {
+      aspect-ratio: 2 / 1;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      padding: 0.8rem 0.95rem 0.85rem;
+      border-radius: 10px;
+      background: #000;
+      color: var(--px);
+      overflow: hidden;
+      box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.9);
+    }
+    .screen > * { transition: opacity 0.5s ease; }
+    body[data-link="off"] .screen > * { opacity: 0.34; }
+    body[data-phase="pairing"] .screen > * { animation: breathe 1.6s ease-in-out infinite; }
+
+    .screen-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      line-height: 1.2;
+      color: var(--px-dim);
+      font-variant-numeric: tabular-nums;
+    }
+    .screen-top span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .screen-top span + span { flex: none; }
+
+    .figure {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 0;
+    }
+    #value {
+      font-family: var(--dots);
+      font-weight: 900;
+      font-size: clamp(6rem, 35vw, 9.25rem);
+      line-height: 0.74;
+      letter-spacing: -0.01em;
+      font-variant-numeric: tabular-nums;
+    }
+    #unit {
+      align-self: flex-start;
+      margin: 0.35rem 0 0 0.35rem;
+      font-family: var(--dots);
+      font-weight: 900;
+      font-size: clamp(2.6rem, 14vw, 3.6rem);
+      line-height: 1;
+    }
+    #unit:empty { display: none; }
+
+    .gauge {
+      --p: 0;
+      position: relative;
+      height: 6px;
+      background: radial-gradient(circle at 3px 3px, var(--px-off) 2.2px, transparent 2.7px) 0 0 / 9px 6px repeat-x;
+    }
+    .gauge .fill {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at 3px 3px, var(--px) 2.2px, transparent 2.7px) 0 0 / 9px 6px repeat-x;
+      clip-path: inset(0 calc(100% - var(--p) * 100%) 0 0);
+      transition: clip-path 0.25s linear;
+    }
+    body[data-phase="listing"] .gauge .fill { animation: sweep 1.5s steps(24) infinite; }
+
+    /* Status and controls */
+    #status { margin: 0 0 1rem; min-height: 1.45em; color: var(--quiet); }
+    #status.error { display: flex; gap: 0.55rem; color: var(--ink); font-weight: 600; }
+    #status.error::before {
+      content: "!";
+      flex: none;
+      display: grid;
+      place-items: center;
+      width: 1.3rem;
+      height: 1.3rem;
+      margin-top: 0.05rem;
+      border-radius: 50%;
+      background: var(--ink);
+      color: var(--paper);
+      font-size: 0.8rem;
+      font-weight: 850;
+    }
+
+    #connect {
+      width: 100%;
+      height: 3.6rem;
+      border: 0;
+      border-radius: 16px;
+      background: var(--ink);
+      color: var(--paper);
+      font-weight: 650;
+      font-size: 1.0625rem;
+      transition: transform 0.12s ease, opacity 0.2s ease;
+    }
+    #connect:active:not(:disabled) { transform: scale(0.985); }
+    #connect:disabled { opacity: 0.45; }
+
+    .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+    .pair button {
+      height: 3.25rem;
+      border: 1.5px solid var(--rule);
+      border-radius: 12px;
+      background: transparent;
+      font-weight: 600;
+    }
+    .pair button:active:not(:disabled) { background: var(--wash); }
+    .pair button:disabled { opacity: 0.4; }
+    body[data-link="on"] #connect,
+    body[data-link="off"] .when-on { display: none; }
+
+    /* Ride list */
+    .rides { margin-top: 2.5rem; }
+    .rides-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 1rem;
+      padding-bottom: 0.7rem;
+      border-bottom: 2px solid var(--ink);
+    }
+    .rides-head h2 {
+      margin: 0;
+      font-size: 1.375rem;
+      font-weight: 750;
+      font-stretch: 112%;
+      line-height: 1.1;
+    }
+    .hint { color: var(--quiet); font-size: 0.875rem; }
+
+    ul { list-style: none; margin: 0; padding: 0; }
+    li { margin: 0; }
+    li button {
+      width: 100%;
+      min-height: 3.9rem;
+      display: grid;
+      grid-template-columns: 1fr auto 1.2rem;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.9rem 0.35rem;
+      border: 0;
+      border-bottom: 1px solid var(--rule);
+      border-radius: 0;
+      background: transparent;
+      text-align: left;
+      transition: background-color 0.15s ease;
+    }
+    @media (hover: hover) {
+      li button:not(:disabled):hover { background: var(--wash); }
+    }
+    li button:active:not(:disabled) { background: var(--wash); }
+    li button:disabled { opacity: 0.38; }
+    li button.active { opacity: 1; }
+
+    .name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 1.0625rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+    .ext { color: var(--quiet); font-weight: 400; }
+    .tag {
+      display: inline-block;
+      margin-left: 0.55rem;
+      padding: 0.1rem 0.5rem 0.14rem;
+      border-radius: 999px;
+      background: var(--ink);
+      color: var(--paper);
+      font-size: 0.75rem;
+      font-weight: 650;
+      vertical-align: 0.12em;
+    }
+    .size { color: var(--quiet); font-size: 0.9375rem; font-variant-numeric: tabular-nums; }
+    .active .size { color: var(--ink); font-weight: 650; }
+    li svg { width: 1.2rem; height: 1.2rem; display: block; }
+    .active svg { animation: blink 0.9s steps(2, jump-none) infinite; }
+    .empty { padding: 1.25rem 0.35rem; color: var(--quiet); border-bottom: 1px solid var(--rule); }
+
+    .note { margin: 2.75rem 0 0; max-width: 36ch; color: var(--quiet); font-size: 0.875rem; }
+
+    @keyframes blink { 50% { opacity: 0.15; } }
+    @keyframes breathe { 50% { opacity: 0.7; } }
+    @keyframes sweep {
+      0% { clip-path: inset(0 100% 0 0); }
+      50% { clip-path: inset(0 0 0 0); }
+      100% { clip-path: inset(0 0 0 100%); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+    .hide { display: none; }
+  </style>
+</head>
+<body data-link="off" data-phase="idle">
+  <main>
+    <header class="top">
+      <div class="brand">
+        <h1 class="mark">OBJECT</h1>
+        <span class="sub">Ride transfer</span>
+      </div>
+      <span class="link" aria-live="polite"><span class="led" aria-hidden="true"></span><span id="link-label">Offline</span></span>
+    </header>
+
+    <section class="device" aria-label="Computer display">
+      <div class="screen">
+        <div class="screen-top">
+          <span id="caption">No computer</span>
+          <span id="progress-label"></span>
+        </div>
+        <div class="figure" aria-live="polite">
+          <span id="value">--</span><span id="unit"></span>
+        </div>
+        <div class="gauge" id="progress" role="progressbar" aria-label="Transfer progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <span class="fill"></span>
+        </div>
+      </div>
+    </section>
+
+    <p id="status">Wake the computer and keep it close, then connect.</p>
+
+    <div class="controls">
+      <button id="connect" type="button">Connect</button>
+      <div class="pair when-on">
+        <button id="refresh" type="button" disabled>Refresh list</button>
+        <button id="disconnect" type="button" disabled>Disconnect</button>
+      </div>
+    </div>
+
+    <section class="rides when-on" aria-labelledby="rides-title">
+      <div class="rides-head">
+        <h2 id="rides-title">Rides</h2>
+        <span class="hint">Tap one to save the GPX</span>
+      </div>
+      <ul id="files"></ul>
+    </section>
+
+    <p class="note">Works in Chrome on Android when this page is served over HTTPS. Safari on iPhone has no Bluetooth; open the page in Bluefy instead.</p>
+  </main>
+  <script>
+    // Same bytes as xiao_oled.ino.
+    const SERVICE = "7a1e0001-4c8b-4d2e-9f63-1b5a0c7e8d24";
+    const CMD = "7a1e0002-4c8b-4d2e-9f63-1b5a0c7e8d24";
+    const META = "7a1e0003-4c8b-4d2e-9f63-1b5a0c7e8d24";
+    const DATA = "7a1e0004-4c8b-4d2e-9f63-1b5a0c7e8d24";
+    const OP_LIST = 0x01;
+    const OP_GET = 0x02;
+    const OP_ABORT = 0x03;
+    const META_ENTRY = 0x01;
+    const META_LIST_END = 0x02;
+    const META_START = 0x03;
+    const META_DONE = 0x04;
+    const META_ERROR = 0x7f;
+    const MAX_FILE = 16 * 1024 * 1024;
+    const STALL_MS = 15000;
+    const ERRORS = {
+      1: "No SD card",
+      2: "Bad file name",
+      3: "File not found",
+      4: "Read failed",
+      5: "Transfer aborted"
+    };
+
+    const statusEl = document.getElementById("status");
+    const connectBtn = document.getElementById("connect");
+    const refreshBtn = document.getElementById("refresh");
+    const disconnectBtn = document.getElementById("disconnect");
+    const filesEl = document.getElementById("files");
+    const progressEl = document.getElementById("progress");
+    const progressLabel = document.getElementById("progress-label");
+    const valueEl = document.getElementById("value");
+    const unitEl = document.getElementById("unit");
+    const captionEl = document.getElementById("caption");
+    const linkLabel = document.getElementById("link-label");
+
+    let device = null;
+    let cmdChar = null;
+    let phase = "idle";
+    let rides = [];
+    let fileBuf = null;
+    let fileName = "";
+    let received = 0;
+    let doneCrc = null;
+    let early = [];
+    let stallTimer = 0;
+    let prog = null;
+
+    const DOWN_ICON = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M10 3v10M5.5 8.5 10 13l4.5-4.5M4 17h12"/></svg>';
+
+    function pad2(n) {
+      return n < 10 ? "0" + n : String(n);
+    }
+
+    function splitName(name) {
+      const dot = name.lastIndexOf(".");
+      return dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+    }
+
+    // Mirrors the transfer state onto the drawn display and the link indicator.
+    function syncUI() {
+      const linked = !!cmdChar;
+      const pairing = !linked && connectBtn.disabled;
+      const shown = pairing ? "pairing" : phase;
+      document.body.dataset.link = linked ? "on" : "off";
+      document.body.dataset.phase = shown;
+
+      let value = "--";
+      let unit = "";
+      let caption = "No computer";
+      let right = "";
+      let p = 0;
+      const stored = rides.reduce((sum, r) => sum + r.size, 0);
+
+      if (phase === "downloading") {
+        const total = prog && fileBuf ? prog.total : 0;
+        const pct = total ? Math.floor((prog.got / total) * 100) : 0;
+        value = String(pct);
+        unit = "%";
+        caption = fileName || "Saving";
+        right = total ? formatSize(prog.got) + " / " + formatSize(total) : "Requesting";
+        p = pct / 100;
+      } else if (phase === "listing") {
+        value = pad2(rides.length);
+        caption = "Reading card";
+      } else if (linked) {
+        value = pad2(rides.length);
+        caption = rides.length === 1 ? "Ride on card" : "Rides on card";
+        right = rides.length ? formatSize(stored) : "";
+      } else if (pairing) {
+        caption = "Pairing";
+      }
+
+      valueEl.textContent = value;
+      unitEl.textContent = unit;
+      captionEl.textContent = caption;
+      progressLabel.textContent = right;
+      progressEl.style.setProperty("--p", p);
+      progressEl.setAttribute("aria-valuenow", String(Math.round(p * 100)));
+
+      linkLabel.textContent = !linked
+        ? (pairing ? "Pairing" : "Offline")
+        : ({ listing: "Reading", downloading: "Transferring" }[phase] || "Connected");
+
+      const activeSize = document.getElementById("active-size");
+      if (activeSize) activeSize.textContent = phase === "downloading" ? value + "%" : "";
+    }
+
+    function setStatus(text, isError) {
+      statusEl.textContent = text;
+      statusEl.className = isError ? "error" : "";
+      syncUI();
+    }
+
+    function formatSize(n) {
+      if (n < 1024) return n + " B";
+      if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10 * 1024 ? 1 : 0) + " KB";
+      return (n / (1024 * 1024)).toFixed(1) + " MB";
+    }
+
+    function crc32(bytes) {
+      let c = 0xffffffff;
+      for (let i = 0; i < bytes.length; i++) {
+        c ^= bytes[i];
+        for (let b = 0; b < 8; b++) {
+          const mask = -(c & 1);
+          c = (c >>> 1) ^ (0xedb88320 & mask);
+        }
+      }
+      return (~c) >>> 0;
+    }
+
+    function u32le(bytes, offset) {
+      return (bytes[offset] |
+        (bytes[offset + 1] << 8) |
+        (bytes[offset + 2] << 16) |
+        (bytes[offset + 3] << 24)) >>> 0;
+    }
+
+    function readName(bytes) {
+      let n = bytes.length;
+      while (n > 0 && (bytes[n - 1] === 0 || bytes[n - 1] === 32)) n--;
+      let s = "";
+      for (let i = 0; i < n; i++) s += String.fromCharCode(bytes[i]);
+      return s;
+    }
+
+    function noteActivity() {
+      clearTimeout(stallTimer);
+      if (phase === "listing" || phase === "downloading") {
+        stallTimer = setTimeout(() => {
+          setStatus("Transfer stalled. Move closer and try again.", true);
+          phase = "idle";
+          hideProgress();
+          renderRides();
+        }, STALL_MS);
+      }
+    }
+
+    function hideProgress() {
+      prog = null;
+      syncUI();
+    }
+
+    function showProgress(name, got, total) {
+      prog = { name, got, total };
+      syncUI();
+    }
+
+    function renderRides() {
+      filesEl.replaceChildren();
+      const sorted = rides.slice().sort((a, b) => {
+        if (a.name === "CURRENT.GPX") return -1;
+        if (b.name === "CURRENT.GPX") return 1;
+        return a.name < b.name ? 1 : a.name > b.name ? -1 : 0;
+      });
+      if (!sorted.length && cmdChar && phase === "idle") {
+        const li = document.createElement("li");
+        li.className = "empty";
+        li.textContent = "The card is empty. Record a ride, then refresh.";
+        filesEl.append(li);
+      }
+      for (const ride of sorted) {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.disabled = phase !== "idle";
+        const isActive = phase === "downloading" && ride.name === fileName;
+        if (isActive) btn.classList.add("active");
+
+        const name = document.createElement("span");
+        name.className = "name";
+        const [base, ext] = splitName(ride.name);
+        name.append(base);
+        const extEl = document.createElement("span");
+        extEl.className = "ext";
+        extEl.textContent = ext.toLowerCase();
+        name.append(extEl);
+        if (ride.name === "CURRENT.GPX") {
+          const tag = document.createElement("span");
+          tag.className = "tag";
+          tag.textContent = "Recording";
+          name.append(tag);
+        }
+
+        const size = document.createElement("span");
+        size.className = "size";
+        if (isActive) size.id = "active-size";
+        size.textContent = formatSize(ride.size);
+
+        const icon = document.createElement("span");
+        icon.innerHTML = DOWN_ICON;
+
+        btn.setAttribute("aria-label", "Save " + ride.name + ", " + formatSize(ride.size));
+        btn.append(name, size, icon);
+        btn.addEventListener("click", () => {
+          downloadRide(ride.name).catch((err) => {
+            phase = "idle";
+            resetTransfer();
+            setStatus(err.message || "Download failed.", true);
+            renderRides();
+          });
+        });
+        li.append(btn);
+        filesEl.append(li);
+      }
+      syncUI();
+    }
+
+    function resetTransfer() {
+      fileBuf = null;
+      fileName = "";
+      received = 0;
+      doneCrc = null;
+      early = [];
+      hideProgress();
+    }
+
+    function saveFile() {
+      const crc = crc32(fileBuf);
+      if (crc !== doneCrc) {
+        setStatus("CRC mismatch for " + fileName + ". File not saved.", true);
+        phase = "idle";
+        resetTransfer();
+        renderRides();
+        return;
+      }
+      const blob = new Blob([fileBuf], { type: "application/gpx+xml" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      setStatus("Saved " + fileName + ".");
+      phase = "idle";
+      resetTransfer();
+      renderRides();
+    }
+
+    function maybeFinish() {
+      if (doneCrc === null || !fileBuf || received !== fileBuf.length) return;
+      clearTimeout(stallTimer);
+      saveFile();
+    }
+
+    function takeBytes(payload, offset) {
+      if (!fileBuf || offset !== received) return;
+      if (offset + payload.length > fileBuf.length) return;
+      fileBuf.set(payload, offset);
+      received += payload.length;
+      showProgress(fileName, received, fileBuf.length);
+      maybeFinish();
+    }
+
+    function onMeta(event) {
+      const view = event.target.value;
+      const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+      if (bytes.length < 1) return;
+      noteActivity();
+      const type = bytes[0];
+      if (type === META_ENTRY && bytes.length >= 17) {
+        const name = readName(bytes.subarray(1, 13));
+        const size = u32le(bytes, 13);
+        rides.push({ name, size });
+        syncUI();
+        return;
+      }
+      if (type === META_LIST_END) {
+        clearTimeout(stallTimer);
+        phase = "idle";
+        setStatus(rides.length ? rides.length + " ride" + (rides.length === 1 ? "" : "s") + " on the card." : "No GPX files on the card.");
+        renderRides();
+        return;
+      }
+      if (type === META_START && bytes.length >= 17) {
+        fileName = readName(bytes.subarray(1, 13));
+        const size = u32le(bytes, 13);
+        if (size > MAX_FILE) {
+          setStatus("File is too large to download here.", true);
+          phase = "idle";
+          hideProgress();
+          renderRides();
+          return;
+        }
+        fileBuf = new Uint8Array(size);
+        received = 0;
+        doneCrc = null;
+        phase = "downloading";
+        showProgress(fileName, 0, size);
+        const queued = early;
+        early = [];
+        for (const chunk of queued) takeBytes(chunk.payload, chunk.offset);
+        maybeFinish();
+        renderRides();
+        return;
+      }
+      if (type === META_DONE && bytes.length >= 5) {
+        doneCrc = u32le(bytes, 1);
+        maybeFinish();
+        return;
+      }
+      if (type === META_ERROR && bytes.length >= 2) {
+        clearTimeout(stallTimer);
+        phase = "idle";
+        resetTransfer();
+        setStatus(ERRORS[bytes[1]] || "Transfer failed.", true);
+        renderRides();
+      }
+    }
+
+    function onData(event) {
+      const view = event.target.value;
+      const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+      if (bytes.length < 4) return;
+      noteActivity();
+      const offset = u32le(bytes, 0);
+      const payload = bytes.subarray(4);
+      const copy = new Uint8Array(payload);
+      if (!fileBuf) {
+        early.push({ offset, payload: copy });
+        return;
+      }
+      takeBytes(copy, offset);
+    }
+
+    async function writeCmd(bytes) {
+      await cmdChar.writeValue(bytes);
+    }
+
+    async function listRides() {
+      if (!cmdChar || phase !== "idle") return;
+      rides = [];
+      filesEl.replaceChildren();
+      phase = "listing";
+      resetTransfer();
+      renderRides();
+      setStatus("Reading the card…");
+      noteActivity();
+      await writeCmd(new Uint8Array([OP_LIST]));
+    }
+
+    async function downloadRide(name) {
+      if (!cmdChar || phase !== "idle") return;
+      phase = "downloading";
+      resetTransfer();
+      fileName = name;
+      renderRides();
+      setStatus("Saving " + name + "…");
+      showProgress(name, 0, 1);
+      noteActivity();
+      const body = new Uint8Array(1 + name.length);
+      body[0] = OP_GET;
+      for (let i = 0; i < name.length; i++) body[i + 1] = name.charCodeAt(i);
+      await writeCmd(body);
+    }
+
+    async function connect() {
+      if (!navigator.bluetooth) {
+        setStatus("This browser has no Bluetooth. Use Chrome on Android over HTTPS, or Bluefy on iPhone.", true);
+        return;
+      }
+      connectBtn.disabled = true;
+      syncUI();
+      try {
+        device = await navigator.bluetooth.requestDevice({
+          filters: [{ name: "OBJECT-001" }, { services: [SERVICE] }],
+          optionalServices: [SERVICE]
+        });
+        device.addEventListener("gattserverdisconnected", onDisconnected);
+        setStatus("Connecting…");
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService(SERVICE);
+        cmdChar = await service.getCharacteristic(CMD);
+        const meta = await service.getCharacteristic(META);
+        const data = await service.getCharacteristic(DATA);
+        meta.addEventListener("characteristicvaluechanged", onMeta);
+        data.addEventListener("characteristicvaluechanged", onData);
+        await meta.startNotifications();
+        await data.startNotifications();
+        refreshBtn.disabled = false;
+        disconnectBtn.disabled = false;
+        setStatus("Connected.");
+        await listRides();
+      } catch (err) {
+        phase = "idle";
+        if (err && err.name === "NotFoundError") {
+          setStatus("No computer selected.");
+        } else {
+          setStatus(err && err.message ? err.message : "Connect failed.", true);
+        }
+        cmdChar = null;
+      } finally {
+        connectBtn.disabled = !!cmdChar;
+        syncUI();
+      }
+    }
+
+    function onDisconnected() {
+      clearTimeout(stallTimer);
+      cmdChar = null;
+      phase = "idle";
+      rides = [];
+      resetTransfer();
+      filesEl.replaceChildren();
+      connectBtn.disabled = false;
+      refreshBtn.disabled = true;
+      disconnectBtn.disabled = true;
+      setStatus("Disconnected.");
+    }
+
+    async function disconnect() {
+      if (cmdChar && phase !== "idle") {
+        try { await writeCmd(new Uint8Array([OP_ABORT])); } catch (e) {}
+      }
+      if (device && device.gatt.connected) device.gatt.disconnect();
+      else onDisconnected();
+    }
+
+    connectBtn.addEventListener("click", connect);
+    refreshBtn.addEventListener("click", () => listRides().catch((err) => {
+      phase = "idle";
+      setStatus(err.message || "List failed.", true);
+      renderRides();
+    }));
+    disconnectBtn.addEventListener("click", disconnect);
+
+    syncUI();
+  </script>
+</body>
+</html>
