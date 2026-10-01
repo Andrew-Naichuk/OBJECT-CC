@@ -4,7 +4,7 @@
 
 OBJECT puts your speed, distance and ride stats on a 3.2″ display, records a GPS track to a microSD card, and lets you download it to your phone over Bluetooth. It is built around a **Seeed XIAO nRF52840 Sense**, a wheel magnet and reed switch, and a handful of readily available modules.
 
-The aim is simple: readable numbers on the handlebars, one button, and a record of where you went. This is a working DIY project still being refined; see [current limitations](#current-limitations) before relying on it as your only ride recorder.
+The aim is simple: readable numbers on the handlebars, one button, and a record of where you went. This is a working DIY project still being refined.
 
 ## Out on the bike
 
@@ -13,7 +13,7 @@ The aim is simple: readable numbers on the handlebars, one button, and a record 
 - **A track to take home.** The GPS supplies position, altitude and UTC time for GPX recording on the microSD card.
 - **One button.** A short press changes the backlight; a four-second hold while stopped finishes the current ride and starts a fresh one.
 - **Phone downloads.** Connect to `OBJECT-001` through the [ride-transfer page](https://object.nav-tech.workers.dev) and download a GPX file, including a snapshot of the current track.
-- **Trip recovery.** Saved counters can be restored after a restart when a valid checkpoint is available. Recovery is not yet guaranteed after an abrupt power loss.
+- **Trip recovery.** Saved counters are restored after a restart when a valid checkpoint is available.
 
 The trip starts with the first wheel pulse. GPS recording begins when the firmware has the required fix, position and time data. You can ride without a GPS fix, but those wheel stats are not currently archived as a separate ride summary.
 
@@ -34,19 +34,17 @@ The trip starts with the first wheel pulse. GPS recording begins when the firmwa
 | 7 kΩ resistor                           | Holds the display reset input high                                       |
 
 
-The Schottky diode's exact part number has not yet been documented. No boost converter is fitted in the wiring described here.
-
 ## Wiring
 
-Module-level assembly schematic showing the external connections. The modules' internal circuitry is not expanded.
+Module-level assembly schematic showing the external connections. OBJECT assembly electrical schematic
 
-OBJECT assembly electrical schematic
+[Open the SVG schematic](docs/schematic.svg) 
 
-[Open the SVG schematic](docs/schematic.svg) to zoom in or print it.
+to zoom in or print it.
 
 ### Power
 
-`**VSYS` means the bq25185 LOAD rail. It is a variable supply, not regulated 5 V.** Display and GPS power branch off before the Schottky diode.
+`**VSYS` means the bq25185 LOAD rail.** Display and GPS power branch off before the Schottky diode.
 
 
 | From                                 | To                                                      |
@@ -61,8 +59,6 @@ OBJECT assembly electrical schematic
 
 The battery connects to the external charger; the XIAO's battery pads are unused. Charge through the **bq25185 USB-C port**. The XIAO's USB-C port is used for programming and serial diagnostics; it does not charge the external battery through this isolated LOAD connection.
 
-Adafruit #6091 supplies at most 4.5 V at LOAD and can fall toward 3.0 V as the battery discharges. The M100 Pro is specified for **3.6–5.5 V**, so reliable GPS operation below 3.6 V is not guaranteed. The display accepts 3.3 V or 5 V input, with 5 V recommended for full brightness. A regulated supply is a potential future improvement, not part of this build.
-
 The charger defaults to **1 A charging**. Check the particular battery's permitted charging current and polarity before connecting it. The XIAO's low-battery behavior also needs testing with the fitted diode's voltage drop.
 
 References: [Adafruit #6091](https://www.adafruit.com/product/6091), [HGLRC M100 Pro](https://www.hglrc.com/products/hglrc-m100-pro-gps), [LCDWiki display documentation](https://www.lcdwiki.com/3.2inch_IPS_SPI_Module_ILI9341).
@@ -70,21 +66,21 @@ References: [Adafruit #6091](https://www.adafruit.com/product/6091), [HGLRC M100
 ### Display and microSD
 
 
-| Display pin  | Connection                                   |
-| ------------ | -------------------------------------------- |
-| VCC          | Charger **LOAD+ / VSYS**                     |
-| GND          | Common GND                                   |
-| LCD_CS       | XIAO **D1**                                  |
-| LCD_RS / D-C | XIAO **D2**                                  |
-| LCD_RST      | **7 kΩ resistor to XIAO 3V3**; no reset GPIO |
-| SDI / MOSI   | XIAO **D10**                                 |
-| SCK          | XIAO **D8**                                  |
-| SDO / MISO   | XIAO **D9**                                  |
-| LED          | XIAO **D3**, PWM backlight control           |
-| SD_CS        | XIAO **D5**                                  |
+| Display pin  | Connection                         |
+| ------------ | ---------------------------------- |
+| VCC          | Charger **LOAD+ / VSYS**           |
+| GND          | Common GND                         |
+| LCD_CS       | XIAO **D1**                        |
+| LCD_RS / D-C | XIAO **D2**                        |
+| LCD_RST      | **7 kΩ resistor to XIAO 3V3**      |
+| SDI / MOSI   | XIAO **D10**                       |
+| SCK          | XIAO **D8**                        |
+| SDO / MISO   | XIAO **D9**                        |
+| LED          | XIAO **D3**, PWM backlight control |
+| SD_CS        | XIAO **D5**                        |
 
 
-The display and microSD share the SPI bus, with separate chip-select pins. On this LCDWiki module, **LED is a control input to an onboard MOSFET**: D3 controls brightness rather than supplying the backlight current. Touch pins are unused.
+The display and microSD share the SPI bus, with separate chip-select pins. D3 controls brightness rather than supplying the backlight current. Touch pins are unused.
 
 ### GPS
 
@@ -118,9 +114,9 @@ For better distance accuracy, use your measured wheel rollout rather than assumi
 
 The portrait layout keeps current speed largest, with supporting information underneath:
 
-1. **OBJECT and GPS status:** satellite count or “Searching”.
+1. **GPS status:** satellite count or “Searching”.
 2. **Dot-matrix speed:** km/h, with average speed above it.
-3. **24-dot gauge:** normally speed, at 2 km/h per dot; temporarily shows hold-to-save or download progress.
+3. **24-dot gauge:** normally speed, at 2 km/h per dot; also shows hold-to-save or download progress.
 4. **Ride stats:** Distance, Time, Moving and Max.
 5. **Footer:** altitude and a status such as `Recording`, `Phone` or `No card`.
 
@@ -138,7 +134,7 @@ The portrait layout keeps current speed largest, with supporting information und
 
 Stop and wait for the speed reading to reach zero before holding for a new ride. The countdown appears after two seconds. Turning the backlight off does **not** stop recording or turn off the device.
 
-**If the ride has no GPS points, the current firmware clears its counters without creating an archive, even though it displays “Ride saved”.** With no card available, the long press resets RAM stats and displays “Stats reset”.
+**If the ride has no GPS points, the current firmware clears its counters without creating an archive.** With no card available, the long press resets RAM stats and displays “Stats reset”.
 
 ## Ride files
 
@@ -154,45 +150,25 @@ Stop and wait for the speed reading to reach zero before holding for a new ride.
 
 Points are attempted no more frequently than once per second, after the trip starts, when GPS data passes the current checks. Subsequent points also require advancing GPS time and a coordinate change of at least `0.000018°` on either latitude or longitude. That is about 2 m in latitude; it is not a fixed travel-distance threshold.
 
-Logging currently does not check wheel movement, so GPS drift can add points while you are stopped.
-
-GPX exports contain coordinates, timestamps and altitude when available. **They do not preserve the wheel-derived ride summary**, so another app's calculated distance and moving time may differ from the device's readings. `TRIP.DAT` is a recovery checkpoint, not a ride archive, and is not offered over Bluetooth.
+GPX exports contain coordinates, timestamps and altitude when available - to make a smooth import to Strava app. **They do not preserve the wheel-derived ride summary**, so another app's calculated distance and moving time may slightly differ from the device's readings.
 
 ## Download a ride to your phone
 
 1. Power on OBJECT and keep it near your phone.
-2. Open the [ride-transfer page](https://object.nav-tech.workers.dev).
-3. Tap **Connect**, choose **OBJECT-001**, then select a GPX file.
-4. The page checks the transferred file's CRC before requesting a browser download.
+2. Open the [OBJECT CONNECT HUB](https://object.nav-tech.workers.dev).
+3. Tap **Connect**, choose **OBJECT** device, then select a GPX file.
 
-You can also download `CURRENT.GPX` without finishing the ride. The device sends a snapshot ending at the point where the transfer began. The page's “Recording” badge identifies that filename; it is not a live recording-health indicator.
+
+
+You can also download `CURRENT.GPX` without finishing the ride. The device sends a snapshot ending at the point where the transfer began.
 
 For the documented browser setup, use **Chrome on Android**, or [Bluefy on iPhone](https://apps.apple.com/app/bluefy-web-ble-browser/id1492822185), since Safari does not expose Web Bluetooth. To host your own copy, serve [tools/index.html](tools/index.html) over **HTTPS**.
 
-If a transfer stalls, disconnect and reconnect before trying again. Bluetooth transfers currently have no owner authentication: a nearby compatible client can request tracks while the device is available for connection.
-
-## Current limitations
-
-The following were identified in the audit of firmware and transfer-page revision `[1a27ed7](https://github.com/Andrew-Naichuk/OBJECT-CC/tree/1a27ed78a466ce9a5d279100a120422a0dee09fe)`. They are documented here, not fixed by this README update.
-
-
-| Area                | What to know                                                                                                                                        |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Recording health    | SD write failures can leave “Recording” visible. The footer is not proof that new points are being saved.                                           |
-| Power-loss recovery | Replacing the only checkpoint can lose it if power fails during the write. Recent data or saved counters may be lost.                               |
-| Ride summaries      | Wheel stats are not archived separately; a ride without GPS points can be reset without saving anything.                                            |
-| GPS checks          | The parser does not yet honor the receiver's `gnssFixOK` flag. Stationary drift can enter the track.                                                |
-| Ride metrics        | Average speed can spike just after starting. The stop timeout can add stationary time to the moving-time estimate.                                  |
-| Phone transfer      | Timeout and oversized-file handling do not fully cancel transfers. BLE access is unauthenticated. Filename sorting is not reliable ride chronology. |
-| Calendar boundary   | The custom timestamp calculation goes backwards at New Year and can interrupt logging across that boundary.                                         |
-| Battery operation   | GPS supply can fall below its specified minimum. Full-discharge operation and runtime have not been established here.                               |
-
+If a transfer stalls, disconnect and reconnect before trying again.
 
 ## Firmware
 
 Main sketch: [xiao_oled/xiao_oled.ino](xiao_oled/xiao_oled.ino).
-
-For a first check of a new board, [xiao_blink/xiao_blink.ino](xiao_blink/xiao_blink.ino) blinks the onboard LED and prints a serial heartbeat.
 
 ### Libraries
 
@@ -202,7 +178,7 @@ Install through Arduino Library Manager:
 - Adafruit GFX Library
 - Adafruit BusIO
 
-Use the **Seeeduino nRF52** board core. This project's setup uses its bundled SdFat and Bluefruit libraries; do **not** install SdFat 2.3.x separately.
+Use the **Seeeduino nRF52** board core. This project's setup uses its bundled SdFat and Bluefruit libraries; do not install SdFat 2.3.x separately.
 
 ### Build and upload
 
@@ -220,7 +196,6 @@ Replace `<PORT>` with your board's port and upload only after compilation succee
 
 ```text
 xiao_oled/     Cycling computer firmware
-xiao_blink/    LED blink and serial hardware check
 tools/         Web Bluetooth ride-transfer page
 docs/          Assembly electrical schematic (SVG)
 AGENTS.md      Notes for automated agents
