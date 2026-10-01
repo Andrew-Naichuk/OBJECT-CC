@@ -104,7 +104,8 @@
     body[data-link="on"] .led { background: var(--ink); border-color: var(--ink); }
     body[data-phase="pairing"] .led,
     body[data-phase="listing"] .led,
-    body[data-phase="downloading"] .led { animation: blink 0.9s steps(2, jump-none) infinite; }
+    body[data-phase="downloading"] .led,
+    body[data-phase="deleting"] .led { animation: blink 0.9s steps(2, jump-none) infinite; }
 
     /* The object: a drawing of the computer, its screen mirrors the device */
     .device {
@@ -193,7 +194,8 @@
       clip-path: inset(0 calc(100% - var(--p) * 100%) 0 0);
       transition: clip-path 0.25s linear;
     }
-    body[data-phase="listing"] .gauge .fill { animation: sweep 1.5s steps(24) infinite; }
+    body[data-phase="listing"] .gauge .fill,
+    body[data-phase="deleting"] .gauge .fill { animation: sweep 1.5s steps(24) infinite; }
 
     /* Status and controls */
     #status { margin: 0 0 1rem; min-height: 1.45em; color: var(--quiet); }
@@ -260,9 +262,16 @@
     .hint { color: var(--quiet); font-size: 0.875rem; }
 
     ul { list-style: none; margin: 0; padding: 0; }
-    li { margin: 0; }
-    li button {
-      width: 100%;
+    li {
+      margin: 0;
+      display: grid;
+      grid-template-columns: 1fr 2.75rem;
+      align-items: stretch;
+      border-bottom: 1px solid var(--rule);
+    }
+    li.recording { grid-template-columns: 1fr; }
+    li button.ride {
+      min-width: 0;
       min-height: 3.9rem;
       display: grid;
       grid-template-columns: 1fr auto 1.2rem;
@@ -270,18 +279,32 @@
       gap: 1rem;
       padding: 0.9rem 0.35rem;
       border: 0;
-      border-bottom: 1px solid var(--rule);
       border-radius: 0;
       background: transparent;
       text-align: left;
       transition: background-color 0.15s ease;
     }
-    @media (hover: hover) {
-      li button:not(:disabled):hover { background: var(--wash); }
+    li button.del {
+      min-height: 3.9rem;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 0;
+      border-left: 1px solid var(--rule);
+      border-radius: 0;
+      background: transparent;
+      color: var(--quiet);
+      transition: background-color 0.15s ease, color 0.15s ease;
     }
-    li button:active:not(:disabled) { background: var(--wash); }
+    @media (hover: hover) {
+      li button.ride:not(:disabled):hover,
+      li button.del:not(:disabled):hover { background: var(--wash); }
+      li button.del:not(:disabled):hover { color: var(--ink); }
+    }
+    li button.ride:active:not(:disabled),
+    li button.del:active:not(:disabled) { background: var(--wash); }
     li button:disabled { opacity: 0.38; }
-    li button.active { opacity: 1; }
+    li button.ride.active { opacity: 1; }
 
     .name {
       min-width: 0;
@@ -308,7 +331,11 @@
     .active .size { color: var(--ink); font-weight: 650; }
     li svg { width: 1.2rem; height: 1.2rem; display: block; }
     .active svg { animation: blink 0.9s steps(2, jump-none) infinite; }
-    .empty { padding: 1.25rem 0.35rem; color: var(--quiet); border-bottom: 1px solid var(--rule); }
+    .empty {
+      grid-column: 1 / -1;
+      padding: 1.25rem 0.35rem;
+      color: var(--quiet);
+    }
 
     .note { margin: 2.75rem 0 0; max-width: 36ch; color: var(--quiet); font-size: 0.875rem; }
 
@@ -379,12 +406,14 @@
     const OP_LIST = 0x01;
     const OP_GET = 0x02;
     const OP_ABORT = 0x03;
+    const OP_DELETE = 0x04;
     const META_ENTRY = 0x01;
     const META_LIST_END = 0x02;
     const META_START = 0x03;
     const META_DONE = 0x04;
     const META_AUTH_WAIT = 0x05;
     const META_AUTH_OK = 0x06;
+    const META_DELETED = 0x07;
     const META_ERROR = 0x7f;
     const MAX_FILE = 16 * 1024 * 1024;
     const STALL_MS = 15000;
@@ -392,7 +421,7 @@
       1: "No SD card",
       2: "Bad file name",
       3: "File not found",
-      4: "Read failed",
+      4: "Card I/O failed",
       5: "Transfer aborted",
       6: "Confirm on the computer"
     };
@@ -424,6 +453,7 @@
     let prog = null;
 
     const DOWN_ICON = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M10 3v10M5.5 8.5 10 13l4.5-4.5M4 17h12"/></svg>';
+    const DEL_ICON = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M4 6h12M8 6V4h4v2M7 6v10h6V6"/></svg>';
 
     function pad2(n) {
       return n < 10 ? "0" + n : String(n);
@@ -457,6 +487,10 @@
         caption = fileName || "Saving";
         right = total ? formatSize(prog.got) + " / " + formatSize(total) : "Requesting";
         p = pct / 100;
+      } else if (phase === "deleting") {
+        value = "--";
+        caption = fileName || "Deleting";
+        right = "Remove";
       } else if (phase === "listing") {
         value = pad2(rides.length);
         caption = "Reading card";
@@ -480,7 +514,7 @@
 
       linkLabel.textContent = !linked
         ? (pairing ? "Pairing" : "Offline")
-        : ({ awaiting: "Confirm", listing: "Reading", downloading: "Transferring" }[phase] || "Connected");
+        : ({ awaiting: "Confirm", listing: "Reading", downloading: "Transferring", deleting: "Deleting" }[phase] || "Connected");
 
       const activeSize = document.getElementById("active-size");
       if (activeSize) activeSize.textContent = phase === "downloading" ? value + "%" : "";
@@ -527,7 +561,7 @@
 
     function noteActivity() {
       clearTimeout(stallTimer);
-      if (phase === "listing" || phase === "downloading") {
+      if (phase === "listing" || phase === "downloading" || phase === "deleting") {
         stallTimer = setTimeout(() => {
           setStatus("Transfer stalled. Move closer and try again.", true);
           phase = "idle";
@@ -562,8 +596,12 @@
       }
       for (const ride of sorted) {
         const li = document.createElement("li");
+        const isCurrent = ride.name === "CURRENT.GPX";
+        if (isCurrent) li.className = "recording";
+
         const btn = document.createElement("button");
         btn.type = "button";
+        btn.className = "ride";
         btn.disabled = phase !== "idle";
         const isActive = phase === "downloading" && ride.name === fileName;
         if (isActive) btn.classList.add("active");
@@ -576,7 +614,7 @@
         extEl.className = "ext";
         extEl.textContent = ext.toLowerCase();
         name.append(extEl);
-        if (ride.name === "CURRENT.GPX") {
+        if (isCurrent) {
           const tag = document.createElement("span");
           tag.className = "tag";
           tag.textContent = "Recording";
@@ -602,6 +640,26 @@
           });
         });
         li.append(btn);
+
+        if (!isCurrent) {
+          const del = document.createElement("button");
+          del.type = "button";
+          del.className = "del";
+          del.disabled = phase !== "idle";
+          del.innerHTML = DEL_ICON;
+          del.setAttribute("aria-label", "Delete " + ride.name);
+          del.addEventListener("click", (event) => {
+            event.stopPropagation();
+            deleteRide(ride.name).catch((err) => {
+              phase = "idle";
+              resetTransfer();
+              setStatus(err.message || "Delete failed.", true);
+              renderRides();
+            });
+          });
+          li.append(del);
+        }
+
         filesEl.append(li);
       }
       syncUI();
@@ -720,6 +778,16 @@
         maybeFinish();
         return;
       }
+      if (type === META_DELETED) {
+        clearTimeout(stallTimer);
+        const removed = fileName;
+        rides = rides.filter((r) => r.name !== removed);
+        phase = "idle";
+        resetTransfer();
+        setStatus(removed ? "Deleted " + removed + "." : "Deleted.");
+        renderRides();
+        return;
+      }
       if (type === META_ERROR && bytes.length >= 2) {
         clearTimeout(stallTimer);
         phase = authorized ? "idle" : "awaiting";
@@ -771,6 +839,22 @@
       noteActivity();
       const body = new Uint8Array(1 + name.length);
       body[0] = OP_GET;
+      for (let i = 0; i < name.length; i++) body[i + 1] = name.charCodeAt(i);
+      await writeCmd(body);
+    }
+
+    async function deleteRide(name) {
+      if (!cmdChar || !authorized || phase !== "idle") return;
+      if (name === "CURRENT.GPX") return;
+      if (!confirm("Delete " + name + " from the computer?")) return;
+      phase = "deleting";
+      resetTransfer();
+      fileName = name;
+      renderRides();
+      setStatus("Deleting " + name + "…");
+      noteActivity();
+      const body = new Uint8Array(1 + name.length);
+      body[0] = OP_DELETE;
       for (let i = 0; i < name.length; i++) body[i + 1] = name.charCodeAt(i);
       await writeCmd(body);
     }

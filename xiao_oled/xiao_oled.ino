@@ -38,7 +38,8 @@
  * BLE file download (no extra wiring):
  *   Advertises as "OBJECT-001". On connect the device asks for a short
  *   press within 10 s; timeout disconnects with no file access.
- *   tools/index.html lists root *.GPX files and saves them on the phone.
+ *   tools/index.html lists root *.GPX files, saves them on the phone,
+ *   and can delete archived rides. CURRENT.GPX cannot be deleted over BLE.
  *   TRIP.DAT is not offered. Open that page over HTTPS (Android Chrome,
  *   or a Web Bluetooth browser on iPhone).
  *
@@ -2154,7 +2155,8 @@ static const char BLE_RIDE_DATA_UUID[] = "7A1E0004-4C8B-4D2E-9F63-1B5A0C7E8D24";
 enum {
   BLE_OP_LIST = 0x01,
   BLE_OP_GET = 0x02,
-  BLE_OP_ABORT = 0x03
+  BLE_OP_ABORT = 0x03,
+  BLE_OP_DELETE = 0x04
 };
 
 enum {
@@ -2164,6 +2166,7 @@ enum {
   BLE_META_DONE = 0x04,
   BLE_META_AUTH_WAIT = 0x05,
   BLE_META_AUTH_OK = 0x06,
+  BLE_META_DELETED = 0x07,
   BLE_META_ERROR = 0x7F
 };
 
@@ -2201,6 +2204,7 @@ static uint8_t bleCmdOp = 0;
 static char bleCmdName[13];
 static uint8_t bleJob = BLE_JOB_IDLE;
 static uint8_t bleErrorPending = 0;
+static uint8_t bleDeletedPending = 0;
 static uint8_t bleAuthState = BLE_AUTH_NONE;
 static unsigned long bleAuthDeadlineMs = 0;
 static uint8_t bleAuthNotifyPending = 0;
@@ -2343,6 +2347,7 @@ static void bleResetXfer() {
 
 static void bleQueueError(uint8_t code) {
   bleResetXfer();
+  bleDeletedPending = 0;
   bleErrorPending = code;
 }
 
@@ -2576,6 +2581,7 @@ static bool blePumpSend() {
 static void bleBeginList() {
   bleResetXfer();
   bleErrorPending = 0;
+  bleDeletedPending = 0;
   if (!sdReady) {
     bleQueueError(BLE_ERR_NO_SD);
     return;
@@ -2596,6 +2602,7 @@ static void bleBeginGet(const char *rawName) {
   }
   bleResetXfer();
   bleErrorPending = 0;
+  bleDeletedPending = 0;
   gpsDrain();
   bool opened = bleFile.open(name, O_RDONLY);
   gpsDrain();
@@ -2618,6 +2625,46 @@ static void bleBeginGet(const char *rawName) {
   Serial.println(bleSize);
 }
 
+// Archives only — CURRENT.GPX stays on the card while recording.
+static void bleBeginDelete(const char *rawName) {
+  char name[13];
+  if (!bleNormalizeGpx(rawName, name, sizeof(name))) {
+    bleQueueError(BLE_ERR_NAME);
+    return;
+  }
+  if (strcmp(name, GPX_NAME) == 0) {
+    bleQueueError(BLE_ERR_NAME);
+    Serial.println("BLE delete denied — CURRENT.GPX");
+    return;
+  }
+  if (!sdReady) {
+    bleQueueError(BLE_ERR_NO_SD);
+    return;
+  }
+  bleResetXfer();
+  bleErrorPending = 0;
+  bleDeletedPending = 0;
+  gpsDrain();
+  bool exists = sd.exists(name);
+  gpsDrain();
+  if (!exists) {
+    bleQueueError(BLE_ERR_NOT_FOUND);
+    return;
+  }
+  gpsDrain();
+  bool removed = sd.remove(name);
+  gpsDrain();
+  if (!removed) {
+    bleQueueError(BLE_ERR_IO);
+    Serial.print("BLE delete failed ");
+    Serial.println(name);
+    return;
+  }
+  bleDeletedPending = 1;
+  Serial.print("BLE deleted ");
+  Serial.println(name);
+}
+
 static void bleTakeCommand() {
   uint8_t op;
   char name[13];
@@ -2628,7 +2675,8 @@ static void bleTakeCommand() {
   interrupts();
 
   if (op == BLE_OP_ABORT) {
-    if (bleJob != BLE_JOB_IDLE || bleErrorPending != 0) {
+    if (bleJob != BLE_JOB_IDLE || bleErrorPending != 0 || bleDeletedPending != 0) {
+      bleDeletedPending = 0;
       bleQueueError(BLE_ERR_ABORT);
       Serial.println("BLE abort");
     }
@@ -2647,11 +2695,15 @@ static void bleTakeCommand() {
     bleBeginGet(name);
     return;
   }
+  if (op == BLE_OP_DELETE) {
+    bleBeginDelete(name);
+    return;
+  }
   bleQueueError(BLE_ERR_NAME);
 }
 
 static bool bleActive() {
-  return bleReady && (bleJob != BLE_JOB_IDLE || bleErrorPending != 0);
+  return bleReady && (bleJob != BLE_JOB_IDLE || bleErrorPending != 0 || bleDeletedPending != 0);
 }
 
 // Percent of the file sent to the phone, while a download runs.
@@ -2685,6 +2737,7 @@ static bool bleService() {
     bleCmdPending = 0;
     interrupts();
     bleErrorPending = 0;
+    bleDeletedPending = 0;
     bleResetXfer();
     bleClearAuth();
     Serial.println("BLE disconnected");
@@ -2722,6 +2775,14 @@ static bool bleService() {
     bleErrorPending = 0;
     return true;
   }
+  if (bleDeletedPending) {
+    uint8_t meta = BLE_META_DELETED;
+    if (!bleNotifyMeta(&meta, 1)) {
+      return false;
+    }
+    bleDeletedPending = 0;
+    return true;
+  }
   if (bleJob == BLE_JOB_LIST) {
     return blePumpList();
   }
@@ -2740,12 +2801,14 @@ static void bleOnWrite(uint16_t conn_hdl, BLECharacteristic *chr, uint8_t *data,
   uint8_t op = data[0];
   char name[13];
   memset(name, 0, sizeof(name));
-  if (op == BLE_OP_GET && len > 1) {
-    uint16_t n = (uint16_t)(len - 1);
-    if (n > 12) {
-      n = 12;
+  if (op == BLE_OP_GET || op == BLE_OP_DELETE) {
+    if (len > 1) {
+      uint16_t n = (uint16_t)(len - 1);
+      if (n > 12) {
+        n = 12;
+      }
+      memcpy(name, data + 1, n);
     }
-    memcpy(name, data + 1, n);
   }
   noInterrupts();
   bleCmdOp = op;

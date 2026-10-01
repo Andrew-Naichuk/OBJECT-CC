@@ -159,6 +159,7 @@ GPX exports contain coordinates, timestamps and altitude when available - to mak
 3. Tap **Connect**, choose the **OBJECT** device.
 4. On OBJECT, press the button within **10 seconds** when it shows **Press to allow**. If you miss the window, the link drops and no files are listed — connect again.
 5. Select a GPX file to download.
+6. Delete archived rides with the trash control when you want to free card space. `CURRENT.GPX` cannot be deleted while it is the live recording.
 
 
 
