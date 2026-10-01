@@ -36,22 +36,26 @@
  *   Hold 4 s while stopped: save the ride and start a new one.
  *
  * BLE file download (no extra wiring):
- *   Advertises as "OBJECT-001". On connect the device asks for a short
- *   press within 10 s; timeout disconnects with no file access.
- *   tools/index.html lists root *.GPX files, saves them on the phone,
- *   and can delete archived rides. CURRENT.GPX cannot be deleted over BLE.
- *   TRIP.DAT is not offered. Open that page over HTTPS (Android Chrome,
+ *   Advertises as CONFIG ble_name (default "OBJECT-001"). On connect the
+ *   device asks for a short press within 10 s; timeout disconnects with no
+ *   file access. tools/index.html lists root *.GPX files, saves them on the
+ *   phone, and can delete archived rides. CURRENT.GPX cannot be deleted over
+ *   BLE. TRIP.DAT is not offered. Open that page over HTTPS (Android Chrome,
  *   or a Web Bluetooth browser on iPhone).
+ *
+ * microSD CONFIG.TXT (created with defaults on first boot if missing):
+ *   wheel_circ_mm, timezone_offset_min, backlight, ble_name, units,
+ *   backlight_dim, max_speed_kmh, stopped_ms. See docs/CONFIG.TXT.example.
  *
  * Libraries (Arduino Library Manager):
  *   Adafruit ILI9341, Adafruit GFX Library, Adafruit BusIO
  * SdFat and Bluefruit are bundled with the Seeeduino nRF52 core
  * (do not install SdFat 2.3.x).
  *
- * Wheel: 700x32C (ISO 32-622) -> circumference 2155 mm.
+ * Wheel default: 700x32C (ISO 32-622) -> circumference 2155 mm.
  *
  * TFT layout (portrait 240x320), monochrome to match the OBJECT ride page:
- *   OBJECT | GPS state, km/h | Avg, dot-matrix speed, 24-dot gauge,
+ *   OBJECT | GPS state, km/h or mph | Avg, dot-matrix speed, 24-dot gauge,
  *   Distance / Time / Moving / Max rows, Altitude | card, phone, recording.
  * The gauge shows speed (2 km/h a dot), the new-ride hold, phone-connect
  * confirm countdown, or a phone download in progress.
@@ -111,25 +115,13 @@ static const int VALUE_X     = 96;
 static const int FOOTER_Y    = 296;
 static const int FOOTER_H    = 22;
 
-// Circumference of 700x32C (32-622), millimetres.
-static const float WHEEL_CIRC_MM = 2155.0f;
-
-// Instantaneous speeds above this are treated as reed noise / bounce.
-// (Real road descents rarely top this; 200–400 km/h spikes are not.)
-static const float MAX_SPEED_KMH = 100.0f;
-
-// Contact-bounce floor. Real minimum gap is also derived from MAX_SPEED_KMH
+// Contact-bounce floor. Real minimum gap is also derived from max_speed_kmh
 // so a double-fire after the floor cannot invent absurd km/h and lock Max.
 static const unsigned long DEBOUNCE_MS = 15;
-static const unsigned long MIN_REV_MS =
-    (unsigned long)((WHEEL_CIRC_MM * 3.6f) / MAX_SPEED_KMH + 0.5f);
 
 // Max only advances when two consecutive rev intervals agree within this
 // ratio (min/max). Stops a single pothole / wobble / wire glitch locking Max.
 static const float MAX_CONFIRM_RATIO = 0.85f;
-
-// If no pulse for this long, treat the bike as stopped.
-static const unsigned long STOPPED_MS = 3000;
 
 static const unsigned long BTN_DEBOUNCE_MS = 30;
 static const unsigned long BTN_ARM_MS = 2000;
@@ -143,9 +135,46 @@ enum {
   BL_OFF,
   BL_MODE_COUNT
 };
-// Dim is ~16% so night use keeps the digits readable and cuts most of the
-// backlight current. Off leaves the panel updating with the LEDs dark.
-static const uint8_t BL_DUTY[BL_MODE_COUNT] = {255, 40, 0};
+
+enum {
+  UNITS_METRIC = 0,
+  UNITS_IMPERIAL
+};
+
+static const char CFG_NAME[] = "CONFIG.TXT";
+static const size_t CFG_BLE_NAME_MAX = 20;
+
+// Ride settings from CONFIG.TXT (defaults match a 700x32C build).
+struct Cfg {
+  float wheelCircMm;
+  int16_t timezoneOffsetMin;
+  uint8_t backlight;       // BL_BRIGHT / BL_DIM / BL_OFF
+  char bleName[CFG_BLE_NAME_MAX + 1];
+  uint8_t units;           // UNITS_METRIC / UNITS_IMPERIAL
+  uint8_t backlightDim;    // PWM duty for BL_DIM
+  float maxSpeedKmh;
+  unsigned long stoppedMs;
+};
+
+static Cfg cfg = {
+  2155.0f,
+  0,
+  BL_BRIGHT,
+  "OBJECT-001",
+  UNITS_METRIC,
+  40,
+  100.0f,
+  3000UL
+};
+
+// Dim is ~16% by default so night use keeps the digits readable and cuts most
+// of the backlight current. Off leaves the panel updating with the LEDs dark.
+// Index BL_DIM is overwritten from cfg.backlightDim after CONFIG.TXT load.
+static uint8_t BL_DUTY[BL_MODE_COUNT] = {255, 40, 0};
+
+// Derived from wheel_circ_mm and max_speed_kmh; read by the reed ISR.
+static volatile unsigned long g_minRevMs =
+    (unsigned long)((2155.0f * 3.6f) / 100.0f + 0.5f);
 
 static const unsigned long GPS_BAUD = 115200;
 static const unsigned long GPS_STALE_MS = 2000;
@@ -365,11 +394,12 @@ static void gpsInjectAid();
 static bool blePhoneConnected();
 static bool bleAwaitingAuth();
 static void bleConfirmAuth();
+static void backlightApply();
 
 void reedIsr() {
   unsigned long now = millis();
-  // Drop edges closer than bounce floor or the interval at MAX_SPEED_KMH.
-  unsigned long minGap = MIN_REV_MS;
+  // Drop edges closer than bounce floor or the interval at max_speed_kmh.
+  unsigned long minGap = g_minRevMs;
   if (minGap < DEBOUNCE_MS) {
     minGap = DEBOUNCE_MS;
   }
@@ -1262,7 +1292,7 @@ static const char *tripResumeSd() {
   interrupts();
   movingMs = d.movingMs;
   // Drop a previously saved noise spike so resume does not keep 200+ km/h Max.
-  maxSpeedKmh = (d.maxSpeedKmh > 0.0f && d.maxSpeedKmh <= MAX_SPEED_KMH)
+  maxSpeedKmh = (d.maxSpeedKmh > 0.0f && d.maxSpeedKmh <= cfg.maxSpeedKmh)
                     ? d.maxSpeedKmh
                     : 0.0f;
   if (d.revCount >= 1 || d.elapsedMs > 0 || d.movingMs > 0) {
@@ -1305,16 +1335,65 @@ static void tripResetRam() {
   lastGpxStampValid = false;
 }
 
+static int cfgMonthDays(int year, int month) {
+  static const uint8_t kDim[] = {
+      0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+  };
+  bool leap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+  return (month == 2 && leap) ? 29 : kDim[month];
+}
+
+static bool tripLocalCivilFromGps(unsigned *yy, unsigned *mo, unsigned *dd,
+                                  unsigned *hh) {
+  if (!gps.timeKnown) {
+    return false;
+  }
+  // Civil date from GPS UTC + timezone_offset_min (archive names only).
+  int y = (int)gps.year;
+  int m = (int)gps.month;
+  int d = (int)gps.day;
+  long minutes = (long)gps.hour * 60L + (long)gps.minute
+                 + (long)cfg.timezoneOffsetMin;
+
+  while (minutes < 0) {
+    minutes += 24L * 60L;
+    d--;
+    if (d < 1) {
+      m--;
+      if (m < 1) {
+        m = 12;
+        y--;
+      }
+      d = cfgMonthDays(y, m);
+    }
+  }
+  while (minutes >= 24L * 60L) {
+    minutes -= 24L * 60L;
+    d++;
+    if (d > cfgMonthDays(y, m)) {
+      d = 1;
+      m++;
+      if (m > 12) {
+        m = 1;
+        y++;
+      }
+    }
+  }
+  *yy = (unsigned)(y % 100);
+  *mo = (unsigned)m;
+  *dd = (unsigned)d;
+  *hh = (unsigned)(minutes / 60L);
+  return true;
+}
+
 static bool tripPickArchiveName(char *buf, size_t buflen) {
   if (buflen < 13) {
     return false;
   }
 
-  if (gps.timeKnown) {
-    unsigned yy = (unsigned)(gps.year % 100);
-    unsigned mo = (unsigned)gps.month;
-    unsigned dd = (unsigned)gps.day;
-    snprintf(buf, buflen, "%02u%02u%02u%02u.GPX", yy, mo, dd, (unsigned)gps.hour);
+  unsigned yy, mo, dd, hh;
+  if (tripLocalCivilFromGps(&yy, &mo, &dd, &hh)) {
+    snprintf(buf, buflen, "%02u%02u%02u%02u.GPX", yy, mo, dd, hh);
     if (!sd.exists(buf)) {
       return true;
     }
@@ -1422,7 +1501,7 @@ static int tripStartNewRide() {
 }
 
 static bool bikeStopped(unsigned long now, unsigned long lastPulseMs) {
-  return lastPulseMs == 0 || (now - lastPulseMs) >= STOPPED_MS;
+  return lastPulseMs == 0 || (now - lastPulseMs) >= cfg.stoppedMs;
 }
 
 static void backlightApply() {
@@ -1518,12 +1597,295 @@ static void sdBeginShared() {
   digitalWrite(PIN_SD_CS, HIGH);
 
   gpsDrain();
-  SdSpiConfig cfg(PIN_SD_CS, SHARED_SPI, SD_SCK_MHZ(4), &SPI);
-  sdReady = sd.begin(cfg);
+  SdSpiConfig cfgSpi(PIN_SD_CS, SHARED_SPI, SD_SCK_MHZ(4), &SPI);
+  sdReady = sd.begin(cfgSpi);
   gpsDrain();
   if (!sdReady) {
     Serial.println("SD begin failed — riding without log");
   }
+}
+
+static const char CFG_DEFAULT_TEXT[] =
+    "# OBJECT CONFIG.TXT — edit on any computer, then reinsert the card\n"
+    "# Missing file is created with these defaults on first boot.\n"
+    "#\n"
+    "# wheel_circ_mm: measured rollout in millimetres (700x32C ~2155)\n"
+    "wheel_circ_mm=2155\n"
+    "#\n"
+    "# timezone_offset_min: minutes from UTC for archive filenames only\n"
+    "# (GPX timestamps stay UTC). Example: 120 = UTC+2, -300 = UTC-5\n"
+    "timezone_offset_min=0\n"
+    "#\n"
+    "# backlight at boot: bright | dim | off\n"
+    "backlight=bright\n"
+    "#\n"
+    "# BLE advertise name (1-20 chars, no spaces)\n"
+    "ble_name=OBJECT-001\n"
+    "#\n"
+    "# units: metric | imperial  (display only; storage stays metric)\n"
+    "units=metric\n"
+    "#\n"
+    "# dim PWM duty 1-254 (bright is always 255)\n"
+    "backlight_dim=40\n"
+    "#\n"
+    "# max_speed_kmh: treat faster reed intervals as noise\n"
+    "max_speed_kmh=100\n"
+    "#\n"
+    "# stopped_ms: no pulse for this long => bike stopped (moving time)\n"
+    "stopped_ms=3000\n";
+
+static void configApplyDerived() {
+  if (cfg.maxSpeedKmh < 1.0f) {
+    cfg.maxSpeedKmh = 1.0f;
+  }
+  g_minRevMs = (unsigned long)((cfg.wheelCircMm * 3.6f) / cfg.maxSpeedKmh + 0.5f);
+  BL_DUTY[BL_DIM] = cfg.backlightDim;
+  blMode = cfg.backlight;
+  if (blMode >= BL_MODE_COUNT) {
+    blMode = BL_BRIGHT;
+  }
+  backlightApply();
+}
+
+static void configLog() {
+  Serial.print("CFG wheel_circ_mm=");
+  Serial.println(cfg.wheelCircMm, 0);
+  Serial.print("CFG timezone_offset_min=");
+  Serial.println((int)cfg.timezoneOffsetMin);
+  Serial.print("CFG backlight=");
+  Serial.println(cfg.backlight == BL_DIM ? "dim"
+                 : (cfg.backlight == BL_OFF ? "off" : "bright"));
+  Serial.print("CFG ble_name=");
+  Serial.println(cfg.bleName);
+  Serial.print("CFG units=");
+  Serial.println(cfg.units == UNITS_IMPERIAL ? "imperial" : "metric");
+  Serial.print("CFG backlight_dim=");
+  Serial.println((unsigned)cfg.backlightDim);
+  Serial.print("CFG max_speed_kmh=");
+  Serial.println(cfg.maxSpeedKmh, 0);
+  Serial.print("CFG stopped_ms=");
+  Serial.println(cfg.stoppedMs);
+}
+
+static char *cfgTrim(char *s) {
+  while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') {
+    s++;
+  }
+  char *end = s + strlen(s);
+  while (end > s && (end[-1] == ' ' || end[-1] == '\t'
+                     || end[-1] == '\r' || end[-1] == '\n')) {
+    end--;
+  }
+  *end = '\0';
+  return s;
+}
+
+static bool cfgEq(const char *a, const char *b) {
+  return strcmp(a, b) == 0;
+}
+
+static bool cfgParseBacklight(const char *v, uint8_t *out) {
+  if (cfgEq(v, "bright")) {
+    *out = BL_BRIGHT;
+    return true;
+  }
+  if (cfgEq(v, "dim")) {
+    *out = BL_DIM;
+    return true;
+  }
+  if (cfgEq(v, "off")) {
+    *out = BL_OFF;
+    return true;
+  }
+  return false;
+}
+
+static bool cfgParseBleName(const char *v, char *out, size_t outlen) {
+  size_t n = strlen(v);
+  if (n < 1 || n >= outlen || n > CFG_BLE_NAME_MAX) {
+    return false;
+  }
+  for (size_t i = 0; i < n; i++) {
+    char c = v[i];
+    if (c <= 0x20 || c >= 0x7F) {
+      return false;
+    }
+  }
+  memcpy(out, v, n);
+  out[n] = '\0';
+  return true;
+}
+
+static void configApplyKey(const char *key, const char *val) {
+  if (cfgEq(key, "wheel_circ_mm")) {
+    float v = (float)atof(val);
+    if (v >= 1000.0f && v <= 3000.0f) {
+      cfg.wheelCircMm = v;
+    } else {
+      Serial.println("CFG reject wheel_circ_mm");
+    }
+    return;
+  }
+  if (cfgEq(key, "timezone_offset_min")) {
+    long v = atol(val);
+    if (v >= -720L && v <= 840L) {
+      cfg.timezoneOffsetMin = (int16_t)v;
+    } else {
+      Serial.println("CFG reject timezone_offset_min");
+    }
+    return;
+  }
+  if (cfgEq(key, "backlight")) {
+    uint8_t mode;
+    if (cfgParseBacklight(val, &mode)) {
+      cfg.backlight = mode;
+    } else {
+      Serial.println("CFG reject backlight");
+    }
+    return;
+  }
+  if (cfgEq(key, "ble_name")) {
+    if (!cfgParseBleName(val, cfg.bleName, sizeof(cfg.bleName))) {
+      Serial.println("CFG reject ble_name");
+    }
+    return;
+  }
+  if (cfgEq(key, "units")) {
+    if (cfgEq(val, "metric")) {
+      cfg.units = UNITS_METRIC;
+    } else if (cfgEq(val, "imperial")) {
+      cfg.units = UNITS_IMPERIAL;
+    } else {
+      Serial.println("CFG reject units");
+    }
+    return;
+  }
+  if (cfgEq(key, "backlight_dim")) {
+    long v = atol(val);
+    if (v >= 1L && v <= 254L) {
+      cfg.backlightDim = (uint8_t)v;
+    } else {
+      Serial.println("CFG reject backlight_dim");
+    }
+    return;
+  }
+  if (cfgEq(key, "max_speed_kmh")) {
+    float v = (float)atof(val);
+    if (v >= 20.0f && v <= 200.0f) {
+      cfg.maxSpeedKmh = v;
+    } else {
+      Serial.println("CFG reject max_speed_kmh");
+    }
+    return;
+  }
+  if (cfgEq(key, "stopped_ms")) {
+    long v = atol(val);
+    if (v >= 1000L && v <= 10000L) {
+      cfg.stoppedMs = (unsigned long)v;
+    } else {
+      Serial.println("CFG reject stopped_ms");
+    }
+    return;
+  }
+}
+
+static void configEnsureFile() {
+  if (!sdReady) {
+    return;
+  }
+  if (sd.exists(CFG_NAME)) {
+    return;
+  }
+  File32 f;
+  if (!f.open(CFG_NAME, O_WRONLY | O_CREAT | O_EXCL)) {
+    Serial.println("CFG create failed");
+    return;
+  }
+  size_t n = strlen(CFG_DEFAULT_TEXT);
+  bool ok = f.write(CFG_DEFAULT_TEXT, n) == n;
+  f.close();
+  if (ok) {
+    Serial.println("CONFIG.TXT created");
+  } else {
+    Serial.println("CFG write failed");
+    sd.remove(CFG_NAME);
+  }
+}
+
+static void configLoad() {
+  if (!sdReady) {
+    configApplyDerived();
+    Serial.println("CFG defaults (no card)");
+    configLog();
+    return;
+  }
+
+  File32 f;
+  if (!f.open(CFG_NAME, O_RDONLY)) {
+    Serial.println("CFG open failed — defaults");
+    configApplyDerived();
+    configLog();
+    return;
+  }
+
+  char line[96];
+  size_t len = 0;
+  bool overflow = false;
+  while (f.available()) {
+    int c = f.read();
+    if (c < 0) {
+      break;
+    }
+    if (c == '\n' || c == '\r') {
+      if (len == 0 || overflow) {
+        len = 0;
+        overflow = false;
+        continue;
+      }
+      line[len] = '\0';
+      len = 0;
+      char *s = cfgTrim(line);
+      if (s[0] == '\0' || s[0] == '#') {
+        continue;
+      }
+      char *eq = strchr(s, '=');
+      if (eq == NULL) {
+        continue;
+      }
+      *eq = '\0';
+      char *key = cfgTrim(s);
+      char *val = cfgTrim(eq + 1);
+      if (key[0] == '\0') {
+        continue;
+      }
+      configApplyKey(key, val);
+    } else if (!overflow && len + 1 < sizeof(line)) {
+      line[len++] = (char)c;
+    } else {
+      overflow = true;
+      len = 0;
+    }
+  }
+  if (!overflow && len > 0) {
+    line[len] = '\0';
+    char *s = cfgTrim(line);
+    if (s[0] != '\0' && s[0] != '#') {
+      char *eq = strchr(s, '=');
+      if (eq != NULL) {
+        *eq = '\0';
+        char *key = cfgTrim(s);
+        char *val = cfgTrim(eq + 1);
+        if (key[0] != '\0') {
+          configApplyKey(key, val);
+        }
+      }
+    }
+  }
+  f.close();
+
+  configApplyDerived();
+  Serial.println("CFG loaded");
+  configLog();
 }
 
 static void gpsPoll() {
@@ -1632,7 +1994,44 @@ static const Slot SLOT_FOOT_L  = {PAD, FOOTER_Y, 122, FOOTER_H, 15};
 static const Slot SLOT_FOOT_R  = {PAD + 122, FOOTER_Y, SCREEN_W - 2 * PAD - 122, FOOTER_H, 15};
 
 static const char *const ROW_LABELS[ROW_COUNT] = {"Distance", "Time", "Moving", "Max"};
-static const char *const ROW_UNITS[ROW_COUNT]  = {"km", "", "", "km/h"};
+
+static bool cfgImperial() {
+  return cfg.units == UNITS_IMPERIAL;
+}
+
+static const char *cfgDistUnit() {
+  return cfgImperial() ? "mi" : "km";
+}
+
+static const char *cfgSpeedUnit() {
+  return cfgImperial() ? "mph" : "km/h";
+}
+
+static float cfgSpeedShown(float kmh) {
+  return cfgImperial() ? (kmh * 0.621371f) : kmh;
+}
+
+static float cfgDistShown(float km) {
+  return cfgImperial() ? (km * 0.621371f) : km;
+}
+
+static float cfgAltShown(float m) {
+  return cfgImperial() ? (m * 3.28084f) : m;
+}
+
+static const char *cfgAltUnit() {
+  return cfgImperial() ? "ft" : "m";
+}
+
+static const char *rowUnit(int i) {
+  if (i == 0) {
+    return cfgDistUnit();
+  }
+  if (i == 3) {
+    return cfgSpeedUnit();
+  }
+  return "";
+}
 
 // 5x7 matrix; bit (cols - 1) is the left column. ' ' is an unlit digit cell.
 static const DotGlyph DOT_FONT[] = {
@@ -1922,7 +2321,7 @@ static void paintGauge(int lit) {
 
 // Units sit in one column flush with the right margin; values end before it.
 static int unitX() {
-  return SCREEN_W - PAD - trackedWidth(&FreeSans9pt7b, 0, "km/h");
+  return SCREEN_W - PAD - trackedWidth(&FreeSans9pt7b, 0, cfgSpeedUnit());
 }
 
 static int rowTop(int i) {
@@ -1933,7 +2332,7 @@ static Slot rowSlot(int i) {
   Slot s;
   s.x = VALUE_X;
   s.y = rowTop(i) + 4;
-  int right = ROW_UNITS[i][0] ? unitX() - 6 : SCREEN_W - PAD;
+  int right = rowUnit(i)[0] ? unitX() - 6 : SCREEN_W - PAD;
   s.w = right - VALUE_X;
   s.h = 28;
   s.base = 21;
@@ -1951,8 +2350,9 @@ static void drawStaticChrome() {
   for (int i = 0; i < ROW_COUNT; i++) {
     const int base = rowTop(i) + 4 + 21;
     drawLabel(&FreeSans9pt7b, PAD, base, COL_DIM, ROW_LABELS[i]);
-    if (ROW_UNITS[i][0]) {
-      drawLabel(&FreeSans9pt7b, unitX(), base, COL_DIM, ROW_UNITS[i]);
+    const char *u = rowUnit(i);
+    if (u[0]) {
+      drawLabel(&FreeSans9pt7b, unitX(), base, COL_DIM, u);
     }
   }
 }
@@ -2039,7 +2439,8 @@ static void paintFooter(unsigned long now) {
   char buf[24];
   const bool live = gpsIsLive(now);
   if (live && gps.altKnown) {
-    snprintf(buf, sizeof(buf), "Altitude %.0f m", (double)gps.altM);
+    snprintf(buf, sizeof(buf), "Altitude %.0f %s",
+             (double)cfgAltShown(gps.altM), cfgAltUnit());
   } else {
     strcpy(buf, "Altitude --");
   }
@@ -2065,7 +2466,8 @@ static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
   char right[24];
 
   // Speed: fixed "dd.d" template so the matrix only repaints changed cells.
-  float shown = speedKmh;
+  // Gauge stays on km/h; hero/Avg/rows use configured units.
+  float shown = cfgSpeedShown(speedKmh);
   if (shown < 0.0f) {
     shown = 0.0f;
   }
@@ -2093,9 +2495,9 @@ static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
     if (sending) {
       snprintf(right, sizeof(right), "Sending %u%%", (unsigned)sendPct);
     } else {
-      snprintf(right, sizeof(right), "Avg %.1f", (double)avgSpeedKmh);
+      snprintf(right, sizeof(right), "Avg %.1f", (double)cfgSpeedShown(avgSpeedKmh));
     }
-    drawSlot(SLOT_CAPTION, &txtCaption, &FreeSans9pt7b, "km/h", right, MARK_NONE, COL_DIM);
+    drawSlot(SLOT_CAPTION, &txtCaption, &FreeSans9pt7b, cfgSpeedUnit(), right, MARK_NONE, COL_DIM);
   }
 
   // Gauge: new-ride hold, then phone confirm, then transfer, else speed.
@@ -2109,16 +2511,17 @@ static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
   }
   paintGauge(lit);
 
-  if (distanceKm < 0.0f) {
-    distanceKm = 0.0f;
+  float distShown = cfgDistShown(distanceKm);
+  if (distShown < 0.0f) {
+    distShown = 0.0f;
   }
-  snprintf(buf, sizeof(buf), distanceKm < 100.0f ? "%.2f" : "%.1f", (double)distanceKm);
+  snprintf(buf, sizeof(buf), distShown < 100.0f ? "%.2f" : "%.1f", (double)distShown);
   drawSlot(rowSlot(0), &txtRow[0], &FreeSansBold12pt7b, "", buf, MARK_NONE, COL_FG);
   formatHms(elapsedMs, buf, sizeof(buf));
   drawSlot(rowSlot(1), &txtRow[1], &FreeSansBold12pt7b, "", buf, MARK_NONE, COL_FG);
   formatHms(moveMs, buf, sizeof(buf));
   drawSlot(rowSlot(2), &txtRow[2], &FreeSansBold12pt7b, "", buf, MARK_NONE, COL_FG);
-  snprintf(buf, sizeof(buf), "%.1f", (double)maxKmh);
+  snprintf(buf, sizeof(buf), "%.1f", (double)cfgSpeedShown(maxKmh));
   drawSlot(rowSlot(3), &txtRow[3], &FreeSansBold12pt7b, "", buf, MARK_NONE, COL_FG);
 
   paintStatus(now);
@@ -2844,7 +3247,7 @@ static void bleStart() {
   }
   bleReady = true;
   Bluefruit.setTxPower(4);
-  Bluefruit.setName("OBJECT-001");
+  Bluefruit.setName(cfg.bleName);
   Bluefruit.Periph.setConnectCallback(bleOnConnect);
   Bluefruit.Periph.setDisconnectCallback(bleOnDisconnect);
   Bluefruit.Periph.setConnIntervalMS(15, 30);
@@ -2869,7 +3272,8 @@ static void bleStart() {
     Serial.println("BLE advertise failed");
     return;
   }
-  Serial.println("BLE advertising OBJECT-001");
+  Serial.print("BLE advertising ");
+  Serial.println(cfg.bleName);
 }
 
 void setup() {
@@ -2905,8 +3309,11 @@ void setup() {
   sdBeginShared();
   const char *sdLine = "No card";
   if (sdReady) {
+    configEnsureFile();
+    configLoad();
     sdLine = tripResumeSd();
   } else {
+    configLoad();
     sdLine = "No card";
   }
   drawSplash(sdLine);
@@ -2958,19 +3365,20 @@ void loop() {
 
   // Need two pulses this session (prevPulseMs != 0) so a restored revCount
   // cannot pair with a zero timestamp and invent a huge speed.
-  if (revCount >= 2 && prevPulseMs != 0 && (now - lastPulseMs) < STOPPED_MS) {
+  unsigned long minRevMs = g_minRevMs;
+  if (revCount >= 2 && prevPulseMs != 0 && (now - lastPulseMs) < cfg.stoppedMs) {
     unsigned long dtMs = lastPulseMs - prevPulseMs;
-    // Same ceiling as the ISR: ignore intervals that imply > MAX_SPEED_KMH.
-    if (dtMs >= MIN_REV_MS) {
+    // Same ceiling as the ISR: ignore intervals that imply > max_speed_kmh.
+    if (dtMs >= minRevMs) {
       // mm/ms -> km/h: (mm/ms) * (3600 s/h) / 1e6 (mm/km) = * 3.6
-      float raw = (WHEEL_CIRC_MM / (float)dtMs) * 3.6f;
-      if (raw <= MAX_SPEED_KMH) {
+      float raw = (cfg.wheelCircMm / (float)dtMs) * 3.6f;
+      if (raw <= cfg.maxSpeedKmh) {
         speedKmh = raw;
       }
     }
   }
 
-  float distanceKm = (revCount * WHEEL_CIRC_MM) / 1000000.0f;
+  float distanceKm = (revCount * cfg.wheelCircMm) / 1000000.0f;
 
   // Trip starts on the first reed pulse.
   if (revCount >= 1 && !tripStarted) {
@@ -2987,11 +3395,11 @@ void loop() {
 
   // Max needs two consecutive intervals in agreement so one spurious pulse
   // (pothole, magnet wobble, loose wire) cannot lock a high reading.
-  if (speedKmh > maxSpeedKmh && speedKmh <= MAX_SPEED_KMH
+  if (speedKmh > maxSpeedKmh && speedKmh <= cfg.maxSpeedKmh
       && revCount >= 3 && olderPulseMs != 0) {
     unsigned long dtNew = lastPulseMs - prevPulseMs;
     unsigned long dtOld = prevPulseMs - olderPulseMs;
-    if (dtNew >= MIN_REV_MS && dtOld >= MIN_REV_MS) {
+    if (dtNew >= minRevMs && dtOld >= minRevMs) {
       unsigned long dtLo = (dtNew < dtOld) ? dtNew : dtOld;
       unsigned long dtHi = (dtNew > dtOld) ? dtNew : dtOld;
       if (dtHi > 0 && (float)dtLo >= MAX_CONFIRM_RATIO * (float)dtHi) {

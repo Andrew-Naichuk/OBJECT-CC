@@ -868,7 +868,7 @@
       syncUI();
       try {
         device = await navigator.bluetooth.requestDevice({
-          filters: [{ name: "OBJECT-001" }, { services: [SERVICE] }],
+          filters: [{ namePrefix: "OBJECT" }, { services: [SERVICE] }],
           optionalServices: [SERVICE]
         });
         device.addEventListener("gattserverdisconnected", onDisconnected);

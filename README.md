@@ -8,7 +8,7 @@ The aim is simple: readable numbers on the handlebars, one button, and a record 
 
 ## Out on the bike
 
-- **Speed and distance from the wheel.** A reed switch counts one pulse per revolution. Wheel speed works independently of GPS reception.
+- **Speed and distance from the wheel.** A reed switch counts one pulse per revolution. Wheel speed works independently of GPS reception. Circumference and other ride settings come from `CONFIG.TXT` on the card.
 - **The essentials at a glance.** Current speed, distance, elapsed time, estimated moving time, maximum speed and average speed.
 - **A track to take home.** The GPS supplies position, altitude and UTC time for GPX recording on the microSD card.
 - **One button.** A short press changes the backlight; a four-second hold while stopped finishes the current ride and starts a fresh one.
@@ -106,21 +106,34 @@ Both inputs use the XIAO's internal pull-ups. No external pull-up resistors are 
 
 ## Set it up for your bike
 
-`WHEEL_CIRC_MM` in [the main sketch](xiao_oled/xiao_oled.ino) is currently **2155 mm**, the build's starting value for a 700 × 32C tire.
+Ride settings live in **`CONFIG.TXT`** on the microSD card root. On first boot with a card that has no config file, firmware writes a default `CONFIG.TXT` (same content as [docs/CONFIG.TXT.example](docs/CONFIG.TXT.example)). Edit the file on any computer, reinsert the card, and reboot — no reflash needed.
 
-For better distance accuracy, use your measured wheel rollout rather than assuming every tire with the same size marking has the same circumference. Update the value and upload the firmware after changing it.
+| Key | Default | Notes |
+| --- | --- | --- |
+| `wheel_circ_mm` | `2155` | Measured rollout in mm (700 × 32C starting value). Range 1000–3000. |
+| `timezone_offset_min` | `0` | Minutes from UTC for archive filenames only. GPX timestamps stay UTC. |
+| `backlight` | `bright` | Boot level: `bright`, `dim`, or `off`. |
+| `ble_name` | `OBJECT-001` | BLE advertise name, 1–20 printable characters, no spaces. |
+| `units` | `metric` | `metric` or `imperial` (display only; trip storage stays metric). |
+| `backlight_dim` | `40` | PWM duty for dim mode, 1–254. |
+| `max_speed_kmh` | `100` | Faster reed intervals are treated as noise. Range 20–200. |
+| `stopped_ms` | `3000` | No pulse for this long ⇒ stopped (moving time). Range 1000–10000. |
+
+For distance accuracy, measure wheel rollout rather than assuming every tire with the same size marking has the same circumference. **Finish the current ride before changing `wheel_circ_mm`**, or a resumed `TRIP.DAT` will mix old and new circumference in the distance total.
+
+Invalid or unknown keys are ignored; missing keys keep the defaults above.
 
 ## Reading the screen
 
 The portrait layout keeps current speed largest, with supporting information underneath:
 
 1. **GPS status:** satellite count or “Searching”.
-2. **Dot-matrix speed:** km/h, with average speed above it.
+2. **Dot-matrix speed:** km/h or mph (from `units`), with average speed above it.
 3. **24-dot gauge:** normally speed, at 2 km/h per dot; also shows hold-to-save or download progress.
-4. **Ride stats:** Distance, Time, Moving and Max.
-5. **Footer:** altitude and a status such as `Recording`, `Phone` or `No card`.
+4. **Ride stats:** Distance, Time, Moving and Max (distance/speed units follow `units`).
+5. **Footer:** altitude (m or ft) and a status such as `Recording`, `Phone` or `No card`.
 
-**Time** is elapsed time since the trip began, including stops while powered on. Time spent powered off is not added after recovery. **Moving** is estimated from wheel pulses with a three-second stop timeout; **Avg** divides wheel distance by that estimated moving time.
+**Time** is elapsed time since the trip began, including stops while powered on. Time spent powered off is not added after recovery. **Moving** is estimated from wheel pulses using `stopped_ms` (default three seconds); **Avg** divides wheel distance by that estimated moving time.
 
 ## Controls
 
@@ -141,9 +154,10 @@ Stop and wait for the speed reading to reach zero before holding for a new ride.
 
 | File           | Contents                                                                            |
 | -------------- | ----------------------------------------------------------------------------------- |
+| `CONFIG.TXT`   | Human-editable ride settings (wheel size, timezone offset, backlight, BLE name, …)  |
 | `CURRENT.GPX`  | Current GPS track                                                                   |
 | `TRIP.DAT`     | CRC-checked checkpoint of wheel counters, timings, maximum speed and track position |
-| `YYMMDDHH.GPX` | First-choice archive name, based on available GPS UTC time when saving              |
+| `YYMMDDHH.GPX` | First-choice archive name, based on GPS time plus `timezone_offset_min` when saving |
 | `YYMMDDnn.GPX` | Collision fallback; the final pair is a sequence, not necessarily an hour           |
 | `RIDEnnnn.GPX` | Numbered fallback when a date-based name is unavailable                             |
 
@@ -156,7 +170,7 @@ GPX exports contain coordinates, timestamps and altitude when available - to mak
 
 1. Power on OBJECT and keep it near your phone.
 2. Open the [OBJECT CONNECT HUB](https://object.nav-tech.workers.dev).
-3. Tap **Connect**, choose the **OBJECT** device.
+3. Tap **Connect**, choose the **OBJECT** device (name from `ble_name`, default `OBJECT-001`).
 4. On OBJECT, press the button within **10 seconds** when it shows **Press to allow**. If you miss the window, the link drops and no files are listed — connect again.
 5. Select a GPX file to download.
 6. Delete archived rides with the trash control when you want to free card space. `CURRENT.GPX` cannot be deleted while it is the live recording.
@@ -200,7 +214,7 @@ Replace `<PORT>` with your board's port and upload only after compilation succee
 ```text
 xiao_oled/     Cycling computer firmware
 tools/         Web Bluetooth ride-transfer page
-docs/          Assembly electrical schematic (SVG)
+docs/          Assembly schematic + CONFIG.TXT.example
 AGENTS.md      Notes for automated agents
 ```
 
