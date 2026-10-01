@@ -161,8 +161,16 @@ static const int32_t GPX_MIN_E7 = 180;
 
 static const char GPX_NAME[] = "CURRENT.GPX";
 static const char DAT_NAME[] = "TRIP.DAT";
+static const char FIX_NAME[] = "LASTFIX.DAT";
 static const uint32_t TRIP_MAGIC = 0x50495254UL;  // "TRIP"
 static const uint16_t TRIP_VERSION = 1;
+static const uint32_t FIX_MAGIC = 0x5849464CUL;  // "LFIX"
+static const uint16_t FIX_VERSION = 1;
+// Generous uncertainty so a regional last fix never misleads the search.
+static const uint32_t FIX_POS_ACC_CM = 10000000UL;  // 100 km
+// No RTC across power-off: claim the full U2 range (~18 h) so a same-day
+// stale UTC still satisfies u-blox's accuracy rule.
+static const uint16_t FIX_TIME_ACC_S = 65535;
 
 static const char GPX_HEADER[] =
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -262,7 +270,35 @@ struct TripDat {
   uint32_t gpxBodyEnd;
   uint32_t crc;
 };
+
+// Survives new-ride resets; used only as UBX-MGA-INI aid (never as a track point).
+struct LastFixDat {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t flags;       // bit0 pos, bit1 time, bit2 alt
+  int32_t latE7;
+  int32_t lonE7;
+  int32_t altCm;        // approx WGS84; posAcc covers error
+  uint16_t year;
+  uint8_t month;
+  uint8_t day;
+  uint8_t hour;
+  uint8_t minute;
+  uint8_t sec;
+  uint32_t crc;
+};
 #pragma pack(pop)
+
+enum {
+  FIX_FLAG_POS = 0x0001,
+  FIX_FLAG_TIME = 0x0002,
+  FIX_FLAG_ALT = 0x0004
+};
+
+static LastFixDat lastFix;
+static bool lastFixValid = false;
+static bool lastFixDirty = false;
+static unsigned long lastFixSaveMs = 0;
 
 enum {
   GPS_IDLE = 0,
@@ -320,6 +356,14 @@ struct GpsState {
 };
 
 static GpsState gps;
+
+static void lastFixCaptureFromGps();
+static bool lastFixSave();
+static bool lastFixLoad();
+static void gpsInjectAid();
+static bool blePhoneConnected();
+static bool bleAwaitingAuth();
+static void bleConfirmAuth();
 
 void reedIsr() {
   unsigned long now = millis();
@@ -427,6 +471,70 @@ static void gpsConfigure() {
 static void gpsPollNavPvt() {
   gpsSendUbx(0x01, 0x07, NULL, 0);
   gps.lastPollMs = millis();
+}
+
+static void putU16(uint8_t *p, uint16_t v) {
+  p[0] = (uint8_t)(v & 0xFF);
+  p[1] = (uint8_t)(v >> 8);
+}
+
+static void putU32(uint8_t *p, uint32_t v) {
+  p[0] = (uint8_t)(v & 0xFF);
+  p[1] = (uint8_t)((v >> 8) & 0xFF);
+  p[2] = (uint8_t)((v >> 16) & 0xFF);
+  p[3] = (uint8_t)((v >> 24) & 0xFF);
+}
+
+static void putI32(uint8_t *p, int32_t v) {
+  putU32(p, (uint32_t)v);
+}
+
+// Seed the M10 search from LASTFIX.DAT. Does not mark gps.valid / posKnown
+// and is never written into CURRENT.GPX.
+static void gpsInjectAid() {
+  if (!lastFixValid) {
+    return;
+  }
+
+  if (lastFix.flags & FIX_FLAG_POS) {
+    uint8_t pos[20];
+    memset(pos, 0, sizeof(pos));
+    pos[0] = 0x01;  // MGA-INI-POS_LLH
+    pos[1] = 0x00;
+    putI32(pos + 4, lastFix.latE7);
+    putI32(pos + 8, lastFix.lonE7);
+    putI32(pos + 12, (lastFix.flags & FIX_FLAG_ALT) ? lastFix.altCm : 0);
+    putU32(pos + 16, FIX_POS_ACC_CM);
+    gpsSendUbx(0x13, 0x40, pos, sizeof(pos));
+  }
+
+  if (lastFix.flags & FIX_FLAG_TIME) {
+    uint8_t tim[24];
+    memset(tim, 0, sizeof(tim));
+    tim[0] = 0x10;  // MGA-INI-TIME_UTC
+    tim[1] = 0x00;
+    tim[2] = 0x00;  // source = on receipt
+    tim[3] = 0x80;  // leap seconds unknown
+    putU16(tim + 4, lastFix.year);
+    tim[6] = lastFix.month;
+    tim[7] = lastFix.day;
+    tim[8] = lastFix.hour;
+    tim[9] = lastFix.minute;
+    tim[10] = lastFix.sec;
+    // bitfield0 / ns already 0
+    putU16(tim + 16, FIX_TIME_ACC_S);
+    // reserved + tAccNs already 0
+    gpsSendUbx(0x13, 0x40, tim, sizeof(tim));
+  }
+
+  Serial.print("GPS aid injected");
+  if (lastFix.flags & FIX_FLAG_POS) {
+    Serial.print(" pos");
+  }
+  if (lastFix.flags & FIX_FLAG_TIME) {
+    Serial.print(" time");
+  }
+  Serial.println();
 }
 
 static void gpsResetParser() {
@@ -635,6 +743,9 @@ static void gpsHandleNavPvt(const uint8_t *p, uint16_t len) {
   bool timeOk = ((validFlags & 0x03) == 0x03) && year >= 2020 && year < 2100
                 && month >= 1 && month <= 12 && day >= 1 && day <= 31;
   gpsApplyTime(timeOk, year, month, day, hour, minute, sec);
+  if (valid && timeOk) {
+    lastFixCaptureFromGps();
+  }
 }
 
 static void gpsHandleUbx() {
@@ -826,6 +937,7 @@ static bool tripDatSave(uint32_t revCount, uint32_t elapsedMsNow) {
   f.close();
   gpsDrain();
   lastDatMs = millis();
+  lastFixSave();
   return ok;
 }
 
@@ -847,6 +959,93 @@ static bool tripDatLoad(TripDat *out) {
     return false;
   }
   *out = d;
+  return true;
+}
+
+static void lastFixCaptureFromGps() {
+  if (!gps.posKnown && !gps.timeKnown) {
+    return;
+  }
+  uint16_t prevFlags = lastFix.flags;
+  int32_t prevLat = lastFix.latE7;
+  int32_t prevLon = lastFix.lonE7;
+  if (gps.posKnown) {
+    lastFix.latE7 = gps.latE7;
+    lastFix.lonE7 = gps.lonE7;
+    lastFix.flags = (uint16_t)((lastFix.flags & ~FIX_FLAG_POS) | FIX_FLAG_POS);
+    if (gps.altKnown) {
+      lastFix.altCm = (int32_t)(gps.altM * 100.0f);
+      lastFix.flags = (uint16_t)(lastFix.flags | FIX_FLAG_ALT);
+    }
+  }
+  if (gps.timeKnown) {
+    lastFix.year = gps.year;
+    lastFix.month = gps.month;
+    lastFix.day = gps.day;
+    lastFix.hour = gps.hour;
+    lastFix.minute = gps.minute;
+    lastFix.sec = gps.sec;
+    lastFix.flags = (uint16_t)(lastFix.flags | FIX_FLAG_TIME);
+  }
+  lastFix.magic = FIX_MAGIC;
+  lastFix.version = FIX_VERSION;
+  lastFixValid = (lastFix.flags & (FIX_FLAG_POS | FIX_FLAG_TIME)) != 0;
+  if (lastFixValid &&
+      (prevFlags != lastFix.flags || prevLat != lastFix.latE7 || prevLon != lastFix.lonE7)) {
+    lastFixDirty = true;
+  }
+}
+
+static bool lastFixSave() {
+  if (!sdReady || !lastFixValid) {
+    return false;
+  }
+
+  LastFixDat d = lastFix;
+  d.magic = FIX_MAGIC;
+  d.version = FIX_VERSION;
+  d.crc = crc32((const uint8_t *)&d, offsetof(LastFixDat, crc));
+
+  gpsDrain();
+  File32 f;
+  if (!f.open(FIX_NAME, O_RDWR | O_CREAT | O_TRUNC)) {
+    gpsDrain();
+    return false;
+  }
+  bool ok = f.write(&d, sizeof(d)) == sizeof(d);
+  f.flush();
+  f.close();
+  gpsDrain();
+  if (ok) {
+    lastFixDirty = false;
+    lastFixSaveMs = millis();
+  }
+  return ok;
+}
+
+static bool lastFixLoad() {
+  File32 f;
+  if (!f.open(FIX_NAME, O_RDONLY)) {
+    return false;
+  }
+  LastFixDat d;
+  int n = f.read(&d, sizeof(d));
+  f.close();
+  if (n != (int)sizeof(d)) {
+    return false;
+  }
+  if (d.magic != FIX_MAGIC || d.version != FIX_VERSION) {
+    return false;
+  }
+  if (crc32((const uint8_t *)&d, offsetof(LastFixDat, crc)) != d.crc) {
+    return false;
+  }
+  if ((d.flags & (FIX_FLAG_POS | FIX_FLAG_TIME)) == 0) {
+    return false;
+  }
+  lastFix = d;
+  lastFixValid = true;
+  Serial.println("GPS LASTFIX.DAT loaded");
   return true;
 }
 
@@ -990,6 +1189,7 @@ static bool gpxAppendPoint() {
     lastGpxPosValid = true;
     lastGpxStamp = gpxTimeStamp();
     lastGpxStampValid = true;
+    lastFixCaptureFromGps();
   }
   return ok;
 }
@@ -1036,6 +1236,7 @@ static void tripMaybeSave(unsigned long now, uint32_t revCount, uint32_t elapsed
 static const char *tripResumeSd() {
   TripDat d;
   bool haveDat = tripDatLoad(&d);
+  lastFixLoad();
   if (haveDat) {
     gpxBodyEnd = d.gpxBodyEnd;
   }
@@ -1334,6 +1535,10 @@ static void gpsPoll() {
 
   if (!gpsFrameFresh(now) && (now - gps.lastPollMs >= GPS_POLL_MS)) {
     gpsPollNavPvt();
+  }
+
+  if (lastFixDirty && sdReady && (now - lastFixSaveMs >= TRIP_DAT_MS)) {
+    lastFixSave();
   }
 
   if (now - gps.lastDebugMs >= GPS_DEBUG_MS) {
@@ -2647,6 +2852,7 @@ void setup() {
   gps.src = "-";
   Serial1.begin(GPS_BAUD);
   gpsConfigure();
+  gpsInjectAid();
   gpsPollNavPvt();
   Serial.println("GPS Serial1 115200 on D6/D7 — 1 Hz NAV-PVT/GGA");
 
