@@ -31,13 +31,16 @@
  * Tact button:
  *   One side -> D4, other side -> GND
  *   INPUT_PULLUP; pressed = LOW.
- *   Short press (release before 2 s): backlight bright -> dim -> off.
+ *   Short press (release before 2 s): backlight bright -> dim -> off
+ *   (or confirm a pending phone connection).
  *   Hold 4 s while stopped: save the ride and start a new one.
  *
  * BLE file download (no extra wiring):
- *   Advertises as "OBJECT-001". tools/index.html lists root *.GPX files
- *   and saves them on the phone. TRIP.DAT is not offered. Open that page
- *   over HTTPS (Android Chrome, or a Web Bluetooth browser on iPhone).
+ *   Advertises as "OBJECT-001". On connect the device asks for a short
+ *   press within 10 s; timeout disconnects with no file access.
+ *   tools/index.html lists root *.GPX files and saves them on the phone.
+ *   TRIP.DAT is not offered. Open that page over HTTPS (Android Chrome,
+ *   or a Web Bluetooth browser on iPhone).
  *
  * Libraries (Arduino Library Manager):
  *   Adafruit ILI9341, Adafruit GFX Library, Adafruit BusIO
@@ -49,8 +52,8 @@
  * TFT layout (portrait 240x320), monochrome to match the OBJECT ride page:
  *   OBJECT | GPS state, km/h | Avg, dot-matrix speed, 24-dot gauge,
  *   Distance / Time / Moving / Max rows, Altitude | card, phone, recording.
- * The gauge shows speed (2 km/h a dot), the new-ride hold, or a phone
- * download in progress.
+ * The gauge shows speed (2 km/h a dot), the new-ride hold, phone-connect
+ * confirm countdown, or a phone download in progress.
  * Rotation 0. If the image is upside down relative to the pin header, use 2.
  */
 
@@ -120,6 +123,10 @@ static const unsigned long DEBOUNCE_MS = 15;
 static const unsigned long MIN_REV_MS =
     (unsigned long)((WHEEL_CIRC_MM * 3.6f) / MAX_SPEED_KMH + 0.5f);
 
+// Max only advances when two consecutive rev intervals agree within this
+// ratio (min/max). Stops a single pothole / wobble / wire glitch locking Max.
+static const float MAX_CONFIRM_RATIO = 0.85f;
+
 // If no pulse for this long, treat the bike as stopped.
 static const unsigned long STOPPED_MS = 3000;
 
@@ -127,6 +134,7 @@ static const unsigned long BTN_DEBOUNCE_MS = 30;
 static const unsigned long BTN_ARM_MS = 2000;
 static const unsigned long BTN_EXEC_MS = 4000;
 static const unsigned long BTN_FLASH_MS = 1500;
+static const unsigned long BLE_AUTH_MS = 10000;
 
 enum {
   BL_BRIGHT = 0,
@@ -176,6 +184,7 @@ File32 gpxFile;
 volatile unsigned long g_revCount = 0;       // total wheel revolutions
 volatile unsigned long g_lastPulseMs = 0;    // millis() of most recent pulse
 volatile unsigned long g_prevPulseMs = 0;    // millis() of pulse before that
+volatile unsigned long g_olderPulseMs = 0;   // millis() of pulse before prev
 volatile unsigned long g_lastIsrMs = 0;      // for debounce only
 
 // --- Trip state (loop only) ---
@@ -324,6 +333,7 @@ void reedIsr() {
   }
   g_lastIsrMs = now;
 
+  g_olderPulseMs = g_prevPulseMs;
   g_prevPulseMs = g_lastPulseMs;
   g_lastPulseMs = now;
   g_revCount++;
@@ -841,9 +851,8 @@ static bool tripDatLoad(TripDat *out) {
 }
 
 static uint32_t gpxTimeStamp() {
-  uint32_t days = (uint32_t)(gps.year - 2020) * 366u
-                  + (uint32_t)gps.month * 31u
-                  + (uint32_t)gps.day;
+  uint32_t days = ((uint32_t)(gps.year - 2020) * 12u + (gps.month - 1)) * 31u
+                  + gps.day;
   uint32_t tod = (uint32_t)gps.hour * 3600u
                  + (uint32_t)gps.minute * 60u
                  + (uint32_t)gps.sec;
@@ -1047,6 +1056,7 @@ static const char *tripResumeSd() {
   g_revCount = d.revCount;
   g_lastPulseMs = 0;
   g_prevPulseMs = 0;
+  g_olderPulseMs = 0;
   interrupts();
   movingMs = d.movingMs;
   // Drop a previously saved noise spike so resume does not keep 200+ km/h Max.
@@ -1075,6 +1085,7 @@ static void tripResetRam() {
   g_revCount = 0;
   g_lastPulseMs = 0;
   g_prevPulseMs = 0;
+  g_olderPulseMs = 0;
   g_lastIsrMs = 0;
   interrupts();
   tripStarted = false;
@@ -1282,12 +1293,18 @@ static void btnHandle(unsigned long now, unsigned long lastPulseMs) {
 
   // Release before the new-ride countdown starts. A cancelled hold, or a
   // hold that already saved the ride, leaves the backlight alone.
+  // While a phone is waiting for confirm, a short press allows the link
+  // instead of cycling the backlight.
   if (btnReleased) {
     bool didExec = btnReleaseDidExec;
     unsigned long held = btnReleasedHeldMs;
     btnReleased = false;
     if (!didExec && held < BTN_ARM_MS) {
-      backlightNext();
+      if (bleAwaitingAuth()) {
+        bleConfirmAuth();
+      } else {
+        backlightNext();
+      }
     }
   }
 }
@@ -1387,6 +1404,9 @@ static void gpsPoll() {
 // and nothing blinks. Each burst is short so the GPS UART ring is drained.
 
 static bool blePhoneConnected();
+static bool bleAwaitingAuth();
+static bool bleAuthProgress(unsigned long now, unsigned long *remainSec, int *lit);
+static void bleConfirmAuth();
 static bool bleSendProgress(uint8_t *pct);
 
 static GFXcanvas1 textCanvas(SCREEN_W, 32);
@@ -1767,28 +1787,32 @@ static void formatHms(unsigned long ms, char *buf, size_t buflen) {
 enum {
   OVL_NONE = 0,
   OVL_FLASH,
-  OVL_HOLD
+  OVL_HOLD,
+  OVL_BLE_AUTH
 };
 
-// Hold-for-new-ride countdown, or the short message after it fires.
+// Hold-for-new-ride countdown, phone-connect confirm, or a short flash.
 static uint8_t overlayState(unsigned long now, unsigned long *remainSec, int *holdLit) {
   if (overlayFlashMsg && (long)(overlayFlashUntilMs - now) > 0) {
     return OVL_FLASH;
   }
   overlayFlashMsg = NULL;
 
-  if (!btnArmed || !btnHeld || btnDidExec) {
-    return OVL_NONE;
+  if (btnArmed && btnHeld && !btnDidExec) {
+    unsigned long held = now - btnHoldStartMs;
+    if (held >= BTN_ARM_MS && held < BTN_EXEC_MS) {
+      unsigned long remainMs = BTN_EXEC_MS - held;
+      *remainSec = (remainMs + 999UL) / 1000UL;
+      *holdLit = (int)((long)(held - BTN_ARM_MS) * GAUGE_DOTS /
+                       (long)(BTN_EXEC_MS - BTN_ARM_MS)) + 1;
+      return OVL_HOLD;
+    }
   }
-  unsigned long held = now - btnHoldStartMs;
-  if (held < BTN_ARM_MS || held >= BTN_EXEC_MS) {
-    return OVL_NONE;
+
+  if (bleAuthProgress(now, remainSec, holdLit)) {
+    return OVL_BLE_AUTH;
   }
-  unsigned long remainMs = BTN_EXEC_MS - held;
-  *remainSec = (remainMs + 999UL) / 1000UL;
-  *holdLit = (int)((long)(held - BTN_ARM_MS) * GAUGE_DOTS /
-                   (long)(BTN_EXEC_MS - BTN_ARM_MS)) + 1;
-  return OVL_HOLD;
+  return OVL_NONE;
 }
 
 static void paintStatus(unsigned long now) {
@@ -1856,6 +1880,9 @@ static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
   } else if (ovl == OVL_HOLD) {
     snprintf(right, sizeof(right), "%lu s", remainSec);
     drawSlot(SLOT_CAPTION, &txtCaption, &FreeSans9pt7b, "Hold for new ride", right, MARK_NONE, COL_FG);
+  } else if (ovl == OVL_BLE_AUTH) {
+    snprintf(right, sizeof(right), "%lu s", remainSec);
+    drawSlot(SLOT_CAPTION, &txtCaption, &FreeSans9pt7b, "Press to allow", right, MARK_NONE, COL_FG);
   } else {
     if (sending) {
       snprintf(right, sizeof(right), "Sending %u%%", (unsigned)sendPct);
@@ -1865,9 +1892,9 @@ static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
     drawSlot(SLOT_CAPTION, &txtCaption, &FreeSans9pt7b, "km/h", right, MARK_NONE, COL_DIM);
   }
 
-  // Gauge: new-ride hold, then phone transfer, else speed at 2 km/h a dot.
+  // Gauge: new-ride hold, then phone confirm, then transfer, else speed.
   int lit;
-  if (ovl == OVL_HOLD) {
+  if (ovl == OVL_HOLD || ovl == OVL_BLE_AUTH) {
     lit = holdLit;
   } else if (sending) {
     lit = ((int)sendPct * GAUGE_DOTS + 50) / 100;
@@ -1930,6 +1957,8 @@ enum {
   BLE_META_LIST_END = 0x02,
   BLE_META_START = 0x03,
   BLE_META_DONE = 0x04,
+  BLE_META_AUTH_WAIT = 0x05,
+  BLE_META_AUTH_OK = 0x06,
   BLE_META_ERROR = 0x7F
 };
 
@@ -1938,13 +1967,20 @@ enum {
   BLE_ERR_NAME = 2,
   BLE_ERR_NOT_FOUND = 3,
   BLE_ERR_IO = 4,
-  BLE_ERR_ABORT = 5
+  BLE_ERR_ABORT = 5,
+  BLE_ERR_DENIED = 6
 };
 
 enum {
   BLE_JOB_IDLE = 0,
   BLE_JOB_LIST,
   BLE_JOB_SEND
+};
+
+enum {
+  BLE_AUTH_NONE = 0,
+  BLE_AUTH_WAIT,
+  BLE_AUTH_OK
 };
 
 static BLEService bleSvc(BLE_RIDE_SVC_UUID);
@@ -1960,6 +1996,9 @@ static uint8_t bleCmdOp = 0;
 static char bleCmdName[13];
 static uint8_t bleJob = BLE_JOB_IDLE;
 static uint8_t bleErrorPending = 0;
+static uint8_t bleAuthState = BLE_AUTH_NONE;
+static unsigned long bleAuthDeadlineMs = 0;
+static uint8_t bleAuthNotifyPending = 0;
 static File32 bleFile;
 static File32 bleDir;
 static bool bleListHave = false;
@@ -1976,7 +2015,57 @@ static uint32_t bleCrc = 0xFFFFFFFFUL;
 static uint8_t bleChunk[244];
 
 static bool blePhoneConnected() {
-  return bleReady && Bluefruit.connected() > 0;
+  return bleReady && bleAuthState == BLE_AUTH_OK && Bluefruit.connected() > 0;
+}
+
+static bool bleAwaitingAuth() {
+  return bleReady && bleAuthState == BLE_AUTH_WAIT && Bluefruit.connected() > 0;
+}
+
+static void bleClearAuth() {
+  bleAuthState = BLE_AUTH_NONE;
+  bleAuthDeadlineMs = 0;
+  bleAuthNotifyPending = 0;
+}
+
+static void bleBeginAuthWait(unsigned long now) {
+  bleAuthState = BLE_AUTH_WAIT;
+  bleAuthDeadlineMs = now + BLE_AUTH_MS;
+  bleAuthNotifyPending = BLE_META_AUTH_WAIT;
+}
+
+static void bleConfirmAuth() {
+  if (bleAuthState != BLE_AUTH_WAIT) {
+    return;
+  }
+  bleAuthState = BLE_AUTH_OK;
+  bleAuthDeadlineMs = 0;
+  bleAuthNotifyPending = BLE_META_AUTH_OK;
+  Serial.println("BLE auth ok");
+}
+
+// Remaining confirm window for the caption / draining gauge.
+static bool bleAuthProgress(unsigned long now, unsigned long *remainSec, int *lit) {
+  if (!bleAwaitingAuth()) {
+    return false;
+  }
+  long remainMs = (long)(bleAuthDeadlineMs - now);
+  if (remainMs < 0) {
+    remainMs = 0;
+  }
+  *remainSec = ((unsigned long)remainMs + 999UL) / 1000UL;
+  if (*remainSec == 0 && remainMs > 0) {
+    *remainSec = 1;
+  }
+  *lit = (int)(((long)remainMs * GAUGE_DOTS + (long)BLE_AUTH_MS / 2) /
+               (long)BLE_AUTH_MS);
+  if (*lit < 0) {
+    *lit = 0;
+  }
+  if (*lit > GAUGE_DOTS) {
+    *lit = GAUGE_DOTS;
+  }
+  return true;
 }
 
 static bool bleGpxNameOk(const char *name) {
@@ -2340,6 +2429,11 @@ static void bleTakeCommand() {
     }
     return;
   }
+  if (bleAuthState != BLE_AUTH_OK) {
+    bleQueueError(BLE_ERR_DENIED);
+    Serial.println("BLE denied — waiting for confirm");
+    return;
+  }
   if (op == BLE_OP_LIST) {
     bleBeginList();
     return;
@@ -2373,9 +2467,12 @@ static bool bleService() {
     return false;
   }
 
+  unsigned long now = millis();
+
   if (bleLinkUpEdge) {
     bleLinkUpEdge = 0;
-    Serial.println("BLE connected");
+    bleBeginAuthWait(now);
+    Serial.println("BLE connected — waiting for confirm");
   }
   if (bleLinkLost || (bleJob != BLE_JOB_IDLE && !Bluefruit.connected())) {
     bleLinkLost = 0;
@@ -2384,8 +2481,26 @@ static bool bleService() {
     interrupts();
     bleErrorPending = 0;
     bleResetXfer();
+    bleClearAuth();
     Serial.println("BLE disconnected");
     return false;
+  }
+
+  if (bleAuthState == BLE_AUTH_WAIT) {
+    if ((long)(now - bleAuthDeadlineMs) >= 0) {
+      Serial.println("BLE auth timeout — disconnect");
+      bleClearAuth();
+      Bluefruit.disconnect(Bluefruit.connHandle());
+      return false;
+    }
+  }
+
+  if (bleAuthNotifyPending != 0) {
+    uint8_t meta = bleAuthNotifyPending;
+    if (bleNotifyMeta(&meta, 1)) {
+      bleAuthNotifyPending = 0;
+      return true;
+    }
   }
 
   if (bleCmdPending) {
@@ -2553,9 +2668,10 @@ void loop() {
 
   // Snapshot ISR-owned state with interrupts briefly off (avoid torn reads).
   noInterrupts();
-  unsigned long revCount    = g_revCount;
-  unsigned long lastPulseMs = g_lastPulseMs;
-  unsigned long prevPulseMs = g_prevPulseMs;
+  unsigned long revCount     = g_revCount;
+  unsigned long lastPulseMs  = g_lastPulseMs;
+  unsigned long prevPulseMs  = g_prevPulseMs;
+  unsigned long olderPulseMs = g_olderPulseMs;
   interrupts();
 
   unsigned long now = millis();
@@ -2563,9 +2679,10 @@ void loop() {
 
   // New-ride may have cleared the ISR counters; snapshot again.
   noInterrupts();
-  revCount    = g_revCount;
-  lastPulseMs = g_lastPulseMs;
-  prevPulseMs = g_prevPulseMs;
+  revCount     = g_revCount;
+  lastPulseMs  = g_lastPulseMs;
+  prevPulseMs  = g_prevPulseMs;
+  olderPulseMs = g_olderPulseMs;
   interrupts();
 
   float speedKmh = 0.0f;
@@ -2599,8 +2716,19 @@ void loop() {
   }
   lastLoopMs = now;
 
-  if (speedKmh > maxSpeedKmh && speedKmh <= MAX_SPEED_KMH) {
-    maxSpeedKmh = speedKmh;
+  // Max needs two consecutive intervals in agreement so one spurious pulse
+  // (pothole, magnet wobble, loose wire) cannot lock a high reading.
+  if (speedKmh > maxSpeedKmh && speedKmh <= MAX_SPEED_KMH
+      && revCount >= 3 && olderPulseMs != 0) {
+    unsigned long dtNew = lastPulseMs - prevPulseMs;
+    unsigned long dtOld = prevPulseMs - olderPulseMs;
+    if (dtNew >= MIN_REV_MS && dtOld >= MIN_REV_MS) {
+      unsigned long dtLo = (dtNew < dtOld) ? dtNew : dtOld;
+      unsigned long dtHi = (dtNew > dtOld) ? dtNew : dtOld;
+      if (dtHi > 0 && (float)dtLo >= MAX_CONFIRM_RATIO * (float)dtHi) {
+        maxSpeedKmh = speedKmh;
+      }
+    }
   }
 
   // Avg = distance / moving time (stops do not dilute Avg).

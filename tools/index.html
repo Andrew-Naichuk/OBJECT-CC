@@ -383,6 +383,8 @@
     const META_LIST_END = 0x02;
     const META_START = 0x03;
     const META_DONE = 0x04;
+    const META_AUTH_WAIT = 0x05;
+    const META_AUTH_OK = 0x06;
     const META_ERROR = 0x7f;
     const MAX_FILE = 16 * 1024 * 1024;
     const STALL_MS = 15000;
@@ -391,7 +393,8 @@
       2: "Bad file name",
       3: "File not found",
       4: "Read failed",
-      5: "Transfer aborted"
+      5: "Transfer aborted",
+      6: "Confirm on the computer"
     };
 
     const statusEl = document.getElementById("status");
@@ -409,6 +412,8 @@
     let device = null;
     let cmdChar = null;
     let phase = "idle";
+    let authorized = false;
+    let userDisconnect = false;
     let rides = [];
     let fileBuf = null;
     let fileName = "";
@@ -455,6 +460,9 @@
       } else if (phase === "listing") {
         value = pad2(rides.length);
         caption = "Reading card";
+      } else if (phase === "awaiting") {
+        caption = "Press to allow";
+        right = "10 s";
       } else if (linked) {
         value = pad2(rides.length);
         caption = rides.length === 1 ? "Ride on card" : "Rides on card";
@@ -472,7 +480,7 @@
 
       linkLabel.textContent = !linked
         ? (pairing ? "Pairing" : "Offline")
-        : ({ listing: "Reading", downloading: "Transferring" }[phase] || "Connected");
+        : ({ awaiting: "Confirm", listing: "Reading", downloading: "Transferring" }[phase] || "Connected");
 
       const activeSize = document.getElementById("active-size");
       if (activeSize) activeSize.textContent = phase === "downloading" ? value + "%" : "";
@@ -651,6 +659,26 @@
       if (bytes.length < 1) return;
       noteActivity();
       const type = bytes[0];
+      if (type === META_AUTH_WAIT) {
+        if (phase === "awaiting" || !authorized) {
+          phase = "awaiting";
+          setStatus("Confirm on the computer — press the button within 10 seconds.");
+        }
+        return;
+      }
+      if (type === META_AUTH_OK) {
+        if (authorized) return;
+        authorized = true;
+        phase = "idle";
+        refreshBtn.disabled = false;
+        setStatus("Connected.");
+        listRides().catch((err) => {
+          phase = "idle";
+          setStatus(err.message || "List failed.", true);
+          renderRides();
+        });
+        return;
+      }
       if (type === META_ENTRY && bytes.length >= 17) {
         const name = readName(bytes.subarray(1, 13));
         const size = u32le(bytes, 13);
@@ -694,7 +722,7 @@
       }
       if (type === META_ERROR && bytes.length >= 2) {
         clearTimeout(stallTimer);
-        phase = "idle";
+        phase = authorized ? "idle" : "awaiting";
         resetTransfer();
         setStatus(ERRORS[bytes[1]] || "Transfer failed.", true);
         renderRides();
@@ -721,7 +749,7 @@
     }
 
     async function listRides() {
-      if (!cmdChar || phase !== "idle") return;
+      if (!cmdChar || !authorized || phase !== "idle") return;
       rides = [];
       filesEl.replaceChildren();
       phase = "listing";
@@ -733,7 +761,7 @@
     }
 
     async function downloadRide(name) {
-      if (!cmdChar || phase !== "idle") return;
+      if (!cmdChar || !authorized || phase !== "idle") return;
       phase = "downloading";
       resetTransfer();
       fileName = name;
@@ -770,12 +798,15 @@
         data.addEventListener("characteristicvaluechanged", onData);
         await meta.startNotifications();
         await data.startNotifications();
-        refreshBtn.disabled = false;
+        authorized = false;
+        userDisconnect = false;
+        phase = "awaiting";
+        refreshBtn.disabled = true;
         disconnectBtn.disabled = false;
-        setStatus("Connected.");
-        await listRides();
+        setStatus("Confirm on the computer — press the button within 10 seconds.");
       } catch (err) {
         phase = "idle";
+        authorized = false;
         if (err && err.name === "NotFoundError") {
           setStatus("No computer selected.");
         } else {
@@ -790,7 +821,10 @@
 
     function onDisconnected() {
       clearTimeout(stallTimer);
+      const wasAwaiting = phase === "awaiting" && !authorized;
+      const timedOut = wasAwaiting && !userDisconnect;
       cmdChar = null;
+      authorized = false;
       phase = "idle";
       rides = [];
       resetTransfer();
@@ -798,11 +832,17 @@
       connectBtn.disabled = false;
       refreshBtn.disabled = true;
       disconnectBtn.disabled = true;
-      setStatus("Disconnected.");
+      if (timedOut) {
+        setStatus("Confirmation timed out. Connect again and press the button on the computer.", true);
+      } else {
+        setStatus("Disconnected.");
+      }
+      userDisconnect = false;
     }
 
     async function disconnect() {
-      if (cmdChar && phase !== "idle") {
+      userDisconnect = true;
+      if (cmdChar && phase !== "idle" && phase !== "awaiting") {
         try { await writeCmd(new Uint8Array([OP_ABORT])); } catch (e) {}
       }
       if (device && device.gatt.connected) device.gatt.disconnect();

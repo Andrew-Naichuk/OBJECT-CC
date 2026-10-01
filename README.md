@@ -12,7 +12,7 @@ The aim is simple: readable numbers on the handlebars, one button, and a record 
 - **The essentials at a glance.** Current speed, distance, elapsed time, estimated moving time, maximum speed and average speed.
 - **A track to take home.** The GPS supplies position, altitude and UTC time for GPX recording on the microSD card.
 - **One button.** A short press changes the backlight; a four-second hold while stopped finishes the current ride and starts a fresh one.
-- **Phone downloads.** Connect to `OBJECT-001` through the [ride-transfer page](https://object.nav-tech.workers.dev) and download a GPX file, including a snapshot of the current track.
+- **Phone downloads.** Connect to `OBJECT-001` through the [ride-transfer page](https://object.nav-tech.workers.dev), confirm on the device within 10 seconds, and download a GPX file, including a snapshot of the current track.
 - **Trip recovery.** Saved counters are restored after a restart when a valid checkpoint is available.
 
 The trip starts with the first wheel pulse. GPS recording begins when the firmware has the required fix, position and time data. You can ride without a GPS fix, but those wheel stats are not currently archived as a separate ride summary.
@@ -127,7 +127,7 @@ The portrait layout keeps current speed largest, with supporting information und
 
 | Action                                | Result                                                                        |
 | ------------------------------------- | ----------------------------------------------------------------------------- |
-| Press and release before 2 seconds    | Cycle backlight: **bright → dim → off**                                       |
+| Press and release before 2 seconds    | Cycle backlight: **bright → dim → off** (or allow a pending phone connection) |
 | Hold for 4 seconds while stopped      | Archive the GPS track if it has points, reset counters and start a fresh ride |
 | Release during the new-ride countdown | Cancel the action; leave the backlight unchanged                              |
 
@@ -156,7 +156,9 @@ GPX exports contain coordinates, timestamps and altitude when available - to mak
 
 1. Power on OBJECT and keep it near your phone.
 2. Open the [OBJECT CONNECT HUB](https://object.nav-tech.workers.dev).
-3. Tap **Connect**, choose **OBJECT** device, then select a GPX file.
+3. Tap **Connect**, choose the **OBJECT** device.
+4. On OBJECT, press the button within **10 seconds** when it shows **Press to allow**. If you miss the window, the link drops and no files are listed — connect again.
+5. Select a GPX file to download.
 
 
 
