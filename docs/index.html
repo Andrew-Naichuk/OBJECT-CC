@@ -105,7 +105,9 @@
     body[data-phase="pairing"] .led,
     body[data-phase="listing"] .led,
     body[data-phase="downloading"] .led,
-    body[data-phase="deleting"] .led { animation: blink 0.9s steps(2, jump-none) infinite; }
+    body[data-phase="deleting"] .led,
+    body[data-phase="reading"] .led,
+    body[data-phase="saving"] .led { animation: blink 0.9s steps(2, jump-none) infinite; }
 
     /* The object: a drawing of the computer, its screen mirrors the device */
     .device {
@@ -195,7 +197,9 @@
       transition: clip-path 0.25s linear;
     }
     body[data-phase="listing"] .gauge .fill,
-    body[data-phase="deleting"] .gauge .fill { animation: sweep 1.5s steps(24) infinite; }
+    body[data-phase="deleting"] .gauge .fill,
+    body[data-phase="reading"] .gauge .fill,
+    body[data-phase="saving"] .gauge .fill { animation: sweep 1.5s steps(24) infinite; }
 
     /* Status and controls */
     #status { margin: 0 0 1rem; min-height: 1.45em; color: var(--quiet); }
@@ -339,6 +343,161 @@
 
     .note { margin: 2.75rem 0 0; max-width: 36ch; color: var(--quiet); font-size: 0.875rem; }
 
+    /* Rides / Settings switch and segmented choices share one look */
+    .tabs, .seg {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: 1fr;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 14px;
+      background: var(--wash);
+    }
+    .tabs { margin-top: 2rem; }
+    .tabs button, .seg span {
+      display: grid;
+      place-items: center;
+      align-content: center;
+      min-height: 2.75rem;
+      padding: 0.35rem 0.5rem;
+      border: 0;
+      border-radius: 10px;
+      background: transparent;
+      color: var(--quiet);
+      font-weight: 600;
+      line-height: 1.2;
+      text-align: center;
+      transition: background-color 0.15s ease, color 0.15s ease;
+    }
+    .tabs button[aria-selected="true"],
+    .seg input:checked + span { background: var(--ink); color: var(--paper); }
+    .tabs button:disabled { opacity: 0.4; }
+    .seg label { position: relative; display: grid; cursor: pointer; }
+    .seg input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+    .seg input:focus-visible + span { outline: 2px solid var(--ink); outline-offset: 2px; }
+    .seg small { display: block; font-size: 0.75rem; font-weight: 500; opacity: 0.75; }
+    body[data-auth="off"] .tabs,
+    body[data-view="settings"] .rides,
+    body[data-view="rides"] .settings { display: none; }
+
+    /* Settings */
+    .settings { margin-top: 2.5rem; }
+    .settings fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+    .settings fieldset:disabled { opacity: 0.4; }
+    .notice {
+      margin: 1rem 0 0;
+      padding: 0.85rem 1rem;
+      border-radius: 12px;
+      background: var(--wash);
+      font-weight: 600;
+    }
+    .group { padding: 1.4rem 0 0.4rem; border-bottom: 1px solid var(--rule); }
+    .group h3 {
+      margin: 0 0 1rem;
+      color: var(--quiet);
+      font-size: 0.8125rem;
+      font-weight: 650;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .field { margin: 0 0 1.25rem; }
+    .field > label, .field > .label {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 1rem;
+      margin: 0 0 0.5rem;
+      font-weight: 600;
+    }
+    .field .val { color: var(--quiet); font-weight: 500; font-variant-numeric: tabular-nums; }
+    .field .help { margin: 0.45rem 0 0; color: var(--quiet); font-size: 0.875rem; }
+    .field .bad { margin: 0.45rem 0 0; font-size: 0.875rem; font-weight: 650; }
+    .settings select, .settings input[type="text"], .settings input[type="number"] {
+      width: 100%;
+      height: 3.25rem;
+      padding: 0 0.9rem;
+      border: 1.5px solid var(--rule);
+      border-radius: 12px;
+      background: var(--paper);
+      color: var(--ink);
+      font: inherit;
+      font-variant-numeric: tabular-nums;
+    }
+    .settings select:focus, .settings input:focus { border-color: var(--ink); outline: none; }
+    .settings input[aria-invalid="true"] { border-color: var(--ink); border-width: 2.5px; }
+    .settings input[type="range"] { width: 100%; height: 2rem; margin: 0; accent-color: var(--ink); }
+    .with-unit { position: relative; }
+    .with-unit input { padding-right: 3.5rem; }
+    .with-unit span {
+      position: absolute;
+      top: 50%;
+      right: 0.9rem;
+      transform: translateY(-50%);
+      color: var(--quiet);
+      pointer-events: none;
+    }
+    .stepper {
+      display: grid;
+      grid-template-columns: 3.25rem 1fr 3.25rem;
+      align-items: center;
+      height: 3.25rem;
+      border: 1.5px solid var(--rule);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .stepper button {
+      height: 100%;
+      border: 0;
+      background: transparent;
+      font-size: 1.4rem;
+      font-weight: 500;
+    }
+    .stepper button:active:not(:disabled) { background: var(--wash); }
+    .stepper button:disabled { opacity: 0.3; }
+    .stepper output { text-align: center; font-weight: 650; font-size: 1.0625rem; font-variant-numeric: tabular-nums; }
+    .linkish {
+      margin: 0.55rem 0 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      font-size: 0.9375rem;
+      font-weight: 600;
+      text-decoration: underline;
+      text-underline-offset: 0.2em;
+    }
+    details.group summary {
+      cursor: pointer;
+      margin: 0 0 1rem;
+      color: var(--quiet);
+      font-size: 0.8125rem;
+      font-weight: 650;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .savebar {
+      position: sticky;
+      bottom: calc(0.75rem + env(safe-area-inset-bottom));
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 1.5rem;
+      padding: 0.5rem 0.5rem 0.5rem 1rem;
+      border: 1.5px solid var(--ink);
+      border-radius: 16px;
+      background: var(--paper);
+      box-shadow: var(--drop);
+    }
+    .savebar span { flex: 1; min-width: 0; font-weight: 600; }
+    .savebar button {
+      height: 2.9rem;
+      padding: 0 1.1rem;
+      border-radius: 12px;
+      font-weight: 650;
+    }
+    #cfg-revert { border: 1.5px solid var(--rule); background: transparent; }
+    #cfg-save { border: 0; background: var(--ink); color: var(--paper); }
+    .savebar button:disabled { opacity: 0.4; }
+
     @keyframes blink { 50% { opacity: 0.15; } }
     @keyframes breathe { 50% { opacity: 0.7; } }
     @keyframes sweep {
@@ -352,12 +511,12 @@
     .hide { display: none; }
   </style>
 </head>
-<body data-link="off" data-phase="idle">
+<body data-link="off" data-auth="off" data-phase="idle" data-view="rides">
   <main>
     <header class="top">
       <div class="brand">
         <h1 class="mark">OBJECT</h1>
-        <span class="sub">Ride transfer</span>
+        <span class="sub" id="sub">Ride transfer</span>
       </div>
       <span class="link" aria-live="polite"><span class="led" aria-hidden="true"></span><span id="link-label">Offline</span></span>
     </header>
@@ -387,12 +546,118 @@
       </div>
     </div>
 
-    <section class="rides when-on" aria-labelledby="rides-title">
+    <div class="tabs when-on" role="tablist" aria-label="View">
+      <button id="tab-rides" type="button" role="tab" aria-selected="true" aria-controls="rides-view">Rides</button>
+      <button id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="settings-view">Settings</button>
+    </div>
+
+    <section class="rides when-on" id="rides-view" role="tabpanel" aria-labelledby="rides-title">
       <div class="rides-head">
         <h2 id="rides-title">Rides</h2>
         <span class="hint">Tap one to save the GPX</span>
       </div>
       <ul id="files"></ul>
+    </section>
+
+    <section class="settings when-on" id="settings-view" role="tabpanel" aria-labelledby="settings-title">
+      <div class="rides-head">
+        <h2 id="settings-title">Settings</h2>
+        <span class="hint">Stored on the card</span>
+      </div>
+      <p class="notice hide" id="cfg-notice"></p>
+      <form id="cfg-form" novalidate>
+        <fieldset id="cfg-fields" disabled>
+          <div class="group">
+            <h3>Display</h3>
+            <div class="field">
+              <span class="label" id="units-label">Units</span>
+              <div class="seg" role="radiogroup" aria-labelledby="units-label">
+                <label><input type="radio" name="units" value="0"><span>Metric<small>km/h · km · m</small></span></label>
+                <label><input type="radio" name="units" value="1"><span>Imperial<small>mph · mi · ft</small></span></label>
+              </div>
+            </div>
+            <div class="field">
+              <span class="label" id="backlight-label">Backlight at power-on</span>
+              <div class="seg" role="radiogroup" aria-labelledby="backlight-label">
+                <label><input type="radio" name="backlight" value="0"><span>Bright</span></label>
+                <label><input type="radio" name="backlight" value="1"><span>Dim</span></label>
+                <label><input type="radio" name="backlight" value="2"><span>Off</span></label>
+              </div>
+              <p class="help">A short press on the button still cycles it while you ride.</p>
+            </div>
+            <div class="field">
+              <label for="cfg-dim">Dim brightness <span class="val" id="cfg-dim-val"></span></label>
+              <input type="range" id="cfg-dim" min="5" max="100" step="1">
+              <p class="help">Used when the backlight is on Dim. Lower saves battery at night.</p>
+            </div>
+          </div>
+
+          <div class="group">
+            <h3>Bike</h3>
+            <div class="field">
+              <label for="cfg-tyre">Wheel size <span class="val" id="cfg-wheel-val"></span></label>
+              <select id="cfg-tyre"></select>
+            </div>
+            <div class="field hide" id="cfg-wheel-field">
+              <label for="cfg-wheel">Circumference</label>
+              <div class="with-unit">
+                <input type="number" id="cfg-wheel" inputmode="numeric" min="1000" max="3000" step="1" aria-describedby="cfg-wheel-help">
+                <span>mm</span>
+              </div>
+              <p class="bad hide" id="cfg-wheel-bad">Enter 1000 to 3000 mm.</p>
+              <p class="help" id="cfg-wheel-help">For the best accuracy, mark the tyre, roll the bike one full turn with your weight on it and measure the distance.</p>
+            </div>
+          </div>
+
+          <div class="group">
+            <h3>Ride</h3>
+            <div class="field">
+              <span class="label" id="stopped-label">Auto-pause when stopped for</span>
+              <div class="stepper" role="group" aria-labelledby="stopped-label">
+                <button type="button" id="cfg-stopped-dec" aria-label="Shorter">&minus;</button>
+                <output id="cfg-stopped" aria-live="polite"></output>
+                <button type="button" id="cfg-stopped-inc" aria-label="Longer">+</button>
+              </div>
+              <p class="help">Moving time and average speed pause when the wheel has not turned for this long.</p>
+            </div>
+          </div>
+
+          <div class="group">
+            <h3>Device</h3>
+            <div class="field">
+              <label for="cfg-name">Name</label>
+              <input type="text" id="cfg-name" maxlength="20" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-describedby="cfg-name-help">
+              <p class="bad hide" id="cfg-name-bad">Use 1 to 20 letters, digits or symbols, without spaces.</p>
+              <p class="help" id="cfg-name-help">Shown when you connect. A new name appears the next time you connect.</p>
+            </div>
+            <div class="field">
+              <label for="cfg-tz">Time zone</label>
+              <select id="cfg-tz"></select>
+              <button type="button" class="linkish" id="cfg-tz-phone"></button>
+              <p class="help">Only used to name saved rides; GPS tracks stay in UTC. Change it when the clocks change.</p>
+            </div>
+          </div>
+
+          <details class="group">
+            <summary>Advanced</summary>
+            <div class="field">
+              <label for="cfg-max">Ignore speeds above</label>
+              <div class="with-unit">
+                <input type="number" id="cfg-max" inputmode="numeric" step="1">
+                <span id="cfg-max-unit">km/h</span>
+              </div>
+              <p class="bad hide" id="cfg-max-bad"></p>
+              <p class="help">Faster wheel readings are treated as magnet noise and do not count towards speed or Max.</p>
+            </div>
+          </details>
+        </fieldset>
+
+        <div class="savebar hide" id="cfg-bar">
+          <span id="cfg-bar-label">Unsaved changes</span>
+          <button type="button" id="cfg-revert">Revert</button>
+          <button type="submit" id="cfg-save">Save</button>
+        </div>
+      </form>
     </section>
 
     <p class="note">Works in Chrome on Android when this page is served over HTTPS. Safari on iPhone has no Bluetooth; open the page in Bluefy instead.</p>
@@ -407,6 +672,8 @@
     const OP_GET = 0x02;
     const OP_ABORT = 0x03;
     const OP_DELETE = 0x04;
+    const OP_CFG_GET = 0x05;
+    const OP_CFG_SET = 0x06;
     const META_ENTRY = 0x01;
     const META_LIST_END = 0x02;
     const META_START = 0x03;
@@ -414,7 +681,12 @@
     const META_AUTH_WAIT = 0x05;
     const META_AUTH_OK = 0x06;
     const META_DELETED = 0x07;
+    const META_CFG = 0x08;
+    const META_CFG_SAVED = 0x09;
     const META_ERROR = 0x7f;
+    const CFG_VERSION = 1;
+    const CFG_LEN = 33;
+    const ERR_NAME = 2;
     const MAX_FILE = 16 * 1024 * 1024;
     const STALL_MS = 15000;
     const ERRORS = {
@@ -423,7 +695,8 @@
       3: "File not found",
       4: "Card I/O failed",
       5: "Transfer aborted",
-      6: "Confirm on the computer"
+      6: "Confirm on the computer",
+      7: "A setting is out of range"
     };
 
     const statusEl = document.getElementById("status");
@@ -437,6 +710,26 @@
     const unitEl = document.getElementById("unit");
     const captionEl = document.getElementById("caption");
     const linkLabel = document.getElementById("link-label");
+    const subEl = document.getElementById("sub");
+    const tabRides = document.getElementById("tab-rides");
+    const tabSettings = document.getElementById("tab-settings");
+    const $ = (id) => document.getElementById(id);
+    const cfgForm = $("cfg-form");
+    const cfgFields = $("cfg-fields");
+    const cfgNotice = $("cfg-notice");
+    const cfgBar = $("cfg-bar");
+    const cfgBarLabel = $("cfg-bar-label");
+    const cfgSaveBtn = $("cfg-save");
+    const cfgRevertBtn = $("cfg-revert");
+    const tyreSel = $("cfg-tyre");
+    const wheelField = $("cfg-wheel-field");
+    const wheelInput = $("cfg-wheel");
+    const dimInput = $("cfg-dim");
+    const nameInput = $("cfg-name");
+    const tzSel = $("cfg-tz");
+    const tzPhoneBtn = $("cfg-tz-phone");
+    const maxInput = $("cfg-max");
+    const stoppedOut = $("cfg-stopped");
 
     let device = null;
     let cmdChar = null;
@@ -451,6 +744,10 @@
     let early = [];
     let stallTimer = 0;
     let prog = null;
+    let currentView = location.hash === "#settings" ? "settings" : "rides";
+    let cfgDevice = null;
+    let cfgDraft = null;
+    let cfgCustom = false;
 
     const DOWN_ICON = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M10 3v10M5.5 8.5 10 13l4.5-4.5M4 17h12"/></svg>';
     const DEL_ICON = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M4 6h12M8 6V4h4v2M7 6v10h6V6"/></svg>';
@@ -470,7 +767,13 @@
       const pairing = !linked && connectBtn.disabled;
       const shown = pairing ? "pairing" : phase;
       document.body.dataset.link = linked ? "on" : "off";
+      document.body.dataset.auth = linked && authorized ? "on" : "off";
       document.body.dataset.phase = shown;
+      document.body.dataset.view = currentView;
+      tabRides.setAttribute("aria-selected", String(currentView === "rides"));
+      tabSettings.setAttribute("aria-selected", String(currentView === "settings"));
+      tabRides.disabled = tabSettings.disabled = phase !== "idle";
+      subEl.textContent = currentView === "settings" ? "Settings" : "Ride transfer";
 
       let value = "--";
       let unit = "";
@@ -497,6 +800,8 @@
       } else if (phase === "awaiting") {
         caption = "Press to allow";
         right = "10 s";
+      } else if (phase === "reading" || phase === "saving") {
+        caption = phase === "reading" ? "Reading settings" : "Saving settings";
       } else if (linked) {
         value = pad2(rides.length);
         caption = rides.length === 1 ? "Ride on card" : "Rides on card";
@@ -514,7 +819,7 @@
 
       linkLabel.textContent = !linked
         ? (pairing ? "Pairing" : "Offline")
-        : ({ awaiting: "Confirm", listing: "Reading", downloading: "Transferring", deleting: "Deleting" }[phase] || "Connected");
+        : ({ awaiting: "Confirm", listing: "Reading", downloading: "Transferring", deleting: "Deleting", reading: "Reading", saving: "Saving" }[phase] || "Connected");
 
       const activeSize = document.getElementById("active-size");
       if (activeSize) activeSize.textContent = phase === "downloading" ? value + "%" : "";
@@ -561,12 +866,13 @@
 
     function noteActivity() {
       clearTimeout(stallTimer);
-      if (phase === "listing" || phase === "downloading" || phase === "deleting") {
+      if (["listing", "downloading", "deleting", "reading", "saving"].includes(phase)) {
         stallTimer = setTimeout(() => {
           setStatus("Transfer stalled. Move closer and try again.", true);
           phase = "idle";
           hideProgress();
           renderRides();
+          renderSettings();
         }, STALL_MS);
       }
     }
@@ -749,6 +1055,31 @@
         phase = "idle";
         setStatus(rides.length ? rides.length + " ride" + (rides.length === 1 ? "" : "s") + " on the card." : "No GPX files on the card.");
         renderRides();
+        if (currentView === "settings" && !cfgDevice) requestSettings().catch(onSettingsError);
+        return;
+      }
+      if (type === META_CFG && bytes.length >= 1 + CFG_LEN) {
+        clearTimeout(stallTimer);
+        const cfg = unpackSettings(bytes.subarray(1, 1 + CFG_LEN));
+        const wasReading = phase === "reading";
+        if (phase === "reading" || phase === "saving") phase = "idle";
+        if (!cfg) {
+          setStatus("This computer sent settings this page does not understand. Update the page.", true);
+          renderSettings();
+          return;
+        }
+        cfgDevice = cfg;
+        cfgDraft = Object.assign({}, cfg);
+        cfgCustom = false;
+        if (wasReading) setStatus(cfg.card ? "Settings loaded." : "No SD card in the computer.", !cfg.card);
+        renderSettings();
+        return;
+      }
+      if (type === META_CFG_SAVED) {
+        const renamed = cfgDevice && cfgDraft && cfgDraft.name !== cfgDevice.name;
+        setStatus(renamed
+          ? "Saved. The computer shows up as " + cfgDraft.name + " the next time you connect."
+          : "Saved to " + (cfgDraft ? cfgDraft.name : "the computer") + ".");
         return;
       }
       if (type === META_START && bytes.length >= 17) {
@@ -790,10 +1121,19 @@
       }
       if (type === META_ERROR && bytes.length >= 2) {
         clearTimeout(stallTimer);
+        const wasReading = phase === "reading";
+        const wasSaving = phase === "saving";
         phase = authorized ? "idle" : "awaiting";
         resetTransfer();
-        setStatus(ERRORS[bytes[1]] || "Transfer failed.", true);
+        if (wasReading && bytes[1] === ERR_NAME) {
+          setStatus("This computer's firmware is too old to change settings here. Update it, then try again.", true);
+        } else if (wasSaving && bytes[1] === 1) {
+          setStatus("Insert a card to save settings.", true);
+        } else {
+          setStatus(ERRORS[bytes[1]] || "Transfer failed.", true);
+        }
         renderRides();
+        renderSettings();
       }
     }
 
@@ -859,6 +1199,316 @@
       await writeCmd(body);
     }
 
+    // Rollout in mm for common tyres (ETRTO width-rim), as in Garmin and Wahoo charts.
+    const TYRES = [
+      ["Road and gravel, 700C", [
+        ["700 × 23C", "23-622", 2096], ["700 × 25C", "25-622", 2105], ["700 × 28C", "28-622", 2136],
+        ["700 × 30C", "30-622", 2146], ["700 × 32C", "32-622", 2155], ["700 × 35C", "35-622", 2168],
+        ["700 × 38C", "38-622", 2180], ["700 × 40C", "40-622", 2200], ["700 × 45C", "45-622", 2242]
+      ]],
+      ["650B and 27.5″", [
+        ["650B × 47", "47-584", 2100], ["27.5 × 2.1", "54-584", 2148], ["27.5 × 2.25", "57-584", 2182]
+      ]],
+      ["Mountain, 29″", [
+        ["29 × 2.1", "54-622", 2288], ["29 × 2.25", "57-622", 2298]
+      ]],
+      ["Mountain, 26″", [
+        ["26 × 1.95", "50-559", 2050], ["26 × 2.1", "54-559", 2068]
+      ]],
+      ["Small wheels", [
+        ["20 × 1.75", "47-406", 1515]
+      ]]
+    ];
+    const KMH_PER_MPH = 1.609344;
+
+    function fmtOffset(min) {
+      if (min === 0) return "UTC";
+      const sign = min < 0 ? "−" : "+";
+      const a = Math.abs(min);
+      return "UTC" + sign + pad2(Math.floor(a / 60)) + ":" + pad2(a % 60);
+    }
+
+    function phoneOffset() {
+      return -new Date().getTimezoneOffset();
+    }
+
+    function buildStaticOptions() {
+      for (const [groupName, list] of TYRES) {
+        const group = document.createElement("optgroup");
+        group.label = groupName;
+        for (const [label, iso, mm] of list) {
+          const opt = document.createElement("option");
+          opt.value = String(mm);
+          opt.textContent = label + " · " + iso;
+          group.append(opt);
+        }
+        tyreSel.append(group);
+      }
+      const custom = document.createElement("option");
+      custom.value = "custom";
+      custom.textContent = "Custom circumference…";
+      tyreSel.append(custom);
+
+      for (let m = -720; m <= 840; m += 15) {
+        const opt = document.createElement("option");
+        opt.value = String(m);
+        opt.textContent = fmtOffset(m);
+        tzSel.append(opt);
+      }
+    }
+
+    function unpackSettings(b) {
+      if (b.length < CFG_LEN || b[0] !== CFG_VERSION) return null;
+      const n = Math.min(b[12], 20);
+      let name = "";
+      for (let i = 0; i < n; i++) name += String.fromCharCode(b[13 + i]);
+      return {
+        card: (b[1] & 1) === 1,
+        wheel: b[2] | (b[3] << 8),
+        tz: ((b[4] | (b[5] << 8)) << 16) >> 16,
+        backlight: b[6],
+        units: b[7],
+        dim: b[8],
+        maxKmh: b[9],
+        stoppedMs: b[10] | (b[11] << 8),
+        name
+      };
+    }
+
+    function packSettings(c) {
+      const b = new Uint8Array(1 + CFG_LEN);
+      const tz = c.tz & 0xffff;
+      b[0] = OP_CFG_SET;
+      b[1] = CFG_VERSION;
+      b[3] = c.wheel & 0xff;
+      b[4] = c.wheel >> 8;
+      b[5] = tz & 0xff;
+      b[6] = tz >> 8;
+      b[7] = c.backlight;
+      b[8] = c.units;
+      b[9] = c.dim;
+      b[10] = c.maxKmh;
+      b[11] = c.stoppedMs & 0xff;
+      b[12] = c.stoppedMs >> 8;
+      b[13] = c.name.length;
+      for (let i = 0; i < c.name.length; i++) b[14 + i] = c.name.charCodeAt(i);
+      return b;
+    }
+
+    function nameOk(s) {
+      return /^[\x21-\x7e]{1,20}$/.test(s);
+    }
+
+    function cfgErrors(c) {
+      return {
+        wheel: !(Number.isInteger(c.wheel) && c.wheel >= 1000 && c.wheel <= 3000),
+        name: !nameOk(c.name),
+        maxKmh: !(Number.isInteger(c.maxKmh) && c.maxKmh >= 20 && c.maxKmh <= 200)
+      };
+    }
+
+    function cfgDirty() {
+      if (!cfgDevice || !cfgDraft) return false;
+      return ["wheel", "tz", "backlight", "units", "dim", "maxKmh", "stoppedMs", "name"]
+        .some((k) => cfgDraft[k] !== cfgDevice[k]);
+    }
+
+    function dimPct(duty) {
+      return Math.max(5, Math.min(100, Math.round(duty * 100 / 254)));
+    }
+
+    function fmtSeconds(ms) {
+      const s = ms / 1000;
+      return (Number.isInteger(s) ? String(s) : s.toFixed(1)) + " s";
+    }
+
+    function setRadio(name, value) {
+      for (const input of cfgForm.elements[name]) input.checked = Number(input.value) === value;
+    }
+
+    function showBad(id, bad, text) {
+      const el = $(id);
+      if (text) el.textContent = text;
+      el.classList.toggle("hide", !bad);
+    }
+
+    // Draws the form from cfgDraft; the inputs only write back into cfgDraft.
+    function renderSettings() {
+      const ready = !!(cmdChar && authorized && cfgDraft);
+      const busy = phase !== "idle";
+      cfgFields.disabled = !ready || busy || !cfgDraft.card;
+
+      if (!ready) {
+        cfgNotice.textContent = !cmdChar || !authorized ? "" : phase === "reading" ? "Reading settings from the computer…" : "Settings are not loaded yet.";
+        cfgNotice.classList.toggle("hide", !cfgNotice.textContent);
+        cfgBar.classList.add("hide");
+        syncUI();
+        return;
+      }
+      cfgNotice.textContent = cfgDraft.card ? "" : "Insert a card in the computer to change settings.";
+      cfgNotice.classList.toggle("hide", cfgDraft.card);
+
+      const c = cfgDraft;
+      const imperial = c.units === 1;
+      setRadio("units", c.units);
+      setRadio("backlight", c.backlight);
+      dimInput.value = String(dimPct(c.dim));
+      $("cfg-dim-val").textContent = dimPct(c.dim) + " %";
+
+      const preset = TYRES.some(([, list]) => list.some(([, , mm]) => mm === c.wheel));
+      const custom = cfgCustom || !preset;
+      tyreSel.value = custom ? "custom" : String(c.wheel);
+      wheelField.classList.toggle("hide", !custom);
+      if (document.activeElement !== wheelInput) wheelInput.value = Number.isFinite(c.wheel) ? String(c.wheel) : "";
+      $("cfg-wheel-val").textContent = Number.isFinite(c.wheel) ? c.wheel + " mm" : "";
+
+      stoppedOut.textContent = fmtSeconds(c.stoppedMs);
+      $("cfg-stopped-dec").disabled = c.stoppedMs <= 1000;
+      $("cfg-stopped-inc").disabled = c.stoppedMs >= 10000;
+
+      if (document.activeElement !== nameInput) nameInput.value = c.name;
+
+      if (!tzSel.querySelector('option[value="' + c.tz + '"]')) {
+        const opt = document.createElement("option");
+        opt.value = String(c.tz);
+        opt.textContent = fmtOffset(c.tz);
+        tzSel.append(opt);
+      }
+      tzSel.value = String(c.tz);
+      const phone = phoneOffset();
+      tzPhoneBtn.textContent = "Use this phone's time zone (" + fmtOffset(phone) + ")";
+      tzPhoneBtn.classList.toggle("hide", phone === c.tz || phone < -720 || phone > 840);
+
+      $("cfg-max-unit").textContent = imperial ? "mph" : "km/h";
+      maxInput.min = imperial ? "13" : "20";
+      maxInput.max = imperial ? "124" : "200";
+      if (document.activeElement !== maxInput) {
+        maxInput.value = Number.isFinite(c.maxKmh)
+          ? String(imperial ? Math.round(c.maxKmh / KMH_PER_MPH) : c.maxKmh) : "";
+      }
+
+      const errs = cfgErrors(c);
+      wheelInput.setAttribute("aria-invalid", String(errs.wheel));
+      nameInput.setAttribute("aria-invalid", String(errs.name));
+      maxInput.setAttribute("aria-invalid", String(errs.maxKmh));
+      showBad("cfg-wheel-bad", errs.wheel && custom);
+      showBad("cfg-name-bad", errs.name);
+      showBad("cfg-max-bad", errs.maxKmh, imperial ? "Enter 13 to 124 mph." : "Enter 20 to 200 km/h.");
+
+      const dirty = cfgDirty();
+      const invalid = errs.wheel || errs.name || errs.maxKmh;
+      cfgBar.classList.toggle("hide", !dirty && phase !== "saving");
+      cfgBarLabel.textContent = phase === "saving" ? "Saving…" : invalid ? "Fix the marked field" : "Unsaved changes";
+      cfgSaveBtn.disabled = busy || invalid || !c.card;
+      cfgRevertBtn.disabled = busy;
+      syncUI();
+    }
+
+    function editSettings(patch) {
+      if (!cfgDraft) return;
+      Object.assign(cfgDraft, patch);
+      renderSettings();
+    }
+
+    async function requestSettings() {
+      if (!cmdChar || !authorized || phase !== "idle") return;
+      phase = "reading";
+      setStatus("Reading settings…");
+      renderSettings();
+      noteActivity();
+      await writeCmd(new Uint8Array([OP_CFG_GET]));
+    }
+
+    async function saveSettings() {
+      if (!cmdChar || !authorized || phase !== "idle" || !cfgDirty()) return;
+      const errs = cfgErrors(cfgDraft);
+      if (errs.wheel || errs.name || errs.maxKmh) return;
+      phase = "saving";
+      setStatus("Saving settings…");
+      renderSettings();
+      noteActivity();
+      await writeCmd(packSettings(cfgDraft));
+    }
+
+    function onSettingsError(err) {
+      phase = "idle";
+      setStatus(err.message || "Settings failed.", true);
+      renderSettings();
+    }
+
+    function setView(next, push) {
+      if (next === currentView) return;
+      if (phase !== "idle") {
+        if (!push) history.replaceState(null, "", currentView === "settings" ? "#settings" : location.pathname + location.search);
+        return;
+      }
+      currentView = next;
+      if (push) {
+        history.pushState(null, "", next === "settings" ? "#settings" : location.pathname + location.search);
+      }
+      if (currentView === "settings" && !cfgDirty()) requestSettings().catch(onSettingsError);
+      renderSettings();
+    }
+
+    function wireSettings() {
+      buildStaticOptions();
+      tabRides.addEventListener("click", () => setView("rides", true));
+      tabSettings.addEventListener("click", () => setView("settings", true));
+      window.addEventListener("popstate", () => setView(location.hash === "#settings" ? "settings" : "rides", false));
+
+      for (const input of cfgForm.elements.units) {
+        input.addEventListener("change", () => editSettings({ units: Number(input.value) }));
+      }
+      for (const input of cfgForm.elements.backlight) {
+        input.addEventListener("change", () => editSettings({ backlight: Number(input.value) }));
+      }
+      dimInput.addEventListener("input", () => {
+        editSettings({ dim: Math.max(1, Math.min(254, Math.round(Number(dimInput.value) * 254 / 100))) });
+      });
+      tyreSel.addEventListener("change", () => {
+        if (tyreSel.value === "custom") {
+          cfgCustom = true;
+          renderSettings();
+          wheelInput.focus();
+          return;
+        }
+        cfgCustom = false;
+        editSettings({ wheel: Number(tyreSel.value) });
+      });
+      wheelInput.addEventListener("input", () => {
+        cfgCustom = true;
+        editSettings({ wheel: wheelInput.value === "" ? NaN : Number(wheelInput.value) });
+      });
+      $("cfg-stopped-dec").addEventListener("click", () => {
+        editSettings({ stoppedMs: Math.max(1000, Math.ceil(cfgDraft.stoppedMs / 1000) * 1000 - 1000) });
+      });
+      $("cfg-stopped-inc").addEventListener("click", () => {
+        editSettings({ stoppedMs: Math.min(10000, Math.floor(cfgDraft.stoppedMs / 1000) * 1000 + 1000) });
+      });
+      nameInput.addEventListener("input", () => editSettings({ name: nameInput.value.trim() }));
+      tzSel.addEventListener("change", () => editSettings({ tz: Number(tzSel.value) }));
+      tzPhoneBtn.addEventListener("click", () => editSettings({ tz: phoneOffset() }));
+      maxInput.addEventListener("input", () => {
+        const v = maxInput.value === "" ? NaN : Number(maxInput.value);
+        const kmh = cfgDraft.units === 1 ? Math.round(v * KMH_PER_MPH) : v;
+        editSettings({ maxKmh: Number.isFinite(kmh) ? Math.min(Math.max(kmh, 0), 255) : NaN });
+      });
+      for (const input of [wheelInput, nameInput, maxInput]) {
+        input.addEventListener("blur", renderSettings);
+      }
+      cfgRevertBtn.addEventListener("click", () => {
+        if (!cfgDevice) return;
+        cfgDraft = Object.assign({}, cfgDevice);
+        cfgCustom = false;
+        setStatus("Changes discarded.");
+        renderSettings();
+      });
+      cfgForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        saveSettings().catch(onSettingsError);
+      });
+    }
+
     async function connect() {
       if (!navigator.bluetooth) {
         setStatus("This browser has no Bluetooth. Use Chrome on Android over HTTPS, or Bluefy on iPhone.", true);
@@ -911,8 +1561,12 @@
       authorized = false;
       phase = "idle";
       rides = [];
+      cfgDevice = null;
+      cfgDraft = null;
+      cfgCustom = false;
       resetTransfer();
       filesEl.replaceChildren();
+      renderSettings();
       connectBtn.disabled = false;
       refreshBtn.disabled = true;
       disconnectBtn.disabled = true;
@@ -941,7 +1595,8 @@
     }));
     disconnectBtn.addEventListener("click", disconnect);
 
-    syncUI();
+    wireSettings();
+    renderSettings();
   </script>
 </body>
 </html>

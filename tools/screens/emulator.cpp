@@ -264,6 +264,16 @@ static void phoneWrite(uint8_t op, const char *name) {
 
 static void phoneDisconnect() { Bluefruit.disconnect(0); }
 
+// Send the device's current settings back with one field changed, the way
+// the hub's Settings view does.
+static void phoneSaveSettings(void (*edit)(uint8_t *rec)) {
+  uint8_t b[BLE_CMD_MAX];
+  b[0] = BLE_OP_CFG_SET;
+  bleCfgPack(b + 1);
+  edit(b + 1);
+  bleOnWrite(0, &bleCmd, b, sizeof b);
+}
+
 static void writeConfig(const char *text) {
   g_card.files[CFG_NAME] = std::make_shared<std::vector<uint8_t>>(text, text + strlen(text));
 }
@@ -487,6 +497,27 @@ static void scSaveFailed() {
   runFor(2500);
 }
 
+// Phone switches units from the hub mid-ride: the screen redraws in mph at once.
+static void scSettings() {
+  setup();
+  gpsOn(GPS_UBX, 5000, 12);
+  runFor(7000);
+  rampTo(24, 10000);
+  rideProfile(25, 2, 120000);
+  rampTo(0, 6000);
+  runFor(4000);
+  phoneConnect();
+  runFor(300);
+  tap();
+  runFor(1000);
+  phoneSaveSettings([](uint8_t *rec) { rec[7] = UNITS_IMPERIAL; });
+  runFor(600);
+  shot("32_flash_settings_saved", "Settings saved from the hub: units switch to imperial right away");
+  runFor(2000);
+  phoneDisconnect();
+  runFor(1000);
+}
+
 struct Scenario {
   const char *name;
   void (*fn)();
@@ -494,7 +525,7 @@ struct Scenario {
 static const Scenario SCENARIOS[] = {
     {"boot_new", scBootNew},   {"no_card", scNoCard},     {"resume", scResume},
     {"recording", scRecording}, {"no_gps", scNoGps},       {"nmea_only", scNmeaOnly},
-    {"imperial", scImperial},  {"save_failed", scSaveFailed},
+    {"imperial", scImperial},  {"save_failed", scSaveFailed}, {"settings", scSettings},
 };
 
 int main(int argc, char **argv) {

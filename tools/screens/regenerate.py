@@ -57,6 +57,7 @@ SCREENS = {  # full screen on a dark rounded mat
     "phone-allow-4s": "29_phone_allow_4s",
     "phone-connected": "30_phone_connected",
     "phone-sending": "31_phone_sending",
+    "settings-saved": "32_flash_settings_saved",
     "units-metric": "10_ride_recording",
     "units-imperial": "14_ride_imperial",
 }

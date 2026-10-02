@@ -48,10 +48,12 @@ struct EmuAdvertising {
   void addTxPower() {}
   void addService(BLEService &) {}
   void addName() {}
+  void clearData() {}
   void restartOnDisconnect(bool) {}
   void setInterval(int, int) {}
   void setFastTimeout(int) {}
   bool start(int) { return true; }
+  bool stop() { return true; }
 };
 
 struct EmuPeriph {

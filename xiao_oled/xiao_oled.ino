@@ -39,10 +39,12 @@
  * BLE file download (no extra wiring):
  *   Advertises as CONFIG ble_name (default "OBJECT-001"). On connect the
  *   device asks for a short press within 10 s; timeout disconnects with no
- *   file access. tools/index.html lists root *.GPX files, saves them on the
+ *   file access. docs/index.html lists root *.GPX files, saves them on the
  *   phone, and can delete archived rides. CURRENT.GPX cannot be deleted over
- *   BLE. TRIP.DAT is not offered. Open that page over HTTPS (Android Chrome,
- *   or a Web Bluetooth browser on iPhone).
+ *   BLE. TRIP.DAT is not offered. Its Settings view reads and writes
+ *   CONFIG.TXT; saved settings apply at once (a new BLE name on the next
+ *   connection). Open that page over HTTPS (Android Chrome, or a Web
+ *   Bluetooth browser on iPhone).
  *
  * microSD CONFIG.TXT (created with defaults on first boot if missing):
  *   wheel_circ_mm, timezone_offset_min, backlight, ble_name, units,
@@ -1643,46 +1645,167 @@ static void sdBeginShared() {
   }
 }
 
-static const char CFG_DEFAULT_TEXT[] =
-    "# OBJECT CONFIG.TXT — edit on any computer, then reinsert the card\n"
-    "# Missing file is created with these defaults on first boot.\n"
+// The hub's Settings rewrite the whole file, so hand-added comments are lost.
+static const char CFG_TEXT_FORMAT[] =
+    "# OBJECT CONFIG.TXT — change these from Settings in the OBJECT hub,\n"
+    "# or edit on any computer and reinsert the card. Saving from the hub\n"
+    "# rewrites this file. Missing file is created with defaults on first boot.\n"
     "#\n"
     "# wheel_circ_mm: measured rollout in millimetres (700x32C ~2155)\n"
-    "wheel_circ_mm=2155\n"
+    "wheel_circ_mm=%u\n"
     "#\n"
     "# timezone_offset_min: minutes from UTC for archive filenames only\n"
     "# (GPX timestamps stay UTC). Example: 120 = UTC+2, -300 = UTC-5\n"
-    "timezone_offset_min=0\n"
+    "timezone_offset_min=%d\n"
     "#\n"
     "# backlight at boot: bright | dim | off\n"
-    "backlight=bright\n"
+    "backlight=%s\n"
     "#\n"
     "# BLE advertise name (1-20 chars, no spaces)\n"
-    "ble_name=OBJECT-001\n"
+    "ble_name=%s\n"
     "#\n"
     "# units: metric | imperial  (display only; storage stays metric)\n"
-    "units=metric\n"
+    "units=%s\n"
     "#\n"
     "# dim PWM duty 1-254 (bright is always 255)\n"
-    "backlight_dim=40\n"
+    "backlight_dim=%u\n"
     "#\n"
     "# max_speed_kmh: treat faster reed intervals as noise\n"
-    "max_speed_kmh=100\n"
+    "max_speed_kmh=%u\n"
     "#\n"
     "# stopped_ms: no pulse for this long => bike stopped (moving time)\n"
-    "stopped_ms=3000\n";
+    "stopped_ms=%lu\n";
 
-static void configApplyDerived() {
+static const char CFG_TMP_NAME[] = "CONFIG.NEW";
+static char cfgText[1024];
+
+static bool cfgWheelOk(float v) {
+  return v >= 1000.0f && v <= 3000.0f;
+}
+
+static bool cfgTimezoneOk(long v) {
+  return v >= -720L && v <= 840L;
+}
+
+static bool cfgDimOk(long v) {
+  return v >= 1L && v <= 254L;
+}
+
+static bool cfgMaxSpeedOk(float v) {
+  return v >= 20.0f && v <= 200.0f;
+}
+
+static bool cfgStoppedOk(long v) {
+  return v >= 1000L && v <= 10000L;
+}
+
+static bool cfgBleNameOk(const char *v, size_t n) {
+  if (n < 1 || n > CFG_BLE_NAME_MAX) {
+    return false;
+  }
+  for (size_t i = 0; i < n; i++) {
+    char c = v[i];
+    if (c <= 0x20 || c >= 0x7F) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static const char *cfgBacklightName(uint8_t mode) {
+  return mode == BL_DIM ? "dim" : (mode == BL_OFF ? "off" : "bright");
+}
+
+static size_t configFormat(const Cfg &c) {
+  int n = snprintf(cfgText, sizeof(cfgText), CFG_TEXT_FORMAT,
+                   (unsigned)(c.wheelCircMm + 0.5f),
+                   (int)c.timezoneOffsetMin,
+                   cfgBacklightName(c.backlight),
+                   c.bleName,
+                   c.units == UNITS_IMPERIAL ? "imperial" : "metric",
+                   (unsigned)c.backlightDim,
+                   (unsigned)(c.maxSpeedKmh + 0.5f),
+                   (unsigned long)c.stoppedMs);
+  if (n <= 0 || (size_t)n >= sizeof(cfgText)) {
+    return 0;
+  }
+  return (size_t)n;
+}
+
+static bool configWriteFile(const char *path, const Cfg &c) {
+  size_t n = configFormat(c);
+  if (n == 0) {
+    return false;
+  }
+  gpsDrain();
+  File32 f;
+  if (!f.open(path, O_WRONLY | O_CREAT | O_TRUNC)) {
+    gpsDrain();
+    return false;
+  }
+  bool ok = f.write(cfgText, n) == n;
+  f.flush();
+  f.close();
+  if (!ok) {
+    sd.remove(path);
+  }
+  gpsDrain();
+  return ok;
+}
+
+// Writes CONFIG.NEW first, so a power cut leaves either the old file or a
+// complete new one that configEnsureFile renames at the next boot.
+static bool configSave(const Cfg &c) {
+  if (!sdReady) {
+    return false;
+  }
+  if (!configWriteFile(CFG_TMP_NAME, c)) {
+    Serial.println("CFG save write failed");
+    return false;
+  }
+  gpsDrain();
+  if (sd.exists(CFG_NAME)) {
+    sd.remove(CFG_NAME);
+  }
+  bool ok = sd.rename(CFG_TMP_NAME, CFG_NAME);
+  gpsDrain();
+  if (!ok) {
+    Serial.println("CFG save rename failed");
+  }
+  return ok;
+}
+
+static void configApplyDerived(bool setBacklightMode) {
   if (cfg.maxSpeedKmh < 1.0f) {
     cfg.maxSpeedKmh = 1.0f;
   }
   g_minRevMs = (unsigned long)((cfg.wheelCircMm * 3.6f) / cfg.maxSpeedKmh + 0.5f);
   BL_DUTY[BL_DIM] = cfg.backlightDim;
-  blMode = cfg.backlight;
-  if (blMode >= BL_MODE_COUNT) {
-    blMode = BL_BRIGHT;
+  if (setBacklightMode) {
+    blMode = cfg.backlight;
+    if (blMode >= BL_MODE_COUNT) {
+      blMode = BL_BRIGHT;
+    }
   }
   backlightApply();
+}
+
+// Settings saved from the phone take effect without a reboot. The boot
+// backlight level only changes the panel when that setting itself changed.
+static void configApplyChange(const Cfg &old) {
+  if (cfg.wheelCircMm != old.wheelCircMm) {
+    // Distance is revolutions x circumference: rescale the count so the
+    // distance already ridden stays put and only new revolutions use the
+    // new wheel size.
+    noInterrupts();
+    g_revCount = (unsigned long)((double)g_revCount * old.wheelCircMm
+                                 / cfg.wheelCircMm + 0.5);
+    interrupts();
+  }
+  if (cfg.units != old.units) {
+    uiChromeDrawn = false;
+  }
+  configApplyDerived(cfg.backlight != old.backlight);
 }
 
 static void configLog() {
@@ -1691,8 +1814,7 @@ static void configLog() {
   Serial.print("CFG timezone_offset_min=");
   Serial.println((int)cfg.timezoneOffsetMin);
   Serial.print("CFG backlight=");
-  Serial.println(cfg.backlight == BL_DIM ? "dim"
-                 : (cfg.backlight == BL_OFF ? "off" : "bright"));
+  Serial.println(cfgBacklightName(cfg.backlight));
   Serial.print("CFG ble_name=");
   Serial.println(cfg.bleName);
   Serial.print("CFG units=");
@@ -1740,14 +1862,8 @@ static bool cfgParseBacklight(const char *v, uint8_t *out) {
 
 static bool cfgParseBleName(const char *v, char *out, size_t outlen) {
   size_t n = strlen(v);
-  if (n < 1 || n >= outlen || n > CFG_BLE_NAME_MAX) {
+  if (n >= outlen || !cfgBleNameOk(v, n)) {
     return false;
-  }
-  for (size_t i = 0; i < n; i++) {
-    char c = v[i];
-    if (c <= 0x20 || c >= 0x7F) {
-      return false;
-    }
   }
   memcpy(out, v, n);
   out[n] = '\0';
@@ -1757,7 +1873,7 @@ static bool cfgParseBleName(const char *v, char *out, size_t outlen) {
 static void configApplyKey(const char *key, const char *val) {
   if (cfgEq(key, "wheel_circ_mm")) {
     float v = (float)atof(val);
-    if (v >= 1000.0f && v <= 3000.0f) {
+    if (cfgWheelOk(v)) {
       cfg.wheelCircMm = v;
     } else {
       Serial.println("CFG reject wheel_circ_mm");
@@ -1766,7 +1882,7 @@ static void configApplyKey(const char *key, const char *val) {
   }
   if (cfgEq(key, "timezone_offset_min")) {
     long v = atol(val);
-    if (v >= -720L && v <= 840L) {
+    if (cfgTimezoneOk(v)) {
       cfg.timezoneOffsetMin = (int16_t)v;
     } else {
       Serial.println("CFG reject timezone_offset_min");
@@ -1800,7 +1916,7 @@ static void configApplyKey(const char *key, const char *val) {
   }
   if (cfgEq(key, "backlight_dim")) {
     long v = atol(val);
-    if (v >= 1L && v <= 254L) {
+    if (cfgDimOk(v)) {
       cfg.backlightDim = (uint8_t)v;
     } else {
       Serial.println("CFG reject backlight_dim");
@@ -1809,7 +1925,7 @@ static void configApplyKey(const char *key, const char *val) {
   }
   if (cfgEq(key, "max_speed_kmh")) {
     float v = (float)atof(val);
-    if (v >= 20.0f && v <= 200.0f) {
+    if (cfgMaxSpeedOk(v)) {
       cfg.maxSpeedKmh = v;
     } else {
       Serial.println("CFG reject max_speed_kmh");
@@ -1818,7 +1934,7 @@ static void configApplyKey(const char *key, const char *val) {
   }
   if (cfgEq(key, "stopped_ms")) {
     long v = atol(val);
-    if (v >= 1000L && v <= 10000L) {
+    if (cfgStoppedOk(v)) {
       cfg.stoppedMs = (unsigned long)v;
     } else {
       Serial.println("CFG reject stopped_ms");
@@ -1831,28 +1947,36 @@ static void configEnsureFile() {
   if (!sdReady) {
     return;
   }
-  if (sd.exists(CFG_NAME)) {
+  gpsDrain();
+  bool haveCfg = sd.exists(CFG_NAME);
+  bool haveTmp = sd.exists(CFG_TMP_NAME);
+  gpsDrain();
+  if (haveCfg) {
+    if (haveTmp) {
+      sd.remove(CFG_TMP_NAME);
+      gpsDrain();
+    }
     return;
   }
-  File32 f;
-  if (!f.open(CFG_NAME, O_WRONLY | O_CREAT | O_EXCL)) {
-    Serial.println("CFG create failed");
-    return;
+  if (haveTmp) {
+    bool ok = sd.rename(CFG_TMP_NAME, CFG_NAME);
+    gpsDrain();
+    if (ok) {
+      Serial.println("CONFIG.TXT restored from CONFIG.NEW");
+      return;
+    }
   }
-  size_t n = strlen(CFG_DEFAULT_TEXT);
-  bool ok = f.write(CFG_DEFAULT_TEXT, n) == n;
-  f.close();
-  if (ok) {
+  // cfg still holds the compiled-in defaults here (configLoad runs next).
+  if (configWriteFile(CFG_NAME, cfg)) {
     Serial.println("CONFIG.TXT created");
   } else {
     Serial.println("CFG write failed");
-    sd.remove(CFG_NAME);
   }
 }
 
 static void configLoad() {
   if (!sdReady) {
-    configApplyDerived();
+    configApplyDerived(true);
     Serial.println("CFG defaults (no card)");
     configLog();
     return;
@@ -1861,7 +1985,7 @@ static void configLoad() {
   File32 f;
   if (!f.open(CFG_NAME, O_RDONLY)) {
     Serial.println("CFG open failed — defaults");
-    configApplyDerived();
+    configApplyDerived(true);
     configLog();
     return;
   }
@@ -1921,7 +2045,7 @@ static void configLoad() {
   }
   f.close();
 
-  configApplyDerived();
+  configApplyDerived(true);
   Serial.println("CFG loaded");
   configLog();
 }
@@ -2636,7 +2760,7 @@ static void drawSplash(const char *line) {
 
 // Phone download of root *.GPX files. Callbacks only set flags; loop()
 // does every SD read so the shared SPI bus stays on this task.
-// UUIDs share one vendor base. tools/index.html speaks the same bytes.
+// UUIDs share one vendor base. docs/index.html speaks the same bytes.
 static const char BLE_RIDE_SVC_UUID[]  = "7A1E0001-4C8B-4D2E-9F63-1B5A0C7E8D24";
 static const char BLE_RIDE_CMD_UUID[]  = "7A1E0002-4C8B-4D2E-9F63-1B5A0C7E8D24";
 static const char BLE_RIDE_META_UUID[] = "7A1E0003-4C8B-4D2E-9F63-1B5A0C7E8D24";
@@ -2646,7 +2770,9 @@ enum {
   BLE_OP_LIST = 0x01,
   BLE_OP_GET = 0x02,
   BLE_OP_ABORT = 0x03,
-  BLE_OP_DELETE = 0x04
+  BLE_OP_DELETE = 0x04,
+  BLE_OP_CFG_GET = 0x05,
+  BLE_OP_CFG_SET = 0x06
 };
 
 enum {
@@ -2657,6 +2783,8 @@ enum {
   BLE_META_AUTH_WAIT = 0x05,
   BLE_META_AUTH_OK = 0x06,
   BLE_META_DELETED = 0x07,
+  BLE_META_CFG = 0x08,
+  BLE_META_CFG_SAVED = 0x09,
   BLE_META_ERROR = 0x7F
 };
 
@@ -2666,8 +2794,18 @@ enum {
   BLE_ERR_NOT_FOUND = 3,
   BLE_ERR_IO = 4,
   BLE_ERR_ABORT = 5,
-  BLE_ERR_DENIED = 6
+  BLE_ERR_DENIED = 6,
+  BLE_ERR_CFG = 7
 };
+
+// Settings record, little-endian, after the op / meta type byte:
+//   0 version, 1 flags (bit0 card present; GET only),
+//   2-3 wheel_circ_mm u16, 4-5 timezone_offset_min i16, 6 backlight,
+//   7 units, 8 backlight_dim, 9 max_speed_kmh, 10-11 stopped_ms u16,
+//   12 ble_name length, 13-32 ble_name.
+static const uint8_t BLE_CFG_VERSION = 1;
+static const uint16_t BLE_CFG_LEN = 33;
+static const uint16_t BLE_CMD_MAX = 1 + BLE_CFG_LEN;
 
 enum {
   BLE_JOB_IDLE = 0,
@@ -2682,8 +2820,8 @@ enum {
 };
 
 static BLEService bleSvc(BLE_RIDE_SVC_UUID);
-static BLECharacteristic bleCmd(BLE_RIDE_CMD_UUID, CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP, 13);
-static BLECharacteristic bleMeta(BLE_RIDE_META_UUID, CHR_PROPS_NOTIFY, 17);
+static BLECharacteristic bleCmd(BLE_RIDE_CMD_UUID, CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP, BLE_CMD_MAX);
+static BLECharacteristic bleMeta(BLE_RIDE_META_UUID, CHR_PROPS_NOTIFY, 1 + BLE_CFG_LEN);
 static BLECharacteristic bleData(BLE_RIDE_DATA_UUID, CHR_PROPS_NOTIFY, 244);
 
 static bool bleReady = false;
@@ -2692,9 +2830,14 @@ static volatile uint8_t bleLinkLost = 0;
 static volatile uint8_t bleLinkUpEdge = 0;
 static uint8_t bleCmdOp = 0;
 static char bleCmdName[13];
+static uint8_t bleCmdBody[BLE_CFG_LEN];
+static uint16_t bleCmdBodyLen = 0;
 static uint8_t bleJob = BLE_JOB_IDLE;
 static uint8_t bleErrorPending = 0;
 static uint8_t bleDeletedPending = 0;
+static uint8_t bleCfgPending = 0;
+static uint8_t bleCfgSavedPending = 0;
+static bool bleRenamePending = false;
 static uint8_t bleAuthState = BLE_AUTH_NONE;
 static unsigned long bleAuthDeadlineMs = 0;
 static uint8_t bleAuthNotifyPending = 0;
@@ -3155,12 +3298,94 @@ static void bleBeginDelete(const char *rawName) {
   Serial.println(name);
 }
 
+static void bleCfgPack(uint8_t *b) {
+  memset(b, 0, BLE_CFG_LEN);
+  uint16_t wheel = (uint16_t)(cfg.wheelCircMm + 0.5f);
+  uint16_t tz = (uint16_t)cfg.timezoneOffsetMin;
+  uint16_t stopped = (uint16_t)cfg.stoppedMs;
+  size_t n = strlen(cfg.bleName);
+  b[0] = BLE_CFG_VERSION;
+  b[1] = sdReady ? 0x01 : 0x00;
+  b[2] = (uint8_t)(wheel & 0xff);
+  b[3] = (uint8_t)(wheel >> 8);
+  b[4] = (uint8_t)(tz & 0xff);
+  b[5] = (uint8_t)(tz >> 8);
+  b[6] = cfg.backlight;
+  b[7] = cfg.units;
+  b[8] = cfg.backlightDim;
+  b[9] = (uint8_t)(cfg.maxSpeedKmh + 0.5f);
+  b[10] = (uint8_t)(stopped & 0xff);
+  b[11] = (uint8_t)(stopped >> 8);
+  b[12] = (uint8_t)n;
+  memcpy(b + 13, cfg.bleName, n);
+}
+
+// All or nothing: one bad field rejects the whole record.
+static bool bleCfgUnpack(const uint8_t *b, Cfg *out) {
+  if (b[0] != BLE_CFG_VERSION) {
+    return false;
+  }
+  float wheel = (float)(uint16_t)(b[2] | (b[3] << 8));
+  long tz = (int16_t)(uint16_t)(b[4] | (b[5] << 8));
+  long stopped = (long)(uint16_t)(b[10] | (b[11] << 8));
+  float maxKmh = (float)b[9];
+  uint8_t n = b[12];
+  if (!cfgWheelOk(wheel) || !cfgTimezoneOk(tz) || b[6] >= BL_MODE_COUNT
+      || b[7] > UNITS_IMPERIAL || !cfgDimOk(b[8]) || !cfgMaxSpeedOk(maxKmh)
+      || !cfgStoppedOk(stopped) || !cfgBleNameOk((const char *)b + 13, n)) {
+    return false;
+  }
+  out->wheelCircMm = wheel;
+  out->timezoneOffsetMin = (int16_t)tz;
+  out->backlight = b[6];
+  out->units = b[7];
+  out->backlightDim = b[8];
+  out->maxSpeedKmh = maxKmh;
+  out->stoppedMs = (unsigned long)stopped;
+  memcpy(out->bleName, b + 13, n);
+  out->bleName[n] = '\0';
+  return true;
+}
+
+static void bleBeginCfgSet(const uint8_t *body, uint16_t len) {
+  Cfg next = cfg;
+  if (len != BLE_CFG_LEN || !bleCfgUnpack(body, &next)) {
+    bleQueueError(BLE_ERR_CFG);
+    Serial.println("BLE settings rejected");
+    return;
+  }
+  if (!sdReady) {
+    bleQueueError(BLE_ERR_NO_SD);
+    return;
+  }
+  if (!configSave(next)) {
+    bleQueueError(BLE_ERR_IO);
+    return;
+  }
+  Cfg old = cfg;
+  cfg = next;
+  configApplyChange(old);
+  if (strcmp(cfg.bleName, old.bleName) != 0) {
+    Bluefruit.setName(cfg.bleName);
+    bleRenamePending = true;
+  }
+  btnFlash("Settings saved", millis());
+  bleCfgSavedPending = 1;
+  bleCfgPending = 1;
+  Serial.println("BLE settings saved");
+  configLog();
+}
+
 static void bleTakeCommand() {
   uint8_t op;
   char name[13];
+  uint8_t body[BLE_CFG_LEN];
+  uint16_t bodyLen;
   noInterrupts();
   op = bleCmdOp;
   memcpy(name, bleCmdName, sizeof(name));
+  memcpy(body, bleCmdBody, sizeof(body));
+  bodyLen = bleCmdBodyLen;
   bleCmdPending = 0;
   interrupts();
 
@@ -3187,6 +3412,14 @@ static void bleTakeCommand() {
   }
   if (op == BLE_OP_DELETE) {
     bleBeginDelete(name);
+    return;
+  }
+  if (op == BLE_OP_CFG_GET) {
+    bleCfgPending = 1;
+    return;
+  }
+  if (op == BLE_OP_CFG_SET) {
+    bleBeginCfgSet(body, bodyLen);
     return;
   }
   bleQueueError(BLE_ERR_NAME);
@@ -3228,9 +3461,20 @@ static bool bleService() {
     interrupts();
     bleErrorPending = 0;
     bleDeletedPending = 0;
+    bleCfgPending = 0;
+    bleCfgSavedPending = 0;
     bleResetXfer();
     bleClearAuth();
     Serial.println("BLE disconnected");
+    if (bleRenamePending) {
+      bleRenamePending = false;
+      Bluefruit.Advertising.stop();
+      Bluefruit.ScanResponse.clearData();
+      Bluefruit.ScanResponse.addName();
+      Bluefruit.Advertising.start(0);
+      Serial.print("BLE advertising ");
+      Serial.println(cfg.bleName);
+    }
     return false;
   }
 
@@ -3273,6 +3517,24 @@ static bool bleService() {
     bleDeletedPending = 0;
     return true;
   }
+  if (bleCfgSavedPending) {
+    uint8_t meta = BLE_META_CFG_SAVED;
+    if (!bleNotifyMeta(&meta, 1)) {
+      return false;
+    }
+    bleCfgSavedPending = 0;
+    return true;
+  }
+  if (bleCfgPending) {
+    uint8_t buf[1 + BLE_CFG_LEN];
+    buf[0] = BLE_META_CFG;
+    bleCfgPack(buf + 1);
+    if (!bleNotifyMeta(buf, sizeof(buf))) {
+      return false;
+    }
+    bleCfgPending = 0;
+    return true;
+  }
   if (bleJob == BLE_JOB_LIST) {
     return blePumpList();
   }
@@ -3285,7 +3547,7 @@ static bool bleService() {
 static void bleOnWrite(uint16_t conn_hdl, BLECharacteristic *chr, uint8_t *data, uint16_t len) {
   (void)conn_hdl;
   (void)chr;
-  if (len < 1 || len > 13) {
+  if (len < 1 || len > BLE_CMD_MAX) {
     return;
   }
   uint8_t op = data[0];
@@ -3300,9 +3562,15 @@ static void bleOnWrite(uint16_t conn_hdl, BLECharacteristic *chr, uint8_t *data,
       memcpy(name, data + 1, n);
     }
   }
+  uint16_t bodyLen = 0;
   noInterrupts();
+  if (op == BLE_OP_CFG_SET) {
+    bodyLen = (uint16_t)(len - 1);
+    memcpy(bleCmdBody, data + 1, bodyLen);
+  }
   bleCmdOp = op;
   memcpy(bleCmdName, name, sizeof(bleCmdName));
+  bleCmdBodyLen = bodyLen;
   bleCmdPending = 1;
   interrupts();
 }

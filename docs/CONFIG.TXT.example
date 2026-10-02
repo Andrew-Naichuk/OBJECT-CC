@@ -1,5 +1,6 @@
-# OBJECT CONFIG.TXT — edit on any computer, then reinsert the card
-# Missing file is created with these defaults on first boot.
+# OBJECT CONFIG.TXT — change these from Settings in the OBJECT hub,
+# or edit on any computer and reinsert the card. Saving from the hub
+# rewrites this file. Missing file is created with defaults on first boot.
 #
 # wheel_circ_mm: measured rollout in millimetres (700x32C ~2155)
 wheel_circ_mm=2155

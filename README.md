@@ -153,11 +153,25 @@ For the documented browser setup, use **Chrome on Android**, or [Bluefy on iPhon
 
 If a transfer stalls, disconnect and reconnect before trying again.
 
+## Change settings from your phone
+
+After connecting and allowing the link, switch the hub from **Rides** to **Settings** (or open the hub with `#settings` at the end of its address). It reads the settings from the card and shows them as:
+
+- **Display:** units (metric or imperial), backlight at power-on, and dim brightness.
+- **Bike:** wheel size, picked from common tyre sizes (700C, 650B/27.5″, 29″, 26″, 20″) or entered as a measured circumference in mm.
+- **Ride:** how long the wheel must stand still before moving time auto-pauses.
+- **Device:** the Bluetooth name, and the time zone used to name saved rides (one tap copies the phone's).
+- **Advanced:** the speed above which wheel readings are ignored as noise.
+
+Change what you need and tap **Save**. OBJECT checks every value, rewrites `CONFIG.TXT` on the card and applies it straight away, with no reboot. A new wheel size counts only from that moment, so the distance already ridden stays correct. A new name is used from the next connection. Saving needs a card in the device.
+
+<p align="center"><img src="docs/screens/settings-saved.png" width="180" alt="Ride screen reading Settings saved, now in mph and miles"><br><sub><b>Settings saved</b><br>switched to imperial from the hub mid-ride</sub></p>
+
 ## Ride files
 
 | File           | Contents                                                                            |
 | -------------- | ----------------------------------------------------------------------------------- |
-| `CONFIG.TXT`   | Human-editable ride settings (wheel size, timezone offset, backlight, BLE name, …)  |
+| `CONFIG.TXT`   | Ride settings (wheel size, timezone offset, backlight, BLE name, …), editable from the hub or by hand |
 | `CURRENT.GPX`  | Current GPS track                                                                   |
 | `TRIP.DAT`     | CRC-checked checkpoint of wheel counters, timings, maximum speed and track position |
 | `YYMMDDHH.GPX` | First-choice archive name, based on GPS time plus `timezone_offset_min` when saving |
@@ -255,7 +269,7 @@ With the button released, the divider holds D4 at Vbat/2 (about 1.5–2.1 V). Th
 
 ## Set it up for your bike
 
-Ride settings live in **`CONFIG.TXT`** on the microSD card root. On first boot with a card that has no config file, firmware writes a default `CONFIG.TXT` (same content as [docs/CONFIG.TXT.example](docs/CONFIG.TXT.example)). Edit the file on any computer, reinsert the card, and reboot — no reflash needed.
+Ride settings live in **`CONFIG.TXT`** on the microSD card root. On first boot with a card that has no config file, firmware writes a default `CONFIG.TXT` (same content as [docs/CONFIG.TXT.example](docs/CONFIG.TXT.example)). The easiest way to change them is [from your phone](#change-settings-from-your-phone). You can also edit the file on any computer, reinsert the card, and reboot — no reflash needed. Saving from the hub rewrites the whole file, so comments you added by hand are lost.
 
 | Key | Default | Notes |
 | --- | --- | --- |
@@ -268,7 +282,7 @@ Ride settings live in **`CONFIG.TXT`** on the microSD card root. On first boot w
 | `max_speed_kmh` | `100` | Faster reed intervals are treated as noise. Range 20–200. |
 | `stopped_ms` | `3000` | No pulse for this long ⇒ stopped (moving time). Range 1000–10000. |
 
-For distance accuracy, measure wheel rollout rather than assuming every tire with the same size marking has the same circumference. **Finish the current ride before changing `wheel_circ_mm`**, or a resumed `TRIP.DAT` will mix old and new circumference in the distance total.
+For distance accuracy, measure wheel rollout rather than assuming every tire with the same size marking has the same circumference. Changing the wheel size from the hub keeps the distance already ridden. **When editing `wheel_circ_mm` on a computer, finish the current ride first**, or a resumed `TRIP.DAT` will recount the whole ride with the new circumference.
 
 Invalid or unknown keys are ignored; missing keys keep the defaults above.
 
