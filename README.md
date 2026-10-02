@@ -4,6 +4,11 @@
 
 OBJECT puts your speed, distance and ride stats on a 3.2″ display, records a GPS track to a microSD card, and lets you download it to your phone over Bluetooth. It is built around a **Seeed XIAO nRF52840 Sense**, a wheel magnet and reed switch, and a handful of readily available modules.
 
+<p align="center">
+  <img src="docs/screens/hero.png" width="760" alt="Three OBJECT screens: riding at 27.4 km/h while recording, the hold-for-new-ride countdown, and a phone download at 42%">
+</p>
+<p align="center"><sub>Riding and recording · holding the button for a new ride · sending a track to the phone</sub></p>
+
 The aim is simple: readable numbers on the handlebars, one button, and a record of where you went. This is a working DIY project still being refined.
 
 ## Out on the bike
@@ -17,8 +22,139 @@ The aim is simple: readable numbers on the handlebars, one button, and a record 
 
 The trip starts with the first wheel pulse. GPS recording begins when the firmware has the required fix, position and time data. You can ride without a GPS fix, but those wheel stats are not currently archived as a separate ride summary.
 
-## Hardware
+## Reading the screen
 
+<p align="center">
+  <img src="docs/screens/anatomy.png" width="302" alt="The ride screen with five numbered regions: GPS status, speed, gauge, ride stats and footer">
+</p>
+
+The portrait layout keeps current speed largest, with supporting information underneath:
+
+1. **GPS status:** satellite count, or “Searching” until there is a fix.
+2. **Dot-matrix speed:** km/h or mph (from `units`). The line above it shows the unit and **Avg**; it also carries prompts such as “Hold for new ride” and “Press to allow”.
+3. **24-dot gauge:** normally speed, at 2 km/h per dot, so it is full from about 47 km/h. It also shows hold-to-save, phone-confirm and download progress.
+4. **Ride stats:** Distance, Time, Moving and Max (distance/speed units follow `units`). Distance switches to one decimal from 100.
+5. **Footer:** altitude (m or ft, `--` without a fix) and a status such as `Recording`, `Phone` or `No card`.
+
+**Time** is elapsed time since the trip began, including stops while powered on. Time spent powered off is not added after recovery. **Moving** is estimated from wheel pulses using `stopped_ms` (default three seconds); **Avg** divides wheel distance by that estimated moving time.
+
+### GPS status
+
+| Top right | Meaning |
+| --- | --- |
+| <img src="docs/screens/status-searching.png" width="250" alt="Status bar reading Searching with a hollow ring"> | No usable fix yet, or the GPS has gone quiet for 2 seconds. Wheel stats keep working; nothing is recorded. |
+| <img src="docs/screens/status-satellites.png" width="250" alt="Status bar reading 11 satellites with a filled dot"> | Live fix, with the number of satellites in use. |
+| <img src="docs/screens/status-gps.png" width="250" alt="Status bar reading GPS with a filled dot"> | Live fix from a receiver that does not report a satellite count. |
+
+### Footer status
+
+Only one status shows at a time, in this order of priority:
+
+| Bottom right | Meaning |
+| --- | --- |
+| <img src="docs/screens/footer-no-card.png" width="250" alt="Footer with an exclamation badge and No card"> | No microSD card, or the card stopped responding. Stats live in memory only. |
+| <img src="docs/screens/footer-phone.png" width="250" alt="Footer reading Phone with a filled dot"> | A phone is connected and allowed. Recording carries on in the background. |
+| <img src="docs/screens/footer-recording.png" width="250" alt="Footer with Recording in a white pill"> | The ride has started and the GPS has position and time, so points are going into `CURRENT.GPX`. |
+| <img src="docs/screens/footer-idle.png" width="250" alt="Footer with altitude only"> | Nothing to report: no wheel pulse yet, or no fix. |
+
+## Turning it on
+
+The splash shows while the card is checked, then for one second with the result:
+
+<table>
+<tr>
+<td align="center" valign="top"><img src="docs/screens/boot-checking-card.png" width="180" alt="Splash: Checking card"><br><sub><b>Checking card</b><br>while the card is read</sub></td>
+<td align="center" valign="top"><img src="docs/screens/boot-card-ready.png" width="180" alt="Splash: Card ready"><br><sub><b>Card ready</b><br>no saved ride, starting fresh</sub></td>
+<td align="center" valign="top"><img src="docs/screens/boot-resuming-ride.png" width="180" alt="Splash: Resuming ride"><br><sub><b>Resuming ride</b><br>a valid <code>TRIP.DAT</code> was found</sub></td>
+<td align="center" valign="top"><img src="docs/screens/boot-no-card.png" width="180" alt="Splash: No card"><br><sub><b>No card</b><br>riding without a log</sub></td>
+</tr>
+</table>
+
+After a restart the saved counters come back and Time continues from where it stopped. The trip itself starts with the first wheel pulse.
+
+## Controls
+
+| Action                                | Result                                                                        |
+| ------------------------------------- | ----------------------------------------------------------------------------- |
+| Press and release before 2 seconds    | Cycle backlight: **bright → dim → off** (or allow a pending phone connection) |
+| Hold for 4 seconds while stopped      | Archive the GPS track if it has points, reset counters and start a fresh ride |
+| Release during the new-ride countdown | Cancel the action; leave the backlight unchanged                              |
+
+### Backlight
+
+<table>
+<tr>
+<td align="center" valign="top"><img src="docs/screens/backlight-bright.png" width="180" alt="Ride screen at full brightness"><br><sub><b>Bright</b><br>full backlight</sub></td>
+<td align="center" valign="top"><img src="docs/screens/backlight-dim.png" width="180" alt="Ride screen dimmed"><br><sub><b>Dim</b><br><code>backlight_dim</code>, default 40 of 255</sub></td>
+<td align="center" valign="top"><img src="docs/screens/backlight-off.png" width="180" alt="Dark screen with the backlight off"><br><sub><b>Off</b><br>still running and recording</sub></td>
+</tr>
+</table>
+
+Turning the backlight off does **not** stop recording or turn off the device. The level at power-on comes from `backlight` in `CONFIG.TXT`.
+
+### Starting a new ride
+
+Stop and wait for the speed reading to reach zero, then hold the button. The countdown appears after two seconds and the gauge fills over the last two:
+
+<table>
+<tr>
+<td align="center" valign="top"><img src="docs/screens/ride-stopped.png" width="150" alt="Stopped ride screen showing 0.0"><br><sub><b>Stopped</b><br>speed reads 0.0</sub></td>
+<td align="center" valign="top"><img src="docs/screens/hold-2s.png" width="150" alt="Hold for new ride, 2 s left"><br><sub><b>Held 2 s</b><br>countdown starts</sub></td>
+<td align="center" valign="top"><img src="docs/screens/hold-1s.png" width="150" alt="Hold for new ride, 1 s left"><br><sub><b>Held 3 s</b><br>release now to cancel</sub></td>
+<td align="center" valign="top"><img src="docs/screens/ride-saved.png" width="150" alt="Ride saved message"><br><sub><b>Held 4 s</b><br>track archived</sub></td>
+<td align="center" valign="top"><img src="docs/screens/new-ride.png" width="150" alt="Fresh ride screen with zeroed stats"><br><sub><b>New ride</b><br>waiting for the wheel</sub></td>
+</tr>
+</table>
+
+The track in `CURRENT.GPX` is renamed to a dated archive such as `26100115.GPX`, and the counters reset. **If the ride has no GPS points, the current firmware clears its counters without creating an archive**, and still shows “Ride saved”. OBJECT counts as stopped once no wheel pulse has arrived for `stopped_ms` (three seconds by default). If the wheel is turning when you press, or starts turning before the four seconds are up, the hold does nothing.
+
+<table>
+<tr>
+<td align="center" valign="top"><img src="docs/screens/stats-reset.png" width="180" alt="Stats reset message"><br><sub><b>Stats reset</b><br>no card: counters cleared in memory</sub></td>
+<td align="center" valign="top"><img src="docs/screens/save-failed.png" width="180" alt="Save failed message"><br><sub><b>Save failed</b><br>card error: the ride and its counters are kept</sub></td>
+</tr>
+</table>
+
+## Download a ride to your phone
+
+1. Power on OBJECT and keep it near your phone.
+2. Open the [OBJECT CONNECT HUB](https://object.nav-tech.workers.dev).
+3. Tap **Connect**, choose the **OBJECT** device (name from `ble_name`, default `OBJECT-001`).
+4. On OBJECT, press the button within **10 seconds** when it shows **Press to allow**. If you miss the window, the link drops and no files are listed — connect again.
+5. Select a GPX file to download.
+6. Delete archived rides with the trash control when you want to free card space. `CURRENT.GPX` cannot be deleted while it is the live recording.
+
+<table>
+<tr>
+<td align="center" valign="top"><img src="docs/screens/phone-allow-10s.png" width="180" alt="Press to allow, 10 s left"><br><sub><b>Press to allow</b><br>10 seconds to confirm</sub></td>
+<td align="center" valign="top"><img src="docs/screens/phone-allow-4s.png" width="180" alt="Press to allow, 4 s left"><br><sub><b>Window closing</b><br>the gauge drains with it</sub></td>
+<td align="center" valign="top"><img src="docs/screens/phone-connected.png" width="180" alt="Ride screen with Phone in the footer"><br><sub><b>Allowed</b><br>footer shows Phone</sub></td>
+<td align="center" valign="top"><img src="docs/screens/phone-sending.png" width="180" alt="Sending 42% with the gauge part filled"><br><sub><b>Sending 42%</b><br>caption and gauge track the transfer</sub></td>
+</tr>
+</table>
+
+You can also download `CURRENT.GPX` without finishing the ride. The device sends a snapshot ending at the point where the transfer began.
+
+For the documented browser setup, use **Chrome on Android**, or [Bluefy on iPhone](https://apps.apple.com/app/bluefy-web-ble-browser/id1492822185), since Safari does not expose Web Bluetooth. To host your own copy, serve [tools/index.html](tools/index.html) over **HTTPS**.
+
+If a transfer stalls, disconnect and reconnect before trying again.
+
+## Ride files
+
+| File           | Contents                                                                            |
+| -------------- | ----------------------------------------------------------------------------------- |
+| `CONFIG.TXT`   | Human-editable ride settings (wheel size, timezone offset, backlight, BLE name, …)  |
+| `CURRENT.GPX`  | Current GPS track                                                                   |
+| `TRIP.DAT`     | CRC-checked checkpoint of wheel counters, timings, maximum speed and track position |
+| `YYMMDDHH.GPX` | First-choice archive name, based on GPS time plus `timezone_offset_min` when saving |
+| `YYMMDDnn.GPX` | Collision fallback; the final pair is a sequence, not necessarily an hour           |
+| `RIDEnnnn.GPX` | Numbered fallback when a date-based name is unavailable                             |
+
+Points are attempted no more frequently than once per second, after the trip starts, when GPS data passes the current checks. Subsequent points also require advancing GPS time and a coordinate change of at least `0.000018°` on either latitude or longitude. That is about 2 m in latitude; it is not a fixed travel-distance threshold.
+
+GPX exports contain coordinates, timestamps and altitude when available - to make a smooth import to Strava app. **They do not preserve the wheel-derived ride summary**, so another app's calculated distance and moving time may slightly differ from the device's readings.
+
+## Hardware
 
 | Part                                    | Job                                                                      |
 | --------------------------------------- | ------------------------------------------------------------------------ |
@@ -33,19 +169,17 @@ The trip starts with the first wheel pulse. GPS recording begins when the firmwa
 | Schottky diode                          | Prevents XIAO USB power feeding back into the charger LOAD rail          |
 | 7 kΩ resistor                           | Holds the display reset input high                                       |
 
-
 ## Wiring
 
-Module-level assembly schematic showing the external connections. OBJECT assembly electrical schematic
+Module-level assembly schematic showing the external connections.
 
-[Open the SVG schematic](docs/schematic.svg) 
+![OBJECT assembly electrical schematic](docs/schematic.svg)
 
-to zoom in or print it.
+[Open the SVG schematic](docs/schematic.svg) to zoom in or print it.
 
 ### Power
 
-`**VSYS` means the bq25185 LOAD rail.** Display and GPS power branch off before the Schottky diode.
-
+**`VSYS` means the bq25185 LOAD rail.** Display and GPS power branch off before the Schottky diode.
 
 | From                                 | To                                                      |
 | ------------------------------------ | ------------------------------------------------------- |
@@ -56,7 +190,6 @@ to zoom in or print it.
 | Charger **LOAD+ / VSYS**             | GPS **5V** input                                        |
 | Charger **LOAD− / GND**              | XIAO, display, GPS, reed switch and button grounds      |
 
-
 The battery connects to the external charger; the XIAO's battery pads are unused. Charge through the **bq25185 USB-C port**. The XIAO's USB-C port is used for programming and serial diagnostics; it does not charge the external battery through this isolated LOAD connection.
 
 The charger defaults to **1 A charging**. Check the particular battery's permitted charging current and polarity before connecting it. The XIAO's low-battery behavior also needs testing with the fitted diode's voltage drop.
@@ -64,7 +197,6 @@ The charger defaults to **1 A charging**. Check the particular battery's permitt
 References: [Adafruit #6091](https://www.adafruit.com/product/6091), [HGLRC M100 Pro](https://www.hglrc.com/products/hglrc-m100-pro-gps), [LCDWiki display documentation](https://www.lcdwiki.com/3.2inch_IPS_SPI_Module_ILI9341).
 
 ### Display and microSD
-
 
 | Display pin  | Connection                         |
 | ------------ | ---------------------------------- |
@@ -79,13 +211,11 @@ References: [Adafruit #6091](https://www.adafruit.com/product/6091), [HGLRC M100
 | LED          | XIAO **D3**, PWM backlight control |
 | SD_CS        | XIAO **D5**                        |
 
-
 The display and microSD share the SPI bus, with separate chip-select pins. D3 controls brightness rather than supplying the backlight current. Touch pins are unused.
 
 ### GPS
 
 `Serial1`, **115200 baud, 8N1**. Firmware attempts to configure 1 Hz position updates.
-
 
 | GPS pin | Connection               |
 | ------- | ------------------------ |
@@ -93,7 +223,6 @@ The display and microSD share the SPI bus, with separate chip-select pins. D3 co
 | GND     | Common GND               |
 | TX      | XIAO **D7 / RX**         |
 | RX      | XIAO **D6 / TX**         |
-
 
 GPS compass pins are unused.
 
@@ -123,65 +252,14 @@ For distance accuracy, measure wheel rollout rather than assuming every tire wit
 
 Invalid or unknown keys are ignored; missing keys keep the defaults above.
 
-## Reading the screen
+<table>
+<tr>
+<td align="center" valign="top"><img src="docs/screens/units-metric.png" width="180" alt="Ride screen in km/h, km and m"><br><sub><code>units=metric</code></sub></td>
+<td align="center" valign="top"><img src="docs/screens/units-imperial.png" width="180" alt="Ride screen in mph, mi and ft"><br><sub><code>units=imperial</code></sub></td>
+</tr>
+</table>
 
-The portrait layout keeps current speed largest, with supporting information underneath:
-
-1. **GPS status:** satellite count or “Searching”.
-2. **Dot-matrix speed:** km/h or mph (from `units`), with average speed above it.
-3. **24-dot gauge:** normally speed, at 2 km/h per dot; also shows hold-to-save or download progress.
-4. **Ride stats:** Distance, Time, Moving and Max (distance/speed units follow `units`).
-5. **Footer:** altitude (m or ft) and a status such as `Recording`, `Phone` or `No card`.
-
-**Time** is elapsed time since the trip began, including stops while powered on. Time spent powered off is not added after recovery. **Moving** is estimated from wheel pulses using `stopped_ms` (default three seconds); **Avg** divides wheel distance by that estimated moving time.
-
-## Controls
-
-
-| Action                                | Result                                                                        |
-| ------------------------------------- | ----------------------------------------------------------------------------- |
-| Press and release before 2 seconds    | Cycle backlight: **bright → dim → off** (or allow a pending phone connection) |
-| Hold for 4 seconds while stopped      | Archive the GPS track if it has points, reset counters and start a fresh ride |
-| Release during the new-ride countdown | Cancel the action; leave the backlight unchanged                              |
-
-
-Stop and wait for the speed reading to reach zero before holding for a new ride. The countdown appears after two seconds. Turning the backlight off does **not** stop recording or turn off the device.
-
-**If the ride has no GPS points, the current firmware clears its counters without creating an archive.** With no card available, the long press resets RAM stats and displays “Stats reset”.
-
-## Ride files
-
-
-| File           | Contents                                                                            |
-| -------------- | ----------------------------------------------------------------------------------- |
-| `CONFIG.TXT`   | Human-editable ride settings (wheel size, timezone offset, backlight, BLE name, …)  |
-| `CURRENT.GPX`  | Current GPS track                                                                   |
-| `TRIP.DAT`     | CRC-checked checkpoint of wheel counters, timings, maximum speed and track position |
-| `YYMMDDHH.GPX` | First-choice archive name, based on GPS time plus `timezone_offset_min` when saving |
-| `YYMMDDnn.GPX` | Collision fallback; the final pair is a sequence, not necessarily an hour           |
-| `RIDEnnnn.GPX` | Numbered fallback when a date-based name is unavailable                             |
-
-
-Points are attempted no more frequently than once per second, after the trip starts, when GPS data passes the current checks. Subsequent points also require advancing GPS time and a coordinate change of at least `0.000018°` on either latitude or longitude. That is about 2 m in latitude; it is not a fixed travel-distance threshold.
-
-GPX exports contain coordinates, timestamps and altitude when available - to make a smooth import to Strava app. **They do not preserve the wheel-derived ride summary**, so another app's calculated distance and moving time may slightly differ from the device's readings.
-
-## Download a ride to your phone
-
-1. Power on OBJECT and keep it near your phone.
-2. Open the [OBJECT CONNECT HUB](https://object.nav-tech.workers.dev).
-3. Tap **Connect**, choose the **OBJECT** device (name from `ble_name`, default `OBJECT-001`).
-4. On OBJECT, press the button within **10 seconds** when it shows **Press to allow**. If you miss the window, the link drops and no files are listed — connect again.
-5. Select a GPX file to download.
-6. Delete archived rides with the trash control when you want to free card space. `CURRENT.GPX` cannot be deleted while it is the live recording.
-
-
-
-You can also download `CURRENT.GPX` without finishing the ride. The device sends a snapshot ending at the point where the transfer began.
-
-For the documented browser setup, use **Chrome on Android**, or [Bluefy on iPhone](https://apps.apple.com/app/bluefy-web-ble-browser/id1492822185), since Safari does not expose Web Bluetooth. To host your own copy, serve [tools/index.html](tools/index.html) over **HTTPS**.
-
-If a transfer stalls, disconnect and reconnect before trying again.
+`units` changes speed, distance and altitude on screen. The gauge stays at 2 km/h per dot either way.
 
 ## Firmware
 
@@ -214,7 +292,7 @@ Replace `<PORT>` with your board's port and upload only after compilation succee
 ```text
 xiao_oled/     Cycling computer firmware
 tools/         Web Bluetooth ride-transfer page
-docs/          Assembly schematic + CONFIG.TXT.example
+docs/          Assembly schematic, CONFIG.TXT.example, README screens
 AGENTS.md      Notes for automated agents
 ```
 
