@@ -135,7 +135,7 @@ The track in `CURRENT.GPX` is renamed to a dated archive such as `26100115.GPX`,
 
 You can also download `CURRENT.GPX` without finishing the ride. The device sends a snapshot ending at the point where the transfer began.
 
-For the documented browser setup, use **Chrome on Android**, or [Bluefy on iPhone](https://apps.apple.com/app/bluefy-web-ble-browser/id1492822185), since Safari does not expose Web Bluetooth. To host your own copy, serve [tools/index.html](tools/index.html) over **HTTPS**.
+For the documented browser setup, use **Chrome on Android**, or [Bluefy on iPhone](https://apps.apple.com/app/bluefy-web-ble-browser/id1492822185), since Safari does not expose Web Bluetooth. To host your own copy, serve [web/index.html](web/index.html) over **HTTPS**.
 
 If a transfer stalls, disconnect and reconnect before trying again.
 
@@ -291,7 +291,7 @@ Replace `<PORT>` with your board's port and upload only after compilation succee
 
 ```text
 xiao_oled/     Cycling computer firmware
-tools/         Web Bluetooth ride-transfer page
+web/           Web Bluetooth ride-transfer page
 docs/          Assembly schematic, CONFIG.TXT.example, README screens
 AGENTS.md      Notes for automated agents
 ```
