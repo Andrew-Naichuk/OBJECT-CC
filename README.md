@@ -17,6 +17,7 @@ The aim is simple: readable numbers on the handlebars, one button, and a record 
 - **The essentials at a glance.** Current speed, distance, elapsed time, estimated moving time, maximum speed and average speed.
 - **A track to take home.** The GPS supplies position, altitude and UTC time for GPX recording on the microSD card.
 - **One button.** A short press changes the backlight; a four-second hold while stopped finishes the current ride and starts a fresh one.
+- **Battery level.** The top left shows a five-bar icon and a percentage, read from the LiPo through a divider on the button pin. Readings run high while charging.
 - **Phone downloads.** Connect to `OBJECT-001` through the [ride-transfer page](https://object.nav-tech.workers.dev), confirm on the device within 10 seconds, and download a GPX file, including a snapshot of the current track.
 - **Trip recovery.** Saved counters are restored after a restart when a valid checkpoint is available.
 
@@ -25,18 +26,31 @@ The trip starts with the first wheel pulse. GPS recording begins when the firmwa
 ## Reading the screen
 
 <p align="center">
-  <img src="docs/screens/anatomy.png" width="302" alt="The ride screen with five numbered regions: GPS status, speed, gauge, ride stats and footer">
+  <img src="docs/screens/anatomy.png" width="302" alt="The ride screen with five numbered regions: status bar, speed, gauge, ride stats and footer">
 </p>
 
 The portrait layout keeps current speed largest, with supporting information underneath:
 
-1. **GPS status:** satellite count, or “Searching” until there is a fix.
+1. **Status bar:** battery level on the left; satellite count, or “Searching” until there is a fix, on the right.
 2. **Dot-matrix speed:** km/h or mph (from `units`). The line above it shows the unit and **Avg**; it also carries prompts such as “Hold for new ride” and “Press to allow”.
 3. **24-dot gauge:** normally speed, at 2 km/h per dot, so it is full from about 47 km/h. It also shows hold-to-save, phone-confirm and download progress.
 4. **Ride stats:** Distance, Time, Moving and Max (distance/speed units follow `units`). Distance switches to one decimal from 100.
 5. **Footer:** altitude (m or ft, `--` without a fix) and a status such as `Recording`, `Phone` or `No card`.
 
 **Time** is elapsed time since the trip began, including stops while powered on. Time spent powered off is not added after recovery. **Moving** is estimated from wheel pulses using `stopped_ms` (default three seconds); **Avg** divides wheel distance by that estimated moving time.
+
+### Battery
+
+The top left shows a five-bar battery icon and the charge as a percentage. The percentage is interpolated from the LiPo voltage using this table:
+
+| Voltage | 4.20 V | 4.00 V | 3.85 V | 3.75 V | 3.65 V | 3.50 V | 3.30 V |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Percent | 100 | 80 | 60 | 40 | 20 | 5 | 0 |
+
+- The reading is smoothed, so it changes slowly.
+- The battery is only measured while the button is released, so the value holds still while you press the button.
+- Nothing shows until the first reading, about 50 ms after boot.
+- While charging, the reading runs high.
 
 ### GPS status
 
@@ -163,7 +177,9 @@ GPX exports contain coordinates, timestamps and altitude when available - to mak
 | microSD card                            | Store GPS tracks and trip checkpoints                                    |
 | Reed switch and wheel magnet            | One pulse per wheel revolution                                           |
 | HGLRC M100 Pro GPS                      | Position, altitude and UTC time                                          |
-| Momentary pushbutton                    | Backlight control and new-ride action                                    |
+| Momentary pushbutton                    | Backlight control and new-ride action; shares D4 with battery sense      |
+| 2 × 100 kΩ resistors                    | Battery divider into D4 (pin sees Vbat/2)                                |
+| 100 nF capacitor                        | Holds the battery-sense voltage steady for the ADC                       |
 | Adafruit bq25185 charger, **PID 6091**  | Battery charging and power-path management                               |
 | 2000 mAh, single-cell LiPo              | Portable power                                                           |
 | Schottky diode                          | Prevents XIAO USB power feeding back into the charger LOAD rail          |
@@ -189,10 +205,13 @@ Module-level assembly schematic showing the external connections.
 | Charger **LOAD+ / VSYS**             | Display **VCC**                                         |
 | Charger **LOAD+ / VSYS**             | GPS **5V** input                                        |
 | Charger **LOAD− / GND**              | XIAO, display, GPS, reed switch and button grounds      |
+| Charger **BATT+** (LiPo positive)    | 100 kΩ to XIAO **D4** (battery sense)                   |
+
+The battery divider draws about 20 µA (Vbat / 200 kΩ) all the time, including while the device is off.
 
 The battery connects to the external charger; the XIAO's battery pads are unused. Charge through the **bq25185 USB-C port**. The XIAO's USB-C port is used for programming and serial diagnostics; it does not charge the external battery through this isolated LOAD connection.
 
-The charger defaults to **1 A charging**. Check the particular battery's permitted charging current and polarity before connecting it. The XIAO's low-battery behavior also needs testing with the fitted diode's voltage drop.
+The charger defaults to **1 A charging**. Check the particular battery's permitted charging current and polarity before connecting it. The XIAO's low-battery behavior also needs testing with the fitted diode's voltage drop; the on-screen battery percentage helps with that.
 
 References: [Adafruit #6091](https://www.adafruit.com/product/6091), [HGLRC M100 Pro](https://www.hglrc.com/products/hglrc-m100-pro-gps), [LCDWiki display documentation](https://www.lcdwiki.com/3.2inch_IPS_SPI_Module_ILI9341).
 
@@ -226,12 +245,13 @@ The display and microSD share the SPI bus, with separate chip-select pins. D3 co
 
 GPS compass pins are unused.
 
-### Wheel sensor and button
+### Wheel sensor, button and battery sense
 
-- **Reed switch:** between **D0** and **GND**. One falling edge counts one wheel revolution.
-- **Button:** normally open, between **D4** and **GND**.
+- **Reed switch:** between **D0** and **GND**. One falling edge counts one wheel revolution. Uses the XIAO's internal pull-up.
+- **Button:** normally open, between **D4** and **GND**. D4 has no pull-up; the firmware reads it only with the ADC, and below about 0.35 V counts as pressed.
+- **Battery sense (same pin):** LiPo **BATT+** → 100 kΩ → **D4** → 100 kΩ → **GND**, plus 100 nF from **D4** to **GND**.
 
-Both inputs use the XIAO's internal pull-ups. No external pull-up resistors are required by this wiring.
+With the button released, the divider holds D4 at Vbat/2 (about 1.5–2.1 V). That is not a valid digital level, which is why D4 is read as analog only. Pressing the button pulls D4 to 0 V.
 
 ## Set it up for your bike
 

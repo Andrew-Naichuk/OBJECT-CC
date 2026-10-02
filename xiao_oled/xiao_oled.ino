@@ -28,9 +28,10 @@
  * microSD slot on the display module (SPI shared with the TFT):
  *   CLK/MOSI/MISO are the LCD bus above, CS = SD_CS = D5.
  *
- * Tact button:
- *   One side -> D4, other side -> GND
- *   INPUT_PULLUP; pressed = LOW.
+ * Tact button + battery sense (shared D4 / A4):
+ *   Button D4 -> GND. LiPo BAT+ -> 100k -> D4 -> 100k -> GND, 100 nF D4 -> GND.
+ *   Released D4 = Vbat/2, which is not a valid digital level, so D4 is only
+ *   read with analogRead: raw < 400 (12-bit) = pressed.
  *   Short press (release before 2 s): backlight bright -> dim -> off
  *   (or confirm a pending phone connection).
  *   Hold 4 s while stopped: save the ride and start a new one.
@@ -82,7 +83,7 @@ static const int PIN_LCD_CS = D1;
 static const int PIN_LCD_DC = D2;
 static const int PIN_LCD_BL = D3;
 static const int PIN_REED   = D0;
-static const int PIN_BTN    = D4;
+static const int PIN_BTN    = A4;
 static const int PIN_SD_CS  = D5;
 
 static const int SCREEN_W = 240;
@@ -97,7 +98,8 @@ static const uint16_t COL_RULE = 0x2124;  // #242424 hairlines
 static const uint16_t COL_OFF  = 0x18E3;  // #1c1c1c unlit matrix dots
 
 // Portrait stack, top to bottom.
-static const int STATUS_BASE = 19;   // wordmark baseline
+static const int STATUS_BASE = 19;   // status-bar text baseline
+static const int BATT_ICON_Y = 8;
 static const int CAPTION_Y   = 34;
 static const int CAPTION_H   = 20;
 static const int HERO_Y      = 60;   // speed matrix top
@@ -123,7 +125,11 @@ static const unsigned long DEBOUNCE_MS = 15;
 // ratio (min/max). Stops a single pothole / wobble / wire glitch locking Max.
 static const float MAX_CONFIRM_RATIO = 0.85f;
 
-static const unsigned long BTN_DEBOUNCE_MS = 30;
+static const int BTN_ADC_PRESSED = 400;   // 12-bit raw, ~0.35 V
+static const unsigned long BTN_SAMPLE_MS = 10;
+static const uint8_t BTN_STABLE_SAMPLES = 3;
+static const unsigned long BATT_SETTLE_MS = 50;  // 100 nF recharge after release
+static const float BATT_EMA_ALPHA = 0.02f;
 static const unsigned long BTN_ARM_MS = 2000;
 static const unsigned long BTN_EXEC_MS = 4000;
 static const unsigned long BTN_FLASH_MS = 1500;
@@ -244,13 +250,16 @@ static bool lastGpxPosValid = false;
 static uint32_t lastGpxStamp = 0;
 static bool lastGpxStampValid = false;
 
-static bool btnSample = false;
+static bool btnStable = false;
+static uint8_t btnAdcCount = 0;
+static unsigned long btnAdcLastMs = 0;
+static unsigned long btnReleaseMs = 0;
+static float battVolts = -1.0f;
 static bool btnHeld = false;
 static bool btnArmed = false;
 static bool btnDidExec = false;
 static bool btnReleased = false;
 static bool btnReleaseDidExec = false;
-static unsigned long btnDebounceMs = 0;
 static unsigned long btnHoldStartMs = 0;
 static unsigned long btnReleasedHeldMs = 0;
 static uint8_t blMode = BL_BRIGHT;
@@ -279,6 +288,8 @@ struct DotGlyph {
 };
 
 static TextCache txtStatus;
+static TextCache txtBatt;
+static int battBarsShown = -1;
 static TextCache txtCaption;
 static TextCache txtRow[ROW_COUNT];
 static TextCache txtFootL;
@@ -896,10 +907,43 @@ static void gpsDrain() {
   }
 }
 
+// D4 is button and battery divider at once. Pressed pulls it to ~0 V; the
+// released level is only a valid battery sample once the 100 nF has settled.
+static void btnAdcSample(unsigned long now) {
+  if ((now - btnAdcLastMs) < BTN_SAMPLE_MS) {
+    return;
+  }
+  btnAdcLastMs = now;
+
+  int raw = analogRead(PIN_BTN);
+  bool pressed = raw < BTN_ADC_PRESSED;
+  if (pressed != btnStable) {
+    if (++btnAdcCount >= BTN_STABLE_SAMPLES) {
+      btnStable = pressed;
+      btnAdcCount = 0;
+      if (!pressed) {
+        btnReleaseMs = now;
+      }
+    }
+  } else {
+    btnAdcCount = 0;
+  }
+
+  if (!btnStable && !pressed && (now - btnReleaseMs) >= BATT_SETTLE_MS) {
+    float v = raw * 3.6f / 4096.0f * 2.0f;
+    if (battVolts < 0.0f) {
+      battVolts = v;
+    } else {
+      battVolts += BATT_EMA_ALPHA * (v - battVolts);
+    }
+  }
+}
+
 static void gpsWait(unsigned long ms) {
   unsigned long start = millis();
   do {
     gpsDrain();
+    btnAdcSample(millis());
     yield();
   } while (millis() - start < ms);
 }
@@ -1514,14 +1558,8 @@ static void backlightNext() {
 }
 
 static void btnPoll(unsigned long now) {
-  bool raw = digitalRead(PIN_BTN) == LOW;
-  if (raw != btnSample) {
-    btnSample = raw;
-    btnDebounceMs = now;
-  }
-  if ((now - btnDebounceMs) < BTN_DEBOUNCE_MS) {
-    return;
-  }
+  btnAdcSample(now);
+  bool raw = btnStable;
 
   if (raw && !btnHeld) {
     btnHeld = true;
@@ -1989,6 +2027,7 @@ enum {
 };
 
 static const Slot SLOT_STATUS  = {108, 4, SCREEN_W - PAD - 108, 22, 15};
+static const Slot SLOT_BATT    = {PAD + 30, 4, 108 - PAD - 30 - 4, 22, 15};
 static const Slot SLOT_CAPTION = {PAD, CAPTION_Y, SCREEN_W - 2 * PAD, CAPTION_H, 15};
 static const Slot SLOT_FOOT_L  = {PAD, FOOTER_Y, 122, FOOTER_H, 15};
 static const Slot SLOT_FOOT_R  = {PAD + 122, FOOTER_Y, SCREEN_W - 2 * PAD - 122, FOOTER_H, 15};
@@ -2340,8 +2379,6 @@ static Slot rowSlot(int i) {
 }
 
 static void drawStaticChrome() {
-  drawTracked(&FreeSansBold9pt7b, PAD, STATUS_BASE, 3, "OBJECT", COL_FG);
-
   for (int i = 0; i <= ROW_COUNT; i++) {
     display.drawFastHLine(PAD, rowTop(i), SCREEN_W - 2 * PAD, COL_RULE);
   }
@@ -2358,6 +2395,8 @@ static void drawStaticChrome() {
 }
 
 static void invalidateAllFields() {
+  invalidateText(&txtBatt);
+  battBarsShown = -1;
   invalidateText(&txtStatus);
   invalidateText(&txtCaption);
   for (int i = 0; i < ROW_COUNT; i++) {
@@ -2433,6 +2472,53 @@ static void paintStatus(unsigned long now) {
   } else {
     drawSlot(SLOT_STATUS, &txtStatus, &FreeSans9pt7b, "", "Searching", MARK_RING, COL_DIM);
   }
+}
+
+static int battPercent(float v) {
+  static const float V[] = {4.20f, 4.00f, 3.85f, 3.75f, 3.65f, 3.50f, 3.30f};
+  static const float P[] = {100.0f, 80.0f, 60.0f, 40.0f, 20.0f, 5.0f, 0.0f};
+  const int n = sizeof(V) / sizeof(V[0]);
+  if (v >= V[0]) {
+    return 100;
+  }
+  if (v <= V[n - 1]) {
+    return 0;
+  }
+  for (int i = 1; i < n; i++) {
+    if (v >= V[i]) {
+      float p = P[i] + (v - V[i]) * (P[i - 1] - P[i]) / (V[i - 1] - V[i]);
+      return (int)(p + 0.5f);
+    }
+  }
+  return 0;
+}
+
+static void paintBatteryIcon(int bars) {
+  const int x = PAD;
+  const int y = BATT_ICON_Y;
+  display.drawRect(x, y, 22, 12, COL_FG);
+  display.fillRect(x + 22, y + 3, 2, 6, COL_FG);
+  for (int i = 0; i < 5; i++) {
+    display.fillRect(x + 2 + i * 4, y + 2, 3, 8, i < bars ? COL_FG : COL_OFF);
+  }
+}
+
+static void paintBattery() {
+  if (battVolts < 0.0f) {
+    return;
+  }
+  int pct = battPercent(battVolts);
+  int bars = (pct + 10) / 20;
+  if (bars > 5) {
+    bars = 5;
+  }
+  if (bars != battBarsShown) {
+    paintBatteryIcon(bars);
+    battBarsShown = bars;
+  }
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%d%%", pct);
+  drawSlot(SLOT_BATT, &txtBatt, &FreeSans9pt7b, buf, "", MARK_NONE, COL_FG);
 }
 
 static void paintFooter(unsigned long now) {
@@ -2524,6 +2610,7 @@ static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
   snprintf(buf, sizeof(buf), "%.1f", (double)cfgSpeedShown(maxKmh));
   drawSlot(rowSlot(3), &txtRow[3], &FreeSansBold12pt7b, "", buf, MARK_NONE, COL_FG);
 
+  paintBattery();
   paintStatus(now);
   paintFooter(now);
 }
@@ -3279,7 +3366,7 @@ static void bleStart() {
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(PIN_REED, INPUT_PULLUP);
-  pinMode(PIN_BTN, INPUT_PULLUP);
+  analogReadResolution(12);
   pinMode(PIN_LCD_BL, OUTPUT);
   backlightApply();
   pinMode(PIN_LCD_CS, OUTPUT);
@@ -3296,7 +3383,7 @@ void setup() {
   Serial.begin(115200);
   delay(1500);
   Serial.println();
-  Serial.println("XIAO cycling computer — ILI9341 + reed D0 + btn D4 + GPS Serial1 + SD D5");
+  Serial.println("XIAO cycling computer — ILI9341 + reed D0 + btn/batt A4 + GPS Serial1 + SD D5");
 
   // Hardware SPI: SCK=D8, MOSI=D10, MISO=D9. LCD CS=D1, SD CS=D5.
   // RST is tied to 3.3V; begin() sends a software reset. Backlight is D3.
