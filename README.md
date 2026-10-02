@@ -312,6 +312,7 @@ Replace `<PORT>` with your board's port and upload only after compilation succee
 ```text
 xiao_oled/     Cycling computer firmware
 docs/          Ride-transfer page, assembly schematic, CONFIG.TXT.example, README screens
+tools/screens/ Emulator that regenerates the README screens from the firmware
 AGENTS.md      Notes for automated agents
 ```
 
