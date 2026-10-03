@@ -31,11 +31,11 @@ The trip starts with the first wheel pulse. GPS recording begins when the firmwa
 
 The portrait layout keeps current speed largest, with supporting information underneath:
 
-1. **Status bar:** battery level on the left; satellite count, or “Searching” until there is a fix, on the right.
+1. **Status bar:** battery level on the left; a satellite icon with the satellite count, or “Searching” until there is a fix, on the right.
 2. **Dot-matrix speed:** km/h or mph (from `units`). The line above it shows the unit and **Avg**; it also carries prompts such as “Hold for new ride” and “Press to allow”.
 3. **24-dot gauge:** normally speed, at 2 km/h per dot, so it is full from about 47 km/h. It also shows hold-to-save, phone-confirm and download progress.
-4. **Ride stats:** Distance, Time, Moving and Max (distance/speed units follow `units`). Distance switches to one decimal from 100.
-5. **Footer:** altitude (m or ft, `--` without a fix) and a status such as `Recording`, `Phone` or `No card`.
+4. **Ride stats:** Distance, Time, Moving and Max. The distance and speed units sit in the labels and follow `units`. Distance switches to one decimal from 100.
+5. **Footer:** altitude as **Alt** (m or ft, `--` without a fix) and a status such as `Recording`, `Phone` or `No card`.
 
 **Time** is elapsed time since the trip began, including stops while powered on. Time spent powered off is not added after recovery. **Moving** is estimated from wheel pulses using `stopped_ms` (default three seconds); **Avg** divides wheel distance by that estimated moving time.
 
@@ -57,7 +57,7 @@ The top left shows a five-bar battery icon and the charge as a percentage. The p
 | Top right | Meaning |
 | --- | --- |
 | <img src="docs/screens/status-searching.png" width="250" alt="Status bar reading Searching with a hollow ring"> | No usable fix yet, or the GPS has gone quiet for 2 seconds. Wheel stats keep working; nothing is recorded. |
-| <img src="docs/screens/status-satellites.png" width="250" alt="Status bar reading 11 satellites with a filled dot"> | Live fix, with the number of satellites in use. |
+| <img src="docs/screens/status-satellites.png" width="250" alt="Status bar showing a satellite icon and 11"> | Live fix, with the number of satellites in use. |
 | <img src="docs/screens/status-gps.png" width="250" alt="Status bar reading GPS with a filled dot"> | Live fix from a receiver that does not report a satellite count. |
 
 ### Footer status

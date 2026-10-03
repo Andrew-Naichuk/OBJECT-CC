@@ -59,7 +59,7 @@
  *
  * TFT layout (portrait 240x320), monochrome to match the OBJECT ride page:
  *   OBJECT | GPS state, km/h or mph | Avg, dot-matrix speed, 24-dot gauge,
- *   Distance / Time / Moving / Max rows, Altitude | card, phone, recording.
+ *   Distance / Time / Moving / Max rows, Alt | card, phone, recording.
  * The gauge shows speed (2 km/h a dot), the new-ride hold, phone-connect
  * confirm countdown, or a phone download in progress.
  * Rotation 0. If the image is upside down relative to the pin header, use 2.
@@ -2147,7 +2147,22 @@ enum {
   MARK_RING,
   MARK_DOT,
   MARK_ALERT,
-  MARK_PILL
+  MARK_PILL,
+  MARK_SAT
+};
+
+static const int SAT_ICON_W = 17;
+static const int SAT_ICON_H = 9;
+static const uint8_t SAT_ICON[] = {
+  0x00, 0x80, 0x00,
+  0x00, 0x80, 0x00,
+  0xF8, 0x8F, 0x80,
+  0xA9, 0xCA, 0x80,
+  0xA9, 0xCA, 0x80,
+  0xFF, 0xFF, 0x80,
+  0xA9, 0xCA, 0x80,
+  0xA9, 0xCA, 0x80,
+  0xF8, 0x0F, 0x80,
 };
 
 static const Slot SLOT_STATUS  = {108, 4, SCREEN_W - PAD - 108, 22, 15};
@@ -2376,6 +2391,9 @@ static void drawSlot(const Slot &s, TextCache *cache, const GFXfont *font,
       textCanvas.setCursor(cx - 2, cy - 3);
       textCanvas.print('!');
       textCanvas.setFont(font);
+    } else if (mark == MARK_SAT) {
+      textCanvas.drawBitmap(inkLeft - 6 - SAT_ICON_W, cy - SAT_ICON_H / 2,
+                            SAT_ICON, SAT_ICON_W, SAT_ICON_H, 1);
     } else if (mark == MARK_DOT || mark == MARK_RING) {
       int cx = inkLeft - 8 - 4;
       if (mark == MARK_DOT) {
@@ -2482,21 +2500,27 @@ static void paintGauge(int lit) {
   gaugeLit = lit;
 }
 
-// Units sit in one column flush with the right margin; values end before it.
-static int unitX() {
-  return SCREEN_W - PAD - trackedWidth(&FreeSans9pt7b, 0, cfgSpeedUnit());
+static void rowLabel(int i, char *buf, size_t buflen) {
+  const char *u = rowUnit(i);
+  snprintf(buf, buflen, u[0] ? "%s %s" : "%s", ROW_LABELS[i], u);
 }
 
 static int rowTop(int i) {
   return ROWS_Y + i * ROW_H;
 }
 
+// Values end at the right margin; the slot starts clear of the label.
 static Slot rowSlot(int i) {
+  char label[24];
+  rowLabel(i, label, sizeof(label));
+  int x = PAD + trackedWidth(&FreeSans9pt7b, 0, label) + 8;
+  if (x < VALUE_X) {
+    x = VALUE_X;
+  }
   Slot s;
-  s.x = VALUE_X;
+  s.x = x;
   s.y = rowTop(i) + 4;
-  int right = rowUnit(i)[0] ? unitX() - 6 : SCREEN_W - PAD;
-  s.w = right - VALUE_X;
+  s.w = SCREEN_W - PAD - x;
   s.h = 28;
   s.base = 21;
   return s;
@@ -2510,11 +2534,9 @@ static void drawStaticChrome() {
 
   for (int i = 0; i < ROW_COUNT; i++) {
     const int base = rowTop(i) + 4 + 21;
-    drawLabel(&FreeSans9pt7b, PAD, base, COL_DIM, ROW_LABELS[i]);
-    const char *u = rowUnit(i);
-    if (u[0]) {
-      drawLabel(&FreeSans9pt7b, unitX(), base, COL_DIM, u);
-    }
+    char label[24];
+    rowLabel(i, label, sizeof(label));
+    drawLabel(&FreeSans9pt7b, PAD, base, COL_DIM, label);
   }
 }
 
@@ -2588,11 +2610,11 @@ static void paintStatus(unsigned long now) {
   char buf[20];
   if (gpsIsLive(now)) {
     if (gps.satsKnown) {
-      snprintf(buf, sizeof(buf), "%u satellites", (unsigned)gps.sats);
+      snprintf(buf, sizeof(buf), "%u", (unsigned)gps.sats);
+      drawSlot(SLOT_STATUS, &txtStatus, &FreeSans9pt7b, "", buf, MARK_SAT, COL_FG);
     } else {
-      strcpy(buf, "GPS");
+      drawSlot(SLOT_STATUS, &txtStatus, &FreeSans9pt7b, "", "GPS", MARK_DOT, COL_FG);
     }
-    drawSlot(SLOT_STATUS, &txtStatus, &FreeSans9pt7b, "", buf, MARK_DOT, COL_FG);
   } else {
     drawSlot(SLOT_STATUS, &txtStatus, &FreeSans9pt7b, "", "Searching", MARK_RING, COL_DIM);
   }
@@ -2649,10 +2671,10 @@ static void paintFooter(unsigned long now) {
   char buf[24];
   const bool live = gpsIsLive(now);
   if (live && gps.altKnown) {
-    snprintf(buf, sizeof(buf), "Altitude %.0f %s",
+    snprintf(buf, sizeof(buf), "Alt %.0f %s",
              (double)cfgAltShown(gps.altM), cfgAltUnit());
   } else {
-    strcpy(buf, "Altitude --");
+    strcpy(buf, "Alt --");
   }
   drawSlot(SLOT_FOOT_L, &txtFootL, &FreeSans9pt7b, buf, "", MARK_NONE, COL_DIM);
 
