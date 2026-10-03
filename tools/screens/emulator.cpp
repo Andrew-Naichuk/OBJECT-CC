@@ -194,9 +194,7 @@ void emuOnSdBegin() {
 // ---------------------------------------------------------------- harness
 static std::string g_outDir = ".";
 
-// Dump the panel as a binary PPM plus one line of metadata.
-static void shot(const char *name, const char *caption) {
-  std::string path = g_outDir + "/" + name + ".ppm";
+static void writePpm(const std::string &path) {
   FILE *f = fopen(path.c_str(), "wb");
   if (!f) {
     fprintf(stderr, "cannot write %s\n", path.c_str());
@@ -211,6 +209,13 @@ static void shot(const char *name, const char *caption) {
     fwrite(px, 1, 3, f);
   }
   fclose(f);
+}
+
+static void runFor(unsigned long ms);
+
+// Dump the panel as a binary PPM plus one line of metadata.
+static void shot(const char *name, const char *caption) {
+  writePpm(g_outDir + "/" + name + ".ppm");
   std::string meta = g_outDir + "/shots.tsv";
   FILE *m = fopen(meta.c_str(), "ab");
   fprintf(m, "%s\t%d\t%lu\t%s\n", name, g_blDuty, g_now, caption);
@@ -218,9 +223,48 @@ static void shot(const char *name, const char *caption) {
   fprintf(stderr, "  %-28s t=%7lu ms  backlight=%3d  %s\n", name, g_now, g_blDuty, caption);
 }
 
+// A frame of a sequence that is also kept as an ordinary shot.
+struct KeyFrame {
+  int at;
+  const char *shot;
+  const char *caption;
+};
+
+// Capture `count` frames `stepMs` apart as NAME~NN.ppm, for an animated strip.
+static void frames(const char *name, int count, unsigned long stepMs, const char *caption,
+                   std::initializer_list<KeyFrame> keys = {}) {
+  unsigned long t0 = g_now;
+  for (int i = 0; i < count; i++) {
+    char suffix[8];
+    snprintf(suffix, sizeof suffix, "~%02d", i);
+    writePpm(g_outDir + "/" + name + suffix + ".ppm");
+    for (const KeyFrame &k : keys) {
+      if (k.at == i) shot(k.shot, k.caption);
+    }
+    if (i + 1 < count) runFor(stepMs);
+  }
+  std::string meta = g_outDir + "/frames.tsv";
+  FILE *m = fopen(meta.c_str(), "ab");
+  fprintf(m, "%s\t%d\t%lu\t%lu\t%s\n", name, count, stepMs, t0, caption);
+  fclose(m);
+  fprintf(stderr, "  %-28s t=%7lu ms  %d frames x %lu ms  %s\n", name, t0, count, stepMs, caption);
+}
+
 static void runFor(unsigned long ms) {
   unsigned long end = g_now + ms;
   while (g_now < end) loop();
+}
+
+// Run the firmware until `cond` holds after a loop() pass; a scenario that
+// never gets there is a bug, so stop rather than capture the wrong screen.
+static void runUntil(const std::function<bool()> &cond, unsigned long maxMs, const char *what) {
+  unsigned long end = g_now + maxMs;
+  while (g_now < end) {
+    loop();
+    if (cond()) return;
+  }
+  fprintf(stderr, "timed out waiting for %s\n", what);
+  exit(3);
 }
 
 static void setWheel(double kmh) {
@@ -328,7 +372,7 @@ static void scNoCard() {
   btn(true);
   runFor(2400);
   shot("25_hold_no_card", "Holding for a new ride with no card");
-  runFor(1900);
+  runFor(2100);
   shot("26_flash_stats_reset", "Hold completed without a card: counters cleared in RAM");
   btn(false);
   runFor(3000);
@@ -424,8 +468,9 @@ static void scRecording() {
   runFor(5800);
   shot("29_phone_allow_4s", "Confirm window draining, the gauge counts down");
   tap();
-  runFor(1000);
-  shot("30_phone_connected", "Link allowed: footer shows Phone instead of Recording");
+  runFor(500);
+  shot("30_phone_connected", "Link allowed: Bluetooth mark on the matrix, footer shows Phone");
+  runFor(500);
   phoneWrite(BLE_OP_LIST, nullptr);
   runFor(1500);
   phoneWrite(BLE_OP_GET, "CURRENT.GPX");
@@ -433,8 +478,7 @@ static void scRecording() {
   while (!(bleSendProgress(&pct) && pct >= 42)) loop();
   g_ble.stall = true;  // hold the transfer still for the picture
   runFor(400);
-  shot("31_phone_sending", "Downloading CURRENT.GPX: caption and gauge show progress");
-  g_ble.stall = false;
+  shot("31_phone_sending", "Downloading CURRENT.GPX: caption and gauge show progress");  g_ble.stall = false;
   while (bleSendProgress(&pct)) loop();
   runFor(1500);
   phoneDisconnect();
@@ -446,7 +490,7 @@ static void scRecording() {
   shot("20_hold_2s", "Holding while stopped: the countdown appears after 2 s");
   runFor(1100);
   shot("21_hold_1s", "Countdown at 1 s, gauge almost full");
-  runFor(1100);
+  runFor(1300);
   shot("22_flash_ride_saved", "Hold reached 4 s: track archived, counters reset");
   btn(false);
   runFor(3000);
@@ -518,6 +562,106 @@ static void scSettings() {
   runFor(1000);
 }
 
+static unsigned long stillMs() { return g_now - g_lastPulseMs; }
+
+// The face reads straight from the panel cells: left eye starts at column 6.
+static bool faceLookingLeft() {
+  return matShown[0][7] == LV_FG && matShown[3][7] == LV_FG && matShown[4][7] == LV_FG &&
+         matShown[3][8] == LV_OFF;
+}
+static bool faceShut() {
+  return matShown[3][6] == LV_FG && matShown[3][8] == LV_FG && matShown[2][6] == LV_OFF &&
+         matShown[4][6] == LV_OFF;
+}
+
+// Every matrix animation in one ride, as key shots plus frame sequences for
+// the animated strips in the README.
+static void scAnimations() {
+  setup();
+  gpsOn(GPS_UBX, 3000, 12);
+  runFor(1);  // the first ride-screen frame starts the self-test
+  frames("anim_boot", 16, 50, "Boot self-test",
+         {{7, "33_anim_boot", "Boot self-test: a diagonal band lights every cell and gauge dot"}});
+  runFor(6000);
+
+  rampTo(24, 8000);
+  rideProfile(25, 1, 130000);
+  runUntil([] { return matShown[0][12] == LV_LO; }, 2000, "heartbeat");
+  shot("34_anim_heartbeat", "Wheel heartbeat: the cells above the decimal point glow on each turn");
+  frames("anim_heartbeat", 14, 50, "Wheel heartbeat");
+
+  setWheel(33);
+  runUntil([] { return clipNewMax.on; }, 20000, "new max");
+  frames("anim_new_max", 14, 50, "New max",
+         {{4, "35_anim_new_max", "New max after two minutes moving: a comet runs the gauge"}});
+  rideProfile(31, 1, 6000);
+
+  // Jump to just short of 10 km so the milestone comes up without a long ride.
+  noInterrupts();
+  g_revCount = (unsigned long)(9950000.0 / cfg.wheelCircMm);
+  interrupts();
+  runUntil([] { return clipMsLive.on; }, 30000, "10 km milestone");
+  frames("anim_milestone_live", 15, 50, "10 km milestone while riding",
+         {{5, "36_anim_milestone_live", "Passing 10 km: the gauge fills and a dim wash follows"}});
+  rideProfile(30, 1, 4000);
+
+  rampTo(0, 5000);
+  runUntil([] { return clipMsStop.on; }, 20000, "milestone at the stop");
+  frames("anim_milestone", 58, 50, "10 km milestone at the next stop",
+         {{18, "37_anim_milestone_stop", "At the next stop the milestone pops up between sparkles"}});
+
+  runUntil([] { return stillMs() >= FACE_AFTER_MS; }, 20000, "face");
+  frames("anim_face_wake", 20, 50, "Face appears",
+         {{19, "38_face_awake", "Stopped 8 s mid-ride: the 0.0 becomes a face"}});
+  runUntil(faceLookingLeft, 60000, "face looking left");
+  shot("39_face_look_left", "The face looks around every few seconds");
+  runUntil(faceShut, 60000, "face blink");
+  shot("40_face_blink", "and blinks");
+  frames("anim_face", 100, 50, "Face looking around and blinking");
+
+  runUntil([] { return stillMs() >= FACE_SLEEPY_MS + 1000; }, 120000, "sleepy face");
+  shot("41_face_sleepy", "Stopped for 2 min: heavy eyelids");
+  runUntil([] { return stillMs() >= FACE_SLEEPY_MS + FACE_ASLEEP_MS + 1400; }, 60000, "asleep");
+  shot("42_face_asleep", "Asleep: a z drifts up and the gauge breathes");
+  frames("anim_face_sleep", 40, 100, "Face asleep");
+
+  rampTo(15, 3000);
+  rampTo(0, 3000);
+  runFor(4000);
+  btn(true);
+  runFor(2000);
+  frames("anim_drain", 40, 50, "Hold for a new ride: the digits drain");
+  runUntil([] { return clipFirework.on; }, 1000, "ride saved");
+  frames("anim_firework", 30, 50, "Ride saved",
+         {{8, "43_anim_firework", "Ride saved: a firework bursts from the centre"},
+          {21, "44_anim_drop_in", "then the new 0.0 drops in"}});
+  btn(false);
+  runFor(3000);
+
+  phoneConnect();
+  runFor(100);
+  frames("anim_press", 8, 45, "Press to allow");
+  btn(true);
+  runFor(200);
+  btn(false);
+  runUntil([] { return clipRune.on; }, 500, "phone allowed");
+  frames("anim_rune", 28, 50, "Phone allowed",
+         {{16, "45_anim_rune", "Phone allowed: the Bluetooth mark draws itself, then fades"}});
+  runFor(1000);
+  phoneDisconnect();
+  runFor(1000);
+}
+
+static void scAnimationsOff() {
+  writeConfig("wheel_circ_mm=2155\nanimations=off\n");
+  setup();
+  rampTo(20, 5000);
+  rideProfile(21, 1, 30000);
+  rampTo(0, 4000);
+  runFor(15000);
+  shot("46_animations_off", "animations=off: stopped 15 s, plain digits and no effects");
+}
+
 struct Scenario {
   const char *name;
   void (*fn)();
@@ -526,6 +670,7 @@ static const Scenario SCENARIOS[] = {
     {"boot_new", scBootNew},   {"no_card", scNoCard},     {"resume", scResume},
     {"recording", scRecording}, {"no_gps", scNoGps},       {"nmea_only", scNmeaOnly},
     {"imperial", scImperial},  {"save_failed", scSaveFailed}, {"settings", scSettings},
+    {"animations", scAnimations}, {"animations_off", scAnimationsOff},
 };
 
 int main(int argc, char **argv) {

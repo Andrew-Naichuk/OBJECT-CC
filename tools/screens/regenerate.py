@@ -14,6 +14,7 @@ clang++) and the Adafruit GFX library (the copy Arduino installed, or it is
 cloned automatically).  See tools/screens/README.md.
 """
 import argparse
+import io
 import os
 import re
 import shutil
@@ -76,6 +77,25 @@ BANDS = {  # horizontal strip of a screen: (shot, top row, bottom row)
     "footer-no-card": ("09_idle_no_card", 292, 320),
     "footer-idle": ("07_idle_gps_fix", 292, 320),
 }
+
+# Animated strips of the speed matrix and gauge: (frame sequence, top row,
+# bottom row).  Sequences come from frames(...) calls in emulator.cpp.
+MATRIX_ROWS = (54, 150)
+ANIMS = {
+    "anim-boot": ("anim_boot", *MATRIX_ROWS),
+    "anim-heartbeat": ("anim_heartbeat", *MATRIX_ROWS),
+    "anim-new-max": ("anim_new_max", *MATRIX_ROWS),
+    "anim-milestone-live": ("anim_milestone_live", *MATRIX_ROWS),
+    "anim-milestone": ("anim_milestone", *MATRIX_ROWS),
+    "anim-face-wake": ("anim_face_wake", *MATRIX_ROWS),
+    "anim-face": ("anim_face", *MATRIX_ROWS),
+    "anim-face-sleep": ("anim_face_sleep", *MATRIX_ROWS),
+    "anim-drain": ("anim_drain", *MATRIX_ROWS),
+    "anim-firework": ("anim_firework", *MATRIX_ROWS),
+    "anim-press": ("anim_press", *MATRIX_ROWS),
+    "anim-rune": ("anim_rune", *MATRIX_ROWS),
+}
+ANIM_HOLD_MS = 700  # the last frame lingers before the strip loops
 
 HERO = ["10_ride_recording", "20_hold_2s", "31_phone_sending"]
 
@@ -197,12 +217,31 @@ def run_scenarios(exe, only):
         Image.open(ppm).save(RAW / f"{name}.png")
         ppm.unlink()
         shots[name] = {"duty": int(duty), "ms": int(ms), "caption": caption}
+
+    seqs = {}
+    meta = RAW / "frames.tsv"
+    for line in (meta.read_text().splitlines() if meta.is_file() else []):
+        name, count, step, ms, caption = line.split("\t", 4)
+        folder = RAW / "frames" / name
+        folder.mkdir(parents=True, exist_ok=True)
+        for i in range(int(count)):
+            ppm = RAW / f"{name}~{i:02d}.ppm"
+            Image.open(ppm).save(folder / f"{i:02d}.png")
+            ppm.unlink()
+        seqs[name] = {"count": int(count), "step": int(step), "ms": int(ms), "caption": caption}
+
     with open(RAW / "INDEX.md", "w", encoding="utf-8") as f:
         f.write("| Shot | Backlight PWM | Shows |\n| --- | --- | --- |\n")
         for name in sorted(shots):
             s = shots[name]
             f.write(f"| ![{name}]({name}.png) `{name}` | {s['duty']} | {s['caption']} |\n")
-    return shots
+        if seqs:
+            f.write("\n| Frames | Count | Step | Shows |\n| --- | --- | --- | --- |\n")
+            for name in sorted(seqs):
+                s = seqs[name]
+                f.write(f"| ![{name}](frames/{name}/00.png) `frames/{name}/` | {s['count']} "
+                        f"| {s['step']} ms | {s['caption']} |\n")
+    return shots, seqs
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +319,52 @@ def compose(shots):
     return out
 
 
+def compose_anims(seqs):
+    """Animated GIF bytes per README name. Pillow writes the same bytes for the
+    same frames, so comparing bytes tells whether a strip changed."""
+    out = {}
+    for name, (seq, y0, y1) in ANIMS.items():
+        s = seqs.get(seq)
+        if s is None:
+            sys.exit(f"ANIMS[{name!r}] needs frame sequence {seq!r}; no scenario captured it.")
+        tiles = []
+        for i in range(s["count"]):
+            im = Image.open(RAW / "frames" / seq / f"{i:02d}.png").convert("RGB")
+            tiles.append(mat(scaled(im.crop((0, y0, 240, y1))), pad=10))
+        frames, key = exact_palette(tiles)
+        durations = [s["step"]] * (len(frames) - 1) + [max(s["step"], ANIM_HOLD_MS)]
+        buf = io.BytesIO()
+        frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:],
+                       duration=durations, loop=0, disposal=2, transparency=key,
+                       optimize=False)
+        out[name] = buf.getvalue()
+    return out
+
+
+def exact_palette(tiles):
+    """Map RGBA tiles onto one palette holding exactly their colours, with a
+    key colour for the transparent corners (the mat's alpha is 0 or 255)."""
+    key_rgb = (255, 0, 255)
+    rgb = []
+    colors = {key_rgb}
+    for t in tiles:
+        im = Image.new("RGB", t.size, key_rgb)
+        im.paste(t, mask=t.getchannel("A"))
+        found = im.getcolors(256)
+        if found is None:
+            sys.exit("An animation frame has more than 256 colours; it cannot be a GIF.")
+        colors.update(c for _, c in found)
+        rgb.append(im)
+    if len(colors) > 256:
+        sys.exit("An animated strip has more than 256 colours; it cannot be a GIF.")
+    pal = sorted(colors)
+    flat = [v for c in pal for v in c]
+    pal_im = Image.new("P", (1, 1))
+    pal_im.putpalette(flat + [0] * (768 - len(flat)))
+    none = getattr(Image, "Dither", Image).NONE
+    return [im.quantize(palette=pal_im, dither=none) for im in rgb], pal.index(key_rgb)
+
+
 def same_pixels(path, im):
     if not path.is_file():
         return False
@@ -292,7 +377,7 @@ def readme_refs():
     if not readme.is_file():
         return set()
     text = readme.read_text(encoding="utf-8")
-    return {p.split("/")[-1][:-4] for p in re.findall(r"docs/screens/[A-Za-z0-9_-]+\.png", text)}
+    return {p.split("/")[-1] for p in re.findall(r"docs/screens/[A-Za-z0-9_-]+\.(?:png|gif)", text)}
 
 
 def main():
@@ -313,34 +398,43 @@ def main():
     if version not in (GFX_TAG, "unknown"):
         log(f"  note: the committed screens were made with {GFX_TAG}; text may shift by a pixel")
     exe = build(find_cxx(args.cxx), gfx)
-    shots = run_scenarios(exe, args.scenario)
-    log(f"\n{len(shots)} native shots in {RAW.relative_to(REPO)} (see INDEX.md there)")
+    shots, seqs = run_scenarios(exe, args.scenario)
+    log(f"\n{len(shots)} native shots and {len(seqs)} frame sequences in "
+        f"{RAW.relative_to(REPO)} (see INDEX.md there)")
     if args.raw_only or args.scenario:
         return 0
 
-    images = compose(shots)
+    files = {f"{name}.png": im for name, im in compose(shots).items()}
+    files.update({f"{name}.gif": data for name, data in compose_anims(seqs).items()})
     changed, added, same = [], [], []
-    for name, im in sorted(images.items()):
-        path = DOCS / f"{name}.png"
-        if same_pixels(path, im):
+    for name, content in sorted(files.items()):
+        path = DOCS / name
+        if isinstance(content, bytes):
+            unchanged = path.is_file() and path.read_bytes() == content
+        else:
+            unchanged = same_pixels(path, content)
+        if unchanged:
             same.append(name)
             continue
         (changed if path.exists() else added).append(name)
         if not args.check:
             DOCS.mkdir(parents=True, exist_ok=True)
-            im.save(path, optimize=True)
+            if isinstance(content, bytes):
+                path.write_bytes(content)
+            else:
+                content.save(path, optimize=True)
 
     verb = "would change" if args.check else "updated"
     log(f"docs/screens: {len(same)} unchanged, {len(changed)} {verb}, {len(added)} new")
     for n in changed:
-        log(f"  {verb}: {n}.png")
+        log(f"  {verb}: {n}")
     for n in added:
-        log(f"  new: {n}.png")
+        log(f"  new: {n}")
     refs = readme_refs()
-    for n in sorted(refs - set(images)):
-        log(f"  warning: README uses docs/screens/{n}.png but nothing generates it")
-    for n in sorted(set(images) - refs):
-        log(f"  warning: {n}.png is generated but the README does not use it")
+    for n in sorted(refs - set(files)):
+        log(f"  warning: README uses docs/screens/{n} but nothing generates it")
+    for n in sorted(set(files) - refs):
+        log(f"  warning: {n} is generated but the README does not use it")
     if args.check and (changed or added):
         return 1
     return 0

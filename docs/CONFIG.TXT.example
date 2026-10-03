@@ -26,3 +26,6 @@ max_speed_kmh=100
 #
 # stopped_ms: no pulse for this long => bike stopped (moving time)
 stopped_ms=3000
+#
+# animations: on | off  (face when stopped, celebrations, transitions)
+animations=on

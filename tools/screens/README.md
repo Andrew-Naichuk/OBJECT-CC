@@ -25,8 +25,8 @@ The script:
 
 1. Finds Adafruit GFX. It uses the copy Arduino installed, or clones version 1.12.6 into `tools/screens/build/`.
 2. Compiles the emulator.
-3. Runs every scenario and writes the native shots to `tools/screens/build/raw/`, with an `INDEX.md` table describing each one.
-4. Builds the README images and writes only the ones whose pixels changed.
+3. Runs every scenario and writes the native shots to `tools/screens/build/raw/`, with an `INDEX.md` table describing each one. Frame sequences for the animations go to `build/raw/frames/<name>/`.
+4. Builds the README images (PNG stills and animated GIF strips) and writes only the ones that changed.
 
 It then lists what changed, and warns if the README points at an image that nothing generates.
 
@@ -55,7 +55,7 @@ Set `OBJECT_EMU_LOG=1` to print the firmware's serial log while scenarios run.
 
 | Path | Role |
 | --- | --- |
-| `regenerate.py` | Build, run and compose; the list of README images and their sources |
+| `regenerate.py` | Build, run and compose; the list of README images, animated strips and their sources |
 | `emulator.cpp` | Virtual hardware and the scenarios that capture each screen |
 | `stubs/` | Host versions of `Arduino.h`, SdFat, Bluefruit and the ILI9341 driver |
 | `build/` | Compiler output, GFX clone and raw shots (ignored by git) |
@@ -72,6 +72,8 @@ Set `OBJECT_EMU_LOG=1` to print the firmware's serial log while scenarios run.
 
 Reference the image from `README.md` and run the script.
 
+**An animation.** Matrix animations are pure functions of time since their trigger, so the same scenario always produces the same frames. Reach the moment with `runUntil(condition, maxMs, "what")`; the emulator compiles the sketch in, so the condition can read firmware state such as `clipNewMax.on` or `matShown`. Then call `frames("anim_name", count, stepMs, "caption", {{index, "NN_shot", "caption"}})` to capture a sequence, optionally keeping some frames as ordinary shots. Add the sequence to `ANIMS` in `regenerate.py`; it becomes `docs/screens/<name>.gif`, a strip of the speed matrix and gauge whose last frame lingers before it loops.
+
 **Layout moved.** The anatomy callouts in `regenerate.py` (`ANATOMY`) are rows in panel pixels, taken from the layout constants in the sketch. Update them when `CAPTION_Y`, `HERO_Y`, `GAUGE_Y`, `ROWS_Y` or `FOOTER_Y` change.
 
 **The emulator stops compiling.** The firmware probably calls an Arduino, SdFat or Bluefruit function the stubs do not have yet. Add it to the matching file in `stubs/`; each stub only implements what the sketch uses.
@@ -80,6 +82,8 @@ Reference the image from `README.md` and run the script.
 
 - **Panel colours:** the shots assume `invertDisplay(true)` cancels the IPS panel's native inversion, so they show the palette constants from the sketch.
 - **Backlight:** dim and off do not change the framebuffer. `backlight-dim.png` and `backlight-off.png` scale brightness by the PWM duty as a rough picture of what the eye sees.
-- **Timing:** SPI drawing takes no virtual time.
+- **Timing:** SPI drawing takes no virtual time, so animation frames advance exactly with the loop. On the board each frame also waits for its SPI writes.
+- **Shortcuts:** the `animations` scenario sets the wheel revolution count to just short of 10 km instead of riding there.
+- **GIF strips:** the panel's few greys fit the GIF palette exactly; corners are transparent.
 - **Battery:** the voltage is fixed per scenario (4.02 V by default, 3.86 V in `no_card`, 3.68 V in `resume`).
 - **Save failed:** reached by making the simulated card refuse the archive rename.

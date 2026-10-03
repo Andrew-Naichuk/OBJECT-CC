@@ -71,6 +71,39 @@ Only one status shows at a time, in this order of priority:
 | <img src="docs/screens/footer-recording.png" width="250" alt="Footer with Recording in a white pill"> | The ride has started and the GPS has position and time, so points are going into `CURRENT.GPX`. |
 | <img src="docs/screens/footer-idle.png" width="250" alt="Footer with altitude only"> | Nothing to report: no wheel pulse yet, or no fix. |
 
+## Animations
+
+The speed matrix and the gauge come alive when the bike stands still or when something happens. While the wheel turns, the speed always stays readable: the only effects then are a faint heartbeat and short sweeps along the gauge.
+
+<table>
+<tr>
+<td align="center" valign="top" width="50%"><img src="docs/screens/anim-boot.gif" width="300" alt="A diagonal band of light sweeps across the matrix and gauge, leaving 0.0"><br><sub><b>Self-test</b><br>at power-on a band of light sweeps every dot once</sub></td>
+<td align="center" valign="top" width="50%"><img src="docs/screens/anim-heartbeat.gif" width="300" alt="The column above the decimal point glows briefly on each wheel turn"><br><sub><b>Heartbeat</b><br>the cells above the decimal point glow on each wheel turn</sub></td>
+</tr>
+<tr>
+<td align="center" valign="top"><img src="docs/screens/anim-new-max.gif" width="300" alt="A bright comet runs along the speed gauge twice"><br><sub><b>New max</b><br>beat your top speed by 0.5 km/h after two minutes moving, and a comet runs the gauge (at most once a minute)</sub></td>
+<td align="center" valign="top"><img src="docs/screens/anim-milestone-live.gif" width="300" alt="The gauge fills to the end, then a dim wash follows it"><br><sub><b>Every 10 km</b><br>or 10 mi, the gauge fills and fades as you pass it…</sub></td>
+</tr>
+<tr>
+<td align="center" valign="top"><img src="docs/screens/anim-milestone.gif" width="300" alt="The 0.0 dissolves into sparkles, a large 10 appears, then dissolves back to 0.0"><br><sub><b>…and at the next stop</b><br>the distance pops up between sparkles</sub></td>
+<td align="center" valign="top"><img src="docs/screens/anim-face-wake.gif" width="300" alt="Pupils fade into the two zeros of 0.0, which then blink"><br><sub><b>Stopped for 8 s</b><br>mid-ride, the 0.0 opens its eyes</sub></td>
+</tr>
+<tr>
+<td align="center" valign="top"><img src="docs/screens/anim-face.gif" width="300" alt="The eyes look left, right, up and down and blink"><br><sub><b>Waiting</b><br>it looks around and blinks</sub></td>
+<td align="center" valign="top"><img src="docs/screens/anim-face-sleep.gif" width="300" alt="Closed eyes, a z rising beside them and two gauge dots breathing"><br><sub><b>After 2 minutes</b><br>it dozes off. Any wheel turn brings the speed straight back</sub></td>
+</tr>
+<tr>
+<td align="center" valign="top"><img src="docs/screens/anim-drain.gif" width="300" alt="The 0.0 empties row by row from the top while the gauge fills"><br><sub><b>Hold for new ride</b><br>the digits drain as the gauge fills</sub></td>
+<td align="center" valign="top"><img src="docs/screens/anim-firework.gif" width="300" alt="A burst of particles from the centre, then 0.0 drops in from the top"><br><sub><b>Ride saved</b><br>a firework, then the fresh 0.0 drops in (also on Stats reset)</sub></td>
+</tr>
+<tr>
+<td align="center" valign="top"><img src="docs/screens/anim-press.gif" width="300" alt="Three chevrons flow downward through the matrix"><br><sub><b>Press to allow</b><br>arrows point down to the button</sub></td>
+<td align="center" valign="top"><img src="docs/screens/anim-rune.gif" width="300" alt="The Bluetooth symbol is drawn stroke by stroke, then fades"><br><sub><b>Phone allowed</b><br>the Bluetooth mark draws itself, then fades</sub></td>
+</tr>
+</table>
+
+Animations pause while the backlight is off. To turn them off, set `animations=off` in `CONFIG.TXT` or use the **Animations** switch in the hub's [Settings](#change-settings-from-your-phone); the matrix then only ever shows the speed.
+
 ## Turning it on
 
 The splash shows while the card is checked, then for one second with the result:
@@ -108,14 +141,14 @@ Turning the backlight off does **not** stop recording or turn off the device. Th
 
 ### Starting a new ride
 
-Stop and wait for the speed reading to reach zero, then hold the button. The countdown appears after two seconds and the gauge fills over the last two:
+Stop and wait for the speed reading to reach zero, then hold the button. The countdown appears after two seconds; over the last two the gauge fills and the digits drain away:
 
 <table>
 <tr>
 <td align="center" valign="top"><img src="docs/screens/ride-stopped.png" width="150" alt="Stopped ride screen showing 0.0"><br><sub><b>Stopped</b><br>speed reads 0.0</sub></td>
 <td align="center" valign="top"><img src="docs/screens/hold-2s.png" width="150" alt="Hold for new ride, 2 s left"><br><sub><b>Held 2 s</b><br>countdown starts</sub></td>
 <td align="center" valign="top"><img src="docs/screens/hold-1s.png" width="150" alt="Hold for new ride, 1 s left"><br><sub><b>Held 3 s</b><br>release now to cancel</sub></td>
-<td align="center" valign="top"><img src="docs/screens/ride-saved.png" width="150" alt="Ride saved message"><br><sub><b>Held 4 s</b><br>track archived</sub></td>
+<td align="center" valign="top"><img src="docs/screens/ride-saved.png" width="150" alt="Ride saved message with a firework on the matrix"><br><sub><b>Held 4 s</b><br>track archived</sub></td>
 <td align="center" valign="top"><img src="docs/screens/new-ride.png" width="150" alt="Fresh ride screen with zeroed stats"><br><sub><b>New ride</b><br>waiting for the wheel</sub></td>
 </tr>
 </table>
@@ -140,9 +173,9 @@ The track in `CURRENT.GPX` is renamed to a dated archive such as `26100115.GPX`,
 
 <table>
 <tr>
-<td align="center" valign="top"><img src="docs/screens/phone-allow-10s.png" width="180" alt="Press to allow, 10 s left"><br><sub><b>Press to allow</b><br>10 seconds to confirm</sub></td>
+<td align="center" valign="top"><img src="docs/screens/phone-allow-10s.png" width="180" alt="Press to allow, 10 s left, arrows pointing down"><br><sub><b>Press to allow</b><br>10 seconds to confirm; arrows point to the button</sub></td>
 <td align="center" valign="top"><img src="docs/screens/phone-allow-4s.png" width="180" alt="Press to allow, 4 s left"><br><sub><b>Window closing</b><br>the gauge drains with it</sub></td>
-<td align="center" valign="top"><img src="docs/screens/phone-connected.png" width="180" alt="Ride screen with Phone in the footer"><br><sub><b>Allowed</b><br>footer shows Phone</sub></td>
+<td align="center" valign="top"><img src="docs/screens/phone-connected.png" width="180" alt="Bluetooth mark on the matrix and Phone in the footer"><br><sub><b>Allowed</b><br>Bluetooth mark, footer shows Phone</sub></td>
 <td align="center" valign="top"><img src="docs/screens/phone-sending.png" width="180" alt="Sending 42% with the gauge part filled"><br><sub><b>Sending 42%</b><br>caption and gauge track the transfer</sub></td>
 </tr>
 </table>
@@ -157,7 +190,7 @@ If a transfer stalls, disconnect and reconnect before trying again.
 
 After connecting and allowing the link, switch the hub from **Rides** to **Settings** (or open the hub with `#settings` at the end of its address). It reads the settings from the card and shows them as:
 
-- **Display:** units (metric or imperial), backlight at power-on, and dim brightness.
+- **Display:** units (metric or imperial), backlight at power-on, dim brightness, and [animations](#animations) on or off.
 - **Bike:** wheel size, picked from common tyre sizes (700C, 650B/27.5″, 29″, 26″, 20″) or entered as a measured circumference in mm.
 - **Ride:** how long the wheel must stand still before moving time auto-pauses.
 - **Device:** the Bluetooth name, and the time zone used to name saved rides (one tap copies the phone's).
@@ -281,6 +314,7 @@ Ride settings live in **`CONFIG.TXT`** on the microSD card root. On first boot w
 | `backlight_dim` | `40` | PWM duty for dim mode, 1–254. |
 | `max_speed_kmh` | `100` | Faster reed intervals are treated as noise. Range 20–200. |
 | `stopped_ms` | `3000` | No pulse for this long ⇒ stopped (moving time). Range 1000–10000. |
+| `animations` | `on` | `on` or `off`: the [matrix animations](#animations). |
 
 For distance accuracy, measure wheel rollout rather than assuming every tire with the same size marking has the same circumference. Changing the wheel size from the hub keeps the distance already ridden. **When editing `wheel_circ_mm` on a computer, finish the current ride first**, or a resumed `TRIP.DAT` will recount the whole ride with the new circumference.
 

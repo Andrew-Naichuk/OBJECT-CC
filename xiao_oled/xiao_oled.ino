@@ -48,7 +48,8 @@
  *
  * microSD CONFIG.TXT (created with defaults on first boot if missing):
  *   wheel_circ_mm, timezone_offset_min, backlight, ble_name, units,
- *   backlight_dim, max_speed_kmh, stopped_ms. See docs/CONFIG.TXT.example.
+ *   backlight_dim, max_speed_kmh, stopped_ms, animations. See
+ *   docs/CONFIG.TXT.example.
  *
  * Libraries (Arduino Library Manager):
  *   Adafruit ILI9341, Adafruit GFX Library, Adafruit BusIO
@@ -62,6 +63,10 @@
  *   Distance / Time / Moving / Max rows, Alt | card, phone, recording.
  * The gauge shows speed (2 km/h a dot), the new-ride hold, phone-connect
  * confirm countdown, or a phone download in progress.
+ * Matrix animations (animations=on): boot self-test, wheel heartbeat, new-max
+ * comet, 10 km / 10 mi milestones, a 0.0 face when stopped mid-ride, draining
+ * digits on the new-ride hold, a firework on Ride saved, press-to-allow
+ * chevrons and the Bluetooth mark on phone connect.
  * Rotation 0. If the image is upside down relative to the pin header, use 2.
  */
 
@@ -80,6 +85,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <math.h>
 
 static const int PIN_LCD_CS = D1;
 static const int PIN_LCD_DC = D2;
@@ -98,6 +104,7 @@ static const uint16_t COL_FG   = 0xFFFF;  // white
 static const uint16_t COL_DIM  = 0x8C71;  // #8f8f8f labels and captions
 static const uint16_t COL_RULE = 0x2124;  // #242424 hairlines
 static const uint16_t COL_OFF  = 0x18E3;  // #1c1c1c unlit matrix dots
+static const uint16_t COL_LO   = 0x39E7;  // #3c3c3c animation trails
 
 // Portrait stack, top to bottom.
 static const int STATUS_BASE = 19;   // status-bar text baseline
@@ -107,6 +114,9 @@ static const int CAPTION_H   = 20;
 static const int HERO_Y      = 60;   // speed matrix top
 static const int HERO_PITCH  = 10;   // matrix cell
 static const int HERO_DOT    = 8;    // lit square inside the cell
+// The speed is always "%4.1f": blocks of 5, 5, 1 and 5 columns, gaps between.
+static const int MAT_COLS    = 19;
+static const int MAT_ROWS    = 7;
 static const int GAUGE_Y     = 142;  // dot centre line
 static const int GAUGE_DOTS  = 24;
 static const int GAUGE_PITCH = 9;
@@ -162,6 +172,7 @@ struct Cfg {
   uint8_t backlightDim;    // PWM duty for BL_DIM
   float maxSpeedKmh;
   unsigned long stoppedMs;
+  uint8_t animations;      // 0 off, 1 on
 };
 
 static Cfg cfg = {
@@ -172,7 +183,8 @@ static Cfg cfg = {
   UNITS_METRIC,
   40,
   100.0f,
-  3000UL
+  3000UL,
+  1
 };
 
 // Dim is ~16% by default so night use keeps the digits readable and cuts most
@@ -296,10 +308,38 @@ static TextCache txtCaption;
 static TextCache txtRow[ROW_COUNT];
 static TextCache txtFootL;
 static TextCache txtFootR;
-static char heroShown[8];
-static bool heroValid = false;
-static int gaugeLit = -1;
+// Matrix cells and gauge dots hold a level; flushes repaint only changes.
+enum {
+  LV_BG = 0,  // panel black, the gaps between digit blocks
+  LV_OFF,
+  LV_LO,
+  LV_MID,
+  LV_FG,
+  LV_KEEP = 0xFE,
+  LV_STALE = 0xFF
+};
+static uint8_t matNext[MAT_ROWS][MAT_COLS];
+static uint8_t matShown[MAT_ROWS][MAT_COLS];
+static uint8_t gaugeNext[GAUGE_DOTS];
+static uint8_t gaugeShown[GAUGE_DOTS];
 static bool uiChromeDrawn = false;
+
+// Matrix animation triggers (see "Matrix animations").
+struct AnimClip {
+  bool on;
+  unsigned long startMs;
+};
+static AnimClip clipBoot, clipBeat, clipFirework, clipAuth, clipRune;
+static AnimClip clipNewMax, clipMsLive, clipMsStop;
+static bool animBootPending = false;
+static float animMaxBaseline = 0.0f;
+static long msBaseline = 0;
+static bool msBaselineValid = false;
+static uint16_t msPending = 0;
+static uint16_t msShowValue = 0;
+static unsigned long msEndMs = 0;
+static unsigned long animRevSeen = 0;
+static unsigned long zeroSinceMs = 0;
 
 #pragma pack(push, 1)
 struct TripDat {
@@ -408,6 +448,22 @@ static bool blePhoneConnected();
 static bool bleAwaitingAuth();
 static void bleConfirmAuth();
 static void backlightApply();
+
+static void clipStart(AnimClip &c, unsigned long now) {
+  c.on = true;
+  c.startMs = now;
+}
+
+// Ride celebrations belong to one ride; a new ride starts their baselines over.
+static void animResetRide() {
+  animMaxBaseline = 0.0f;
+  msBaselineValid = false;
+  msPending = 0;
+  clipNewMax.on = false;
+  clipNewMax.startMs = 0;
+  clipMsLive.on = false;
+  clipMsStop.on = false;
+}
 
 void reedIsr() {
   unsigned long now = millis();
@@ -1341,6 +1397,7 @@ static const char *tripResumeSd() {
   maxSpeedKmh = (d.maxSpeedKmh > 0.0f && d.maxSpeedKmh <= cfg.maxSpeedKmh)
                     ? d.maxSpeedKmh
                     : 0.0f;
+  animMaxBaseline = maxSpeedKmh;
   if (d.revCount >= 1 || d.elapsedMs > 0 || d.movingMs > 0) {
     tripStarted = true;
     elapsedBaseMs = d.elapsedMs;
@@ -1379,6 +1436,7 @@ static void tripResetRam() {
   lastGpxPosValid = false;
   lastGpxStamp = 0;
   lastGpxStampValid = false;
+  animResetRide();
 }
 
 static int cfgMonthDays(int year, int month) {
@@ -1605,8 +1663,10 @@ static void btnHandle(unsigned long now, unsigned long lastPulseMs) {
     int result = tripStartNewRide();
     if (result == NEW_RIDE_SAVED) {
       btnFlash("Ride saved", now);
+      clipStart(clipFirework, now);
     } else if (result == NEW_RIDE_RESET) {
       btnFlash("Stats reset", now);
+      clipStart(clipFirework, now);
     } else {
       btnFlash("Save failed", now);
     }
@@ -1674,10 +1734,13 @@ static const char CFG_TEXT_FORMAT[] =
     "max_speed_kmh=%u\n"
     "#\n"
     "# stopped_ms: no pulse for this long => bike stopped (moving time)\n"
-    "stopped_ms=%lu\n";
+    "stopped_ms=%lu\n"
+    "#\n"
+    "# animations: on | off  (face when stopped, celebrations, transitions)\n"
+    "animations=%s\n";
 
 static const char CFG_TMP_NAME[] = "CONFIG.NEW";
-static char cfgText[1024];
+static char cfgText[1280];
 
 static bool cfgWheelOk(float v) {
   return v >= 1000.0f && v <= 3000.0f;
@@ -1725,7 +1788,8 @@ static size_t configFormat(const Cfg &c) {
                    c.units == UNITS_IMPERIAL ? "imperial" : "metric",
                    (unsigned)c.backlightDim,
                    (unsigned)(c.maxSpeedKmh + 0.5f),
-                   (unsigned long)c.stoppedMs);
+                   (unsigned long)c.stoppedMs,
+                   c.animations ? "on" : "off");
   if (n <= 0 || (size_t)n >= sizeof(cfgText)) {
     return 0;
   }
@@ -1804,6 +1868,7 @@ static void configApplyChange(const Cfg &old) {
   }
   if (cfg.units != old.units) {
     uiChromeDrawn = false;
+    msBaselineValid = false;
   }
   configApplyDerived(cfg.backlight != old.backlight);
 }
@@ -1825,6 +1890,8 @@ static void configLog() {
   Serial.println(cfg.maxSpeedKmh, 0);
   Serial.print("CFG stopped_ms=");
   Serial.println(cfg.stoppedMs);
+  Serial.print("CFG animations=");
+  Serial.println(cfg.animations ? "on" : "off");
 }
 
 static char *cfgTrim(char *s) {
@@ -1938,6 +2005,16 @@ static void configApplyKey(const char *key, const char *val) {
       cfg.stoppedMs = (unsigned long)v;
     } else {
       Serial.println("CFG reject stopped_ms");
+    }
+    return;
+  }
+  if (cfgEq(key, "animations")) {
+    if (cfgEq(val, "on")) {
+      cfg.animations = 1;
+    } else if (cfgEq(val, "off")) {
+      cfg.animations = 0;
+    } else {
+      Serial.println("CFG reject animations");
     }
     return;
   }
@@ -2418,86 +2495,125 @@ static void drawSlot(const Slot &s, TextCache *cache, const GFXfont *font,
   cache->valid = true;
 }
 
-// Repaint only the matrix cells that changed. old == NULL paints every cell.
-static void drawDotGlyph(int x, int y, const DotGlyph *old, const DotGlyph *g) {
-  for (int r = 0; r < 7; r++) {
-    for (int c = 0; c < g->cols; c++) {
-      bool on = dotOn(g, r, c);
-      if (old && dotOn(old, r, c) == on) {
-        continue;
-      }
-      display.fillRect(x + c * HERO_PITCH, y + r * HERO_PITCH,
-                       HERO_DOT, HERO_DOT, on ? COL_FG : COL_OFF);
-    }
-    gpsDrain();
+static uint16_t levelColor(uint8_t lv) {
+  switch (lv) {
+    case LV_OFF: return COL_OFF;
+    case LV_LO: return COL_LO;
+    case LV_MID: return COL_DIM;
+    case LV_FG: return COL_FG;
+    default: return COL_BG;
   }
 }
 
-static int dotTextWidth(const char *s) {
+static bool matDigitCol(int c) {
+  return c != 5 && c != 11 && c != 13;
+}
+
+// Unlit digit cells, black gaps: the matrix with nothing on it.
+static void matGrid() {
+  for (int r = 0; r < MAT_ROWS; r++) {
+    for (int c = 0; c < MAT_COLS; c++) {
+      matNext[r][c] = matDigitCol(c) ? LV_OFF : LV_BG;
+    }
+  }
+}
+
+static void matSet(int r, int c, uint8_t lv) {
+  if (r >= 0 && r < MAT_ROWS && c >= 0 && c < MAT_COLS) {
+    matNext[r][c] = lv;
+  }
+}
+
+// Brightest wins, so particle trails never dim a head drawn earlier.
+static void matMax(int r, int c, uint8_t lv) {
+  if (r >= 0 && r < MAT_ROWS && c >= 0 && c < MAT_COLS && matNext[r][c] < lv) {
+    matNext[r][c] = lv;
+  }
+}
+
+static int dotTextCols(const char *s) {
   int cols = 0;
   int n = 0;
   for (const char *p = s; *p; p++, n++) {
     cols += dotGlyph(*p)->cols;
   }
-  if (n == 0) {
-    return 0;
-  }
-  return (cols + n - 1) * HERO_PITCH - (HERO_PITCH - HERO_DOT);
+  return n ? cols + n - 1 : 0;
 }
 
-static void paintHero(const char *s) {
-  size_t n = strlen(s);
-  bool full = !heroValid || strlen(heroShown) != n;
-  if (!full) {
-    for (size_t i = 0; i < n; i++) {
-      if (dotGlyph(heroShown[i])->cols != dotGlyph(s[i])->cols) {
-        full = true;
-        break;
+// Glyph cells get `on` or `off`; LV_KEEP leaves what is underneath.
+static void matText(const char *s, int col0, int row0, uint8_t on, uint8_t off) {
+  int x = col0;
+  for (const char *p = s; *p; p++) {
+    const DotGlyph *g = dotGlyph(*p);
+    for (int r = 0; r < 7; r++) {
+      for (int c = 0; c < g->cols; c++) {
+        uint8_t lv = dotOn(g, r, c) ? on : off;
+        if (lv != LV_KEEP) {
+          matSet(row0 + r, x + c, lv);
+        }
       }
     }
+    x += g->cols + 1;
   }
-  if (!full && strcmp(heroShown, s) == 0) {
-    return;
-  }
-  if (full) {
-    fillRectDrained(0, HERO_Y, SCREEN_W, 7 * HERO_PITCH, COL_BG);
-  }
-
-  int x = (SCREEN_W - dotTextWidth(s)) / 2;
-  for (size_t i = 0; i < n; i++) {
-    const DotGlyph *g = dotGlyph(s[i]);
-    const DotGlyph *old = full ? NULL : dotGlyph(heroShown[i]);
-    if (old != g) {
-      drawDotGlyph(x, HERO_Y, old, g);
-    }
-    x += (g->cols + 1) * HERO_PITCH;
-  }
-
-  strncpy(heroShown, s, sizeof(heroShown) - 1);
-  heroShown[sizeof(heroShown) - 1] = '\0';
-  heroValid = true;
 }
 
-static void paintGauge(int lit) {
-  if (lit < 0) {
-    lit = 0;
+static bool matTextLit(const char *s, int col0, int r, int c) {
+  if (r < 0 || r >= 7) {
+    return false;
   }
-  if (lit > GAUGE_DOTS) {
-    lit = GAUGE_DOTS;
+  int x = col0;
+  for (const char *p = s; *p; p++) {
+    const DotGlyph *g = dotGlyph(*p);
+    if (c >= x && c < x + g->cols) {
+      return dotOn(g, r, c - x);
+    }
+    x += g->cols + 1;
   }
-  if (lit == gaugeLit) {
-    return;
+  return false;
+}
+
+static void matDigits(const char *s, int row0) {
+  matGrid();
+  matText(s, 0, row0, LV_FG, LV_OFF);
+}
+
+static void flushMatrix() {
+  const int x0 = (SCREEN_W - (MAT_COLS * HERO_PITCH - (HERO_PITCH - HERO_DOT))) / 2;
+  for (int r = 0; r < MAT_ROWS; r++) {
+    for (int c = 0; c < MAT_COLS; c++) {
+      uint8_t lv = matNext[r][c];
+      if (lv == matShown[r][c]) {
+        continue;
+      }
+      display.fillRect(x0 + c * HERO_PITCH, HERO_Y + r * HERO_PITCH,
+                       HERO_DOT, HERO_DOT, levelColor(lv));
+      matShown[r][c] = lv;
+    }
+    gpsDrain();
   }
-  const int x0 = (SCREEN_W - (GAUGE_DOTS - 1) * GAUGE_PITCH) / 2;
+}
+
+static void gaugeBase(int lit) {
   for (int i = 0; i < GAUGE_DOTS; i++) {
-    bool now = i < lit;
-    if (gaugeLit >= 0 && (i < gaugeLit) == now) {
+    gaugeNext[i] = i < lit ? LV_FG : LV_OFF;
+  }
+}
+
+static void flushGauge() {
+  const int x0 = (SCREEN_W - (GAUGE_DOTS - 1) * GAUGE_PITCH) / 2;
+  bool any = false;
+  for (int i = 0; i < GAUGE_DOTS; i++) {
+    uint8_t lv = gaugeNext[i];
+    if (lv == gaugeShown[i]) {
       continue;
     }
-    display.fillCircle(x0 + i * GAUGE_PITCH, GAUGE_Y, GAUGE_R, now ? COL_FG : COL_OFF);
+    display.fillCircle(x0 + i * GAUGE_PITCH, GAUGE_Y, GAUGE_R, levelColor(lv));
+    gaugeShown[i] = lv;
+    any = true;
   }
-  gpsDrain();
-  gaugeLit = lit;
+  if (any) {
+    gpsDrain();
+  }
 }
 
 static void rowLabel(int i, char *buf, size_t buflen) {
@@ -2550,9 +2666,8 @@ static void invalidateAllFields() {
   }
   invalidateText(&txtFootL);
   invalidateText(&txtFootR);
-  heroValid = false;
-  heroShown[0] = '\0';
-  gaugeLit = -1;
+  memset(matShown, LV_STALE, sizeof(matShown));
+  memset(gaugeShown, LV_STALE, sizeof(gaugeShown));
 }
 
 static void ensureChrome() {
@@ -2564,6 +2679,10 @@ static void ensureChrome() {
   drawStaticChrome();
   invalidateAllFields();
   uiChromeDrawn = true;
+  if (animBootPending) {
+    animBootPending = false;
+    clipStart(clipBoot, millis());
+  }
 }
 
 // H:MM:SS always (matches Figma samples like 7:34:12).
@@ -2604,6 +2723,608 @@ static uint8_t overlayState(unsigned long now, unsigned long *remainSec, int *ho
     return OVL_BLE_AUTH;
   }
   return OVL_NONE;
+}
+
+// --- Matrix animations -------------------------------------------------
+// Each frame is a pure function of the time since its trigger (and a hash
+// seeded by that time), so the emulator captures the same pixels every run.
+// While the wheel turns the digits stay digits: only the heartbeat and the
+// gauge effects play.
+
+static const unsigned long ANIM_BOOT_MS = 700;
+static const unsigned long ANIM_BEAT_MS = 120;
+static const unsigned long ANIM_FIREWORK_MS = BTN_FLASH_MS;
+static const unsigned long ANIM_RUNE_MS = 1300;
+static const unsigned long ANIM_NEWMAX_MS = 600;
+static const unsigned long ANIM_MS_LIVE_MS = 700;
+static const unsigned long ANIM_MS_STOP_MS = 2800;
+static const unsigned long ANIM_MS_AFTER_STOP_MS = 1000;
+static const unsigned long ANIM_MS_REQUEUE_MS = 1500;
+static const unsigned long NEWMAX_MOVING_MS = 120000;
+static const unsigned long NEWMAX_GAP_MS = 60000;
+static const float NEWMAX_STEP_KMH = 0.5f;
+static const unsigned long FACE_AFTER_MS = 8000;
+static const unsigned long FACE_SLEEPY_MS = 120000;
+static const unsigned long FACE_ASLEEP_MS = 20000;  // counted from sleepy
+static const int MILESTONE_STEP = 10;               // km or mi
+
+static bool animOn() {
+  return cfg.animations && blMode != BL_OFF;
+}
+
+static bool clipAt(AnimClip &c, unsigned long now, unsigned long durMs, unsigned long *t) {
+  if (!c.on) {
+    return false;
+  }
+  unsigned long el = now - c.startMs;
+  if (el >= durMs) {
+    c.on = false;
+    return false;
+  }
+  *t = el;
+  return true;
+}
+
+static uint32_t animHash(uint32_t x) {
+  x ^= x >> 16;
+  x *= 0x7FEB352DUL;
+  x ^= x >> 15;
+  x *= 0x846CA68BUL;
+  x ^= x >> 16;
+  return x;
+}
+
+static void animNoteMax(unsigned long now, float kmh) {
+  if (movingMs < NEWMAX_MOVING_MS) {
+    animMaxBaseline = kmh;
+    return;
+  }
+  if (kmh < animMaxBaseline + NEWMAX_STEP_KMH) {
+    return;
+  }
+  if (clipNewMax.startMs != 0 && now - clipNewMax.startMs < NEWMAX_GAP_MS) {
+    return;
+  }
+  animMaxBaseline = kmh;
+  if (animOn()) {
+    clipStart(clipNewMax, now);
+  }
+}
+
+static void animTrackDistance(unsigned long now, float distanceKm) {
+  long idx = (long)(cfgDistShown(distanceKm) / (float)MILESTONE_STEP);
+  if (!msBaselineValid || idx < msBaseline) {
+    msBaseline = idx;
+    msBaselineValid = true;
+    return;
+  }
+  if (idx == msBaseline) {
+    return;
+  }
+  msBaseline = idx;
+  if (animOn()) {
+    clipStart(clipMsLive, now);
+    long value = idx * MILESTONE_STEP;
+    msPending = value < 1000 ? (uint16_t)value : 0;
+  }
+}
+
+// Boot self-test: a diagonal band lights every cell and dot once.
+static void fxBoot(unsigned long t) {
+  int head = (int)(t * 28 / 600) - 1;
+  for (int r = 0; r < MAT_ROWS; r++) {
+    for (int c = 0; c < MAT_COLS; c++) {
+      int d = head - (r + c);
+      if (d < 0) {
+        matNext[r][c] = LV_BG;
+      } else if (d < 3) {
+        matNext[r][c] = (uint8_t)(LV_FG - d);
+      }
+    }
+  }
+  for (int i = 0; i < GAUGE_DOTS; i++) {
+    int d = head - (i + 1);
+    if (d < 0) {
+      gaugeNext[i] = LV_BG;
+    } else if (d < 3) {
+      gaugeNext[i] = (uint8_t)(LV_FG - d);
+    }
+  }
+}
+
+static void fxHeartbeat(unsigned long now) {
+  unsigned long t;
+  if (!clipAt(clipBeat, now, ANIM_BEAT_MS, &t)) {
+    return;
+  }
+  for (int r = 0; r < 6; r++) {
+    if (matNext[r][12] == LV_OFF) {
+      matNext[r][12] = LV_LO;
+    }
+  }
+}
+
+// New ride hold: the digits drain from the top as the gauge fills.
+static void fxDrain(unsigned long now) {
+  long held = (long)(now - btnHoldStartMs) - (long)BTN_ARM_MS;
+  float e = (float)held * MAT_ROWS / (float)(BTN_EXEC_MS - BTN_ARM_MS);
+  if (e <= 0.0f) {
+    return;
+  }
+  if (e > MAT_ROWS) {
+    e = MAT_ROWS;
+  }
+  int gone = (int)e;
+  for (int r = 0; r < MAT_ROWS; r++) {
+    for (int c = 0; c < MAT_COLS; c++) {
+      if (matNext[r][c] != LV_FG) {
+        continue;
+      }
+      if (r < gone) {
+        matNext[r][c] = LV_OFF;
+      } else if (r == gone) {
+        matNext[r][c] = LV_MID;
+      }
+    }
+  }
+}
+
+// Ride saved / Stats reset: burst, particles, then the new 0.0 drops in.
+static void fxFirework(unsigned long t, const char *digits, uint32_t seed) {
+  if (t >= 1400) {
+    return;
+  }
+  if (t >= 900) {
+    unsigned long u = t - 900;
+    int row0 = 0;
+    if (u < 250) {
+      float f = u / 250.0f;
+      row0 = (int)lroundf(-7.0f + 8.0f * f * f);
+    } else if (u < 330) {
+      row0 = 1;
+    }
+    matDigits(digits, row0);
+    return;
+  }
+  matGrid();
+  if (t < 150) {
+    matSet(3, 9, LV_FG);
+    if (t >= 75) {
+      matMax(2, 9, LV_MID);
+      matMax(4, 9, LV_MID);
+      matMax(3, 8, LV_MID);
+      matMax(3, 10, LV_MID);
+    }
+    return;
+  }
+  float tau = (t - 150) / 1000.0f;
+  bool fading = tau > 0.5f;
+  for (int i = 0; i < 14; i++) {
+    uint32_t h = animHash(seed + (uint32_t)i * 0x9E3779B9UL);
+    float ang = i * (6.2831853f / 14.0f) + ((h & 0xFF) / 255.0f - 0.5f) * 0.4f;
+    float v = 16.0f + ((h >> 8) & 0xFF) / 255.0f * 10.0f;  // cells per second
+    for (int k = 2; k >= 0; k--) {
+      float tt = tau - k * 0.04f;
+      if (tt < 0.0f) {
+        continue;
+      }
+      float x = 9.0f + cosf(ang) * v * tt;
+      float y = 3.0f + sinf(ang) * v * tt * 0.5f + 10.0f * tt * tt;
+      int lv = LV_FG - k - (fading ? 1 : 0);
+      if (lv <= LV_OFF) {
+        continue;
+      }
+      matMax((int)lroundf(y), (int)lroundf(x), (uint8_t)lv);
+    }
+  }
+  float rad = tau / 0.75f * 14.0f;
+  for (int i = 0; i < GAUGE_DOTS; i++) {
+    float d = rad - fabsf(i - 11.5f);
+    int lv = LV_OFF;
+    if (d >= 0.0f && d < 1.5f) {
+      lv = LV_FG;
+    } else if (d >= 1.5f && d < 3.0f) {
+      lv = LV_MID;
+    } else if (d >= 3.0f && d < 4.5f) {
+      lv = LV_LO;
+    }
+    if (fading && lv > LV_OFF) {
+      lv--;
+    }
+    if (lv > gaugeNext[i]) {
+      gaugeNext[i] = (uint8_t)lv;
+    }
+  }
+}
+
+// New max: a comet runs the gauge twice; over lit dots it is a dark notch.
+static void fxComet(unsigned long t) {
+  int h = (int)((t % 300) * 27 / 300);
+  for (int i = 0; i < GAUGE_DOTS; i++) {
+    int d = h - i;
+    if (d < 0 || d > 2) {
+      continue;
+    }
+    gaugeNext[i] = gaugeNext[i] == LV_FG ? (uint8_t)(LV_OFF + d) : (uint8_t)(LV_FG - d);
+  }
+}
+
+// Milestone: the gauge fills left to right, then a dim wash follows it.
+static void fxSweep(unsigned long t) {
+  if (t < 350) {
+    int k = (int)(t * (GAUGE_DOTS + 1) / 350);
+    for (int i = 0; i < k && i < GAUGE_DOTS; i++) {
+      gaugeNext[i] = LV_FG;
+    }
+    return;
+  }
+  int k = (int)((t - 350) * (GAUGE_DOTS + 1) / 350);
+  for (int i = 0; i < GAUGE_DOTS; i++) {
+    gaugeNext[i] = i < k ? LV_LO : LV_FG;
+  }
+}
+
+static void gaugeFx(unsigned long now, uint8_t ovl, bool sending) {
+  if (ovl == OVL_HOLD || ovl == OVL_BLE_AUTH || sending) {
+    return;
+  }
+  unsigned long t;
+  if (clipAt(clipMsLive, now, ANIM_MS_LIVE_MS, &t)) {
+    fxSweep(t);
+    return;
+  }
+  if (clipAt(clipNewMax, now, ANIM_NEWMAX_MS, &t)) {
+    fxComet(t);
+  }
+}
+
+// Press to allow: chevrons flow down each digit block toward the button.
+static void fxPressArrow(unsigned long now) {
+  static const uint8_t CHEVRON[3] = {0x11, 0x0A, 0x04};
+  static const int BLOCK_COL[3] = {0, 6, 14};
+  matGrid();
+  int off = (int)(((now - clipAuth.startMs) / 90) % 4);
+  for (int y = off - 4; y < MAT_ROWS; y += 4) {
+    for (int dy = 0; dy < 3; dy++) {
+      int r = y + dy;
+      if (r < 0 || r >= MAT_ROWS) {
+        continue;
+      }
+      uint8_t lv = r <= 1 ? LV_LO : (r <= 3 ? LV_MID : LV_FG);
+      for (int b = 0; b < 3; b++) {
+        for (int c = 0; c < 5; c++) {
+          if ((CHEVRON[dy] >> (4 - c)) & 1) {
+            matSet(r, BLOCK_COL[b] + c, lv);
+          }
+        }
+      }
+    }
+  }
+}
+
+// Phone allowed: the Bluetooth mark, drawn along its pen path, then fades.
+static const uint8_t RUNE_PATH[][2] = {
+  {5, 0}, {4, 1}, {3, 2}, {2, 3}, {1, 4}, {0, 3}, {0, 2}, {1, 2}, {2, 2},
+  {4, 2}, {5, 2}, {6, 2}, {6, 3}, {5, 4}, {4, 3}, {2, 1}, {1, 0}
+};
+
+static void fxRune(unsigned long t) {
+  matGrid();
+  if (t >= 1200) {
+    return;
+  }
+  const int n = sizeof(RUNE_PATH) / sizeof(RUNE_PATH[0]);
+  int shown = t >= 600 ? n : (int)(t * n / 600) + 1;
+  uint8_t lv = t < 1000 ? LV_FG : (t < 1100 ? LV_MID : LV_LO);
+  for (int i = 0; i < shown; i++) {
+    matSet(RUNE_PATH[i][0], 7 + RUNE_PATH[i][1], lv);
+  }
+}
+
+static uint8_t sparkle(int r, int c, unsigned long t, uint32_t seed, uint32_t density) {
+  uint32_t h = animHash(seed ^ ((uint32_t)(r * MAT_COLS + c) * 0x85EBCA6BUL)
+                        ^ ((uint32_t)(t / 100) * 0xC2B2AE35UL));
+  if (h % density) {
+    return LV_KEEP;
+  }
+  return (uint8_t)(LV_LO + (h >> 16) % 2);
+}
+
+// Sparkles keep one cell clear of the number so it never looks smudged.
+static bool nearText(const char *s, int col0, int r, int c) {
+  for (int dr = -1; dr <= 1; dr++) {
+    for (int dc = -1; dc <= 1; dc++) {
+      if (matTextLit(s, col0, r + dr, c + dc)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Milestone at the next stop: sparkles, the distance pops in, dissolves to 0.0.
+static void fxMilestone(unsigned long t, const char *digits, uint16_t value, uint32_t seed) {
+  char num[6];
+  snprintf(num, sizeof(num), "%u", (unsigned)value);
+  int col0 = (MAT_COLS - dotTextCols(num)) / 2;
+  if (t < 400) {
+    for (int r = 0; r < MAT_ROWS; r++) {
+      for (int c = 0; c < MAT_COLS; c++) {
+        if (matNext[r][c] == LV_FG) {
+          if (t >= animHash(seed + r * MAT_COLS + c) % 400) {
+            matNext[r][c] = LV_OFF;
+          }
+          continue;
+        }
+        uint8_t lv = sparkle(r, c, t, seed, t < 200 ? 18 : 10);
+        if (lv != LV_KEEP) {
+          matNext[r][c] = lv;
+        }
+      }
+    }
+    return;
+  }
+  matGrid();
+  if (t < 2200) {
+    for (int r = 0; r < MAT_ROWS; r++) {
+      for (int c = 0; c < MAT_COLS; c++) {
+        uint8_t lv = sparkle(r, c, t, seed, 8);
+        if (lv != LV_KEEP && !nearText(num, col0, r, c)) {
+          matNext[r][c] = lv;
+        }
+      }
+    }
+    matText(num, col0, 0, t < 480 ? LV_MID : LV_FG, LV_OFF);
+    if (t < 1100) {
+      fxSweep(t - 400);
+    }
+    return;
+  }
+  for (int r = 0; r < MAT_ROWS; r++) {
+    for (int c = 0; c < MAT_COLS; c++) {
+      uint32_t h = animHash(seed + r * MAT_COLS + c + 977);
+      bool numOn = matTextLit(num, col0, r, c) && t < 2200 + h % 400;
+      bool digOn = matTextLit(digits, 0, r, c) && t >= 2400 + (h >> 10) % 400;
+      if (numOn || digOn) {
+        matNext[r][c] = LV_FG;
+      } else if (t < 2600 && sparkle(r, c, t, seed, 24) != LV_KEEP
+                 && !nearText(num, col0, r, c)) {
+        matNext[r][c] = LV_LO;
+      }
+    }
+  }
+}
+
+// The 0.0 face. Eye shapes are 5x7 rows like DOT_FONT; pupils are 1x2.
+enum { EYE_OPEN, EYE_SQUINT, EYE_SHUT, EYE_LID, EYE_LID_LOW, EYE_SLEEP };
+static const uint8_t EYE_ROWS[][7] = {
+  {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E},
+  {0x00, 0x0E, 0x11, 0x11, 0x11, 0x0E, 0x00},
+  {0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00},
+  {0x00, 0x00, 0x1F, 0x11, 0x11, 0x11, 0x0E},
+  {0x00, 0x00, 0x00, 0x1F, 0x11, 0x11, 0x0E},
+  {0x00, 0x00, 0x00, 0x11, 0x0E, 0x00, 0x00},
+};
+static const int8_t EYE_PUPIL_TOP[] = {1, 2, 7, 3, 4, 7};
+static const int8_t EYE_PUPIL_BOT[] = {5, 4, -1, 5, 5, -1};
+static const int8_t GAZE[][2] = {{2, 3}, {1, 3}, {3, 3}, {2, 3}, {2, 1}, {2, 4}};
+
+static void faceEye(int col0, uint8_t shape, int px, int py, uint8_t pupLv) {
+  for (int r = 0; r < MAT_ROWS; r++) {
+    for (int c = 0; c < 5; c++) {
+      if ((EYE_ROWS[shape][r] >> (4 - c)) & 1) {
+        matSet(r, col0 + c, LV_FG);
+      }
+    }
+  }
+  for (int r = py; r <= py + 1; r++) {
+    if (r >= EYE_PUPIL_TOP[shape] && r <= EYE_PUPIL_BOT[shape]) {
+      matSet(r, col0 + px, pupLv);
+    }
+  }
+}
+
+static uint8_t faceBlink(unsigned long d) {
+  return d < 50 ? EYE_SQUINT : (d < 130 ? EYE_SHUT : EYE_SQUINT);
+}
+
+static uint8_t faceAwakeShape(unsigned long ft, uint32_t seed) {
+  if (ft >= 300 && ft < 500) {
+    return faceBlink(ft - 300);
+  }
+  if (ft < 2000) {
+    return EYE_OPEN;
+  }
+  unsigned long j = (ft - 2000) / 4500;
+  uint32_t h = animHash(seed ^ ((uint32_t)j * 0x165667B1UL));
+  unsigned long tb = 2000 + j * 4500 + h % 1500;
+  if (ft >= tb) {
+    unsigned long d = ft - tb;
+    if (d < 200) {
+      return faceBlink(d);
+    }
+    if ((h & 0x10000UL) && d >= 320 && d < 520) {
+      return faceBlink(d - 320);
+    }
+  }
+  return EYE_OPEN;
+}
+
+static int stepToward(int from, int to, int steps) {
+  int d = to - from;
+  if (d > steps) {
+    d = steps;
+  } else if (d < -steps) {
+    d = -steps;
+  }
+  return from + d;
+}
+
+static void faceGaze(unsigned long ft, uint32_t seed, int *px, int *py) {
+  *px = GAZE[0][0];
+  *py = GAZE[0][1];
+  if (ft < 800) {
+    return;
+  }
+  unsigned long k = (ft - 800) / 3500;
+  uint32_t h = animHash(seed ^ ((uint32_t)k * 0x27D4EB2FUL));
+  int prev = k == 0 ? 0 : (int)((animHash(seed ^ ((uint32_t)(k - 1) * 0x27D4EB2FUL)) >> 8) % 6);
+  int cur = (int)((h >> 8) % 6);
+  unsigned long tc = 800 + k * 3500 + h % 1500;
+  *px = GAZE[prev][0];
+  *py = GAZE[prev][1];
+  if (ft < tc) {
+    return;
+  }
+  int steps = (int)((ft - tc) / 60);
+  *px = stepToward(*px, GAZE[cur][0], steps);
+  *py = stepToward(*py, GAZE[cur][1], steps);
+}
+
+// One z at a time rises through the empty tens block and fades.
+static void faceZ(unsigned long zt) {
+  static const uint8_t Z[4] = {0xF, 0x2, 0x4, 0xF};
+  unsigned long p = zt % 2000;
+  int row0 = 3 - (int)(p / 500);
+  int col0 = p < 1000 ? 1 : 0;
+  uint8_t lv = p < 1000 ? LV_FG : (p < 1500 ? LV_MID : LV_LO);
+  for (int r = 0; r < 4; r++) {
+    for (int c = 0; c < 4; c++) {
+      if ((Z[r] >> (3 - c)) & 1) {
+        matSet(row0 + r, col0 + c, lv);
+      }
+    }
+  }
+}
+
+static void faceBreath(unsigned long zt) {
+  unsigned long p = zt % 4000;
+  uint8_t mid = (p >= 1000 && p < 3000) ? LV_MID : LV_LO;
+  gaugeNext[11] = mid;
+  gaugeNext[12] = mid;
+  if (p >= 1000 && p < 2000) {
+    gaugeNext[10] = LV_LO;
+    gaugeNext[13] = LV_LO;
+  }
+}
+
+static void fxFace(unsigned long ft, unsigned long stillMs, uint32_t seed) {
+  matGrid();
+  matSet(6, 12, LV_FG);
+  uint8_t shape;
+  int px = GAZE[0][0];
+  int py = GAZE[0][1];
+  uint8_t pupLv = LV_FG;
+  if (stillMs < FACE_SLEEPY_MS) {
+    shape = faceAwakeShape(ft, seed);
+    faceGaze(ft, seed, &px, &py);
+    if (ft < 100) {
+      pupLv = LV_LO;
+    } else if (ft < 200) {
+      pupLv = LV_MID;
+    }
+  } else {
+    unsigned long st = stillMs - FACE_SLEEPY_MS;
+    if (st < FACE_ASLEEP_MS) {
+      shape = EYE_LID;
+      unsigned long j = st / 6000;
+      unsigned long tb = j * 6000 + 1500 + animHash(seed ^ ((uint32_t)j * 0x9E3779B1UL)) % 2000;
+      if (st >= tb && st - tb < 700) {
+        unsigned long d = st - tb;
+        shape = d < 150 ? EYE_LID_LOW : (d < 550 ? EYE_SHUT : EYE_LID_LOW);
+      }
+    } else {
+      unsigned long zt = st - FACE_ASLEEP_MS;
+      if (zt < 400) {
+        shape = EYE_LID_LOW;
+      } else if (zt < 800) {
+        shape = EYE_SHUT;
+      } else {
+        shape = EYE_SLEEP;
+        faceZ(zt - 800);
+        faceBreath(zt - 800);
+      }
+    }
+  }
+  faceEye(6, shape, px, py, pupLv);
+  faceEye(14, shape, px, py, pupLv);
+}
+
+// Picks the one matrix scene for this frame, over the digits and gauge
+// already composed, then adds the overlays that scene allows.
+static void animCompose(unsigned long now, float speedKmh, uint8_t ovl, bool sending,
+                        unsigned long lastPulseMs, unsigned long revCount,
+                        const char *digits) {
+  const bool moving = speedKmh > 0.0f;
+  if (revCount != animRevSeen) {
+    if (revCount > animRevSeen) {
+      clipStart(clipBeat, now);
+    }
+    animRevSeen = revCount;
+  }
+  if (moving) {
+    zeroSinceMs = 0;
+  } else if (zeroSinceMs == 0) {
+    zeroSinceMs = now ? now : 1;
+  }
+  if (!animOn()) {
+    return;
+  }
+
+  unsigned long t;
+  if (clipAt(clipBoot, now, ANIM_BOOT_MS, &t)) {
+    fxBoot(t);
+    return;
+  }
+  if (ovl == OVL_HOLD) {
+    fxDrain(now);
+    return;
+  }
+  if (ovl == OVL_FLASH && clipAt(clipFirework, now, ANIM_FIREWORK_MS, &t)) {
+    fxFirework(t, digits, clipFirework.startMs);
+    return;
+  }
+  if (moving) {
+    if (clipMsStop.on && now - clipMsStop.startMs < ANIM_MS_REQUEUE_MS) {
+      msPending = msShowValue;
+    }
+    clipMsStop.on = false;
+    fxHeartbeat(now);
+    gaugeFx(now, ovl, sending);
+    return;
+  }
+  if (ovl == OVL_BLE_AUTH) {
+    fxPressArrow(now);
+    return;
+  }
+  if (clipAt(clipRune, now, ANIM_RUNE_MS, &t)) {
+    fxRune(t);
+    return;
+  }
+  if (!clipMsStop.on && msPending && ovl == OVL_NONE
+      && now - zeroSinceMs >= ANIM_MS_AFTER_STOP_MS) {
+    msShowValue = msPending;
+    msPending = 0;
+    clipStart(clipMsStop, now);
+  }
+  if (clipAt(clipMsStop, now, ANIM_MS_STOP_MS, &t)) {
+    fxMilestone(t, digits, msShowValue, clipMsStop.startMs);
+    msEndMs = now;
+    return;
+  }
+  gaugeFx(now, ovl, sending);
+  if (tripStarted && lastPulseMs != 0 && now - lastPulseMs >= FACE_AFTER_MS) {
+    unsigned long anchor = lastPulseMs + FACE_AFTER_MS;
+    if ((long)(msEndMs - anchor) > 0) {
+      anchor = msEndMs;
+    }
+    if ((long)(zeroSinceMs - anchor) > 0) {
+      anchor = zeroSinceMs;
+    }
+    if ((long)(now - anchor) >= 0) {
+      fxFace(now - anchor, now - lastPulseMs, lastPulseMs);
+    }
+  }
 }
 
 static void paintStatus(unsigned long now) {
@@ -2691,7 +3412,8 @@ static void paintFooter(unsigned long now) {
 
 static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
                            float maxKmh, unsigned long elapsedMs, unsigned long moveMs,
-                           unsigned long now) {
+                           unsigned long now, unsigned long lastPulseMs,
+                           unsigned long revCount) {
   ensureChrome();
 
   char buf[24];
@@ -2706,8 +3428,9 @@ static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
   if (shown > 99.9f) {
     shown = 99.9f;
   }
-  snprintf(buf, sizeof(buf), "%4.1f", (double)shown);
-  paintHero(buf);
+  char digits[8];
+  snprintf(digits, sizeof(digits), "%4.1f", (double)shown);
+  matDigits(digits, 0);
 
   unsigned long remainSec = 0;
   int holdLit = 0;
@@ -2741,7 +3464,11 @@ static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
   } else {
     lit = (int)(speedKmh / GAUGE_KMH_PER_DOT + 0.5f);
   }
-  paintGauge(lit);
+  gaugeBase(lit);
+  animTrackDistance(now, distanceKm);
+  animCompose(now, speedKmh, ovl, sending, lastPulseMs, revCount, digits);
+  flushMatrix();
+  flushGauge();
 
   float distShown = cfgDistShown(distanceKm);
   if (distShown < 0.0f) {
@@ -2763,6 +3490,7 @@ static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
 
 static void drawSplash(const char *line) {
   uiChromeDrawn = false;
+  animBootPending = true;
   fillScreenDrained(COL_BG);
   display.setTextWrap(false);
 
@@ -2824,9 +3552,9 @@ enum {
 //   0 version, 1 flags (bit0 card present; GET only),
 //   2-3 wheel_circ_mm u16, 4-5 timezone_offset_min i16, 6 backlight,
 //   7 units, 8 backlight_dim, 9 max_speed_kmh, 10-11 stopped_ms u16,
-//   12 ble_name length, 13-32 ble_name.
-static const uint8_t BLE_CFG_VERSION = 1;
-static const uint16_t BLE_CFG_LEN = 33;
+//   12 ble_name length, 13-32 ble_name, 33 animations (0 off, 1 on).
+static const uint8_t BLE_CFG_VERSION = 2;
+static const uint16_t BLE_CFG_LEN = 34;
 static const uint16_t BLE_CMD_MAX = 1 + BLE_CFG_LEN;
 
 enum {
@@ -2896,6 +3624,7 @@ static void bleBeginAuthWait(unsigned long now) {
   bleAuthState = BLE_AUTH_WAIT;
   bleAuthDeadlineMs = now + BLE_AUTH_MS;
   bleAuthNotifyPending = BLE_META_AUTH_WAIT;
+  clipStart(clipAuth, now);
 }
 
 static void bleConfirmAuth() {
@@ -2905,6 +3634,7 @@ static void bleConfirmAuth() {
   bleAuthState = BLE_AUTH_OK;
   bleAuthDeadlineMs = 0;
   bleAuthNotifyPending = BLE_META_AUTH_OK;
+  clipStart(clipRune, millis());
   Serial.println("BLE auth ok");
 }
 
@@ -3340,6 +4070,7 @@ static void bleCfgPack(uint8_t *b) {
   b[11] = (uint8_t)(stopped >> 8);
   b[12] = (uint8_t)n;
   memcpy(b + 13, cfg.bleName, n);
+  b[33] = cfg.animations;
 }
 
 // All or nothing: one bad field rejects the whole record.
@@ -3354,7 +4085,8 @@ static bool bleCfgUnpack(const uint8_t *b, Cfg *out) {
   uint8_t n = b[12];
   if (!cfgWheelOk(wheel) || !cfgTimezoneOk(tz) || b[6] >= BL_MODE_COUNT
       || b[7] > UNITS_IMPERIAL || !cfgDimOk(b[8]) || !cfgMaxSpeedOk(maxKmh)
-      || !cfgStoppedOk(stopped) || !cfgBleNameOk((const char *)b + 13, n)) {
+      || !cfgStoppedOk(stopped) || !cfgBleNameOk((const char *)b + 13, n)
+      || b[33] > 1) {
     return false;
   }
   out->wheelCircMm = wheel;
@@ -3366,6 +4098,7 @@ static bool bleCfgUnpack(const uint8_t *b, Cfg *out) {
   out->stoppedMs = (unsigned long)stopped;
   memcpy(out->bleName, b + 13, n);
   out->bleName[n] = '\0';
+  out->animations = b[33];
   return true;
 }
 
@@ -3780,6 +4513,7 @@ void loop() {
       unsigned long dtLo = (dtNew < dtOld) ? dtNew : dtOld;
       unsigned long dtHi = (dtNew > dtOld) ? dtNew : dtOld;
       if (dtHi > 0 && (float)dtLo >= MAX_CONFIRM_RATIO * (float)dtHi) {
+        animNoteMax(now, speedKmh);
         maxSpeedKmh = speedKmh;
       }
     }
@@ -3799,7 +4533,8 @@ void loop() {
   tripLogGps(now, (uint32_t)revCount, (uint32_t)elapsedMs);
   tripMaybeSave(now, (uint32_t)revCount, (uint32_t)elapsedMs);
 
-  drawRideScreen(speedKmh, distanceKm, avgSpeedKmh, maxSpeedKmh, elapsedMs, movingMs, now);
+  drawRideScreen(speedKmh, distanceKm, avgSpeedKmh, maxSpeedKmh, elapsedMs, movingMs, now,
+                 lastPulseMs, revCount);
   gpsDrain();
 
   digitalWrite(LED_BUILTIN, (speedKmh > 0.05f) ? LOW : HIGH);

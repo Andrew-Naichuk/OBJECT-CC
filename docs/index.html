@@ -590,6 +590,14 @@
               <input type="range" id="cfg-dim" min="5" max="100" step="1">
               <p class="help">Used when the backlight is on Dim. Lower saves battery at night.</p>
             </div>
+            <div class="field">
+              <span class="label" id="animations-label">Animations</span>
+              <div class="seg" role="radiogroup" aria-labelledby="animations-label">
+                <label><input type="radio" name="animations" value="1"><span>On</span></label>
+                <label><input type="radio" name="animations" value="0"><span>Off</span></label>
+              </div>
+              <p class="help">A face when you stop, celebrations and transitions on the speed display.</p>
+            </div>
           </div>
 
           <div class="group">
@@ -684,8 +692,8 @@
     const META_CFG = 0x08;
     const META_CFG_SAVED = 0x09;
     const META_ERROR = 0x7f;
-    const CFG_VERSION = 1;
-    const CFG_LEN = 33;
+    const CFG_VERSION = 2;
+    const CFG_LEN = 34;
     const ERR_NAME = 2;
     const MAX_FILE = 16 * 1024 * 1024;
     const STALL_MS = 15000;
@@ -1271,7 +1279,8 @@
         dim: b[8],
         maxKmh: b[9],
         stoppedMs: b[10] | (b[11] << 8),
-        name
+        name,
+        animations: b[33]
       };
     }
 
@@ -1292,6 +1301,7 @@
       b[12] = c.stoppedMs >> 8;
       b[13] = c.name.length;
       for (let i = 0; i < c.name.length; i++) b[14 + i] = c.name.charCodeAt(i);
+      b[34] = c.animations;
       return b;
     }
 
@@ -1309,7 +1319,7 @@
 
     function cfgDirty() {
       if (!cfgDevice || !cfgDraft) return false;
-      return ["wheel", "tz", "backlight", "units", "dim", "maxKmh", "stoppedMs", "name"]
+      return ["wheel", "tz", "backlight", "units", "dim", "maxKmh", "stoppedMs", "name", "animations"]
         .some((k) => cfgDraft[k] !== cfgDevice[k]);
     }
 
@@ -1352,6 +1362,7 @@
       const imperial = c.units === 1;
       setRadio("units", c.units);
       setRadio("backlight", c.backlight);
+      setRadio("animations", c.animations);
       dimInput.value = String(dimPct(c.dim));
       $("cfg-dim-val").textContent = dimPct(c.dim) + " %";
 
@@ -1461,6 +1472,9 @@
       }
       for (const input of cfgForm.elements.backlight) {
         input.addEventListener("change", () => editSettings({ backlight: Number(input.value) }));
+      }
+      for (const input of cfgForm.elements.animations) {
+        input.addEventListener("change", () => editSettings({ animations: Number(input.value) }));
       }
       dimInput.addEventListener("input", () => {
         editSettings({ dim: Math.max(1, Math.min(254, Math.round(Number(dimInput.value) * 254 / 100))) });
