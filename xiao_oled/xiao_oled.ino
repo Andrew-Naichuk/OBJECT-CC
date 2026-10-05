@@ -446,7 +446,7 @@ static bool lastFixLoad();
 static void gpsInjectAid();
 static bool blePhoneConnected();
 static bool bleAwaitingAuth();
-static void bleConfirmAuth();
+static void bleConfirmAuth(unsigned long now);
 static void backlightApply();
 
 static void clipStart(AnimClip &c, unsigned long now) {
@@ -1682,7 +1682,7 @@ static void btnHandle(unsigned long now, unsigned long lastPulseMs) {
     btnReleased = false;
     if (!didExec && held < BTN_ARM_MS) {
       if (bleAwaitingAuth()) {
-        bleConfirmAuth();
+        bleConfirmAuth(now);
       } else {
         backlightNext();
       }
@@ -2213,7 +2213,7 @@ static void gpsPoll() {
 static bool blePhoneConnected();
 static bool bleAwaitingAuth();
 static bool bleAuthProgress(unsigned long now, unsigned long *remainSec, int *lit);
-static void bleConfirmAuth();
+static void bleConfirmAuth(unsigned long now);
 static bool bleSendProgress(uint8_t *pct);
 
 static GFXcanvas1 textCanvas(SCREEN_W, 32);
@@ -2670,7 +2670,10 @@ static void invalidateAllFields() {
   memset(gaugeShown, LV_STALE, sizeof(gaugeShown));
 }
 
-static void ensureChrome() {
+// Use the same `now` as drawRideScreen / animCompose. Starting the boot clip
+// with a later millis() after the chrome SPI paint makes clipAt underflow and
+// drop the self-test on the first frame.
+static void ensureChrome(unsigned long now) {
   if (uiChromeDrawn) {
     return;
   }
@@ -2681,7 +2684,7 @@ static void ensureChrome() {
   uiChromeDrawn = true;
   if (animBootPending) {
     animBootPending = false;
-    clipStart(clipBoot, millis());
+    clipStart(clipBoot, now);
   }
 }
 
@@ -3414,7 +3417,7 @@ static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
                            float maxKmh, unsigned long elapsedMs, unsigned long moveMs,
                            unsigned long now, unsigned long lastPulseMs,
                            unsigned long revCount) {
-  ensureChrome();
+  ensureChrome(now);
 
   char buf[24];
   char right[24];
@@ -3627,14 +3630,14 @@ static void bleBeginAuthWait(unsigned long now) {
   clipStart(clipAuth, now);
 }
 
-static void bleConfirmAuth() {
+static void bleConfirmAuth(unsigned long now) {
   if (bleAuthState != BLE_AUTH_WAIT) {
     return;
   }
   bleAuthState = BLE_AUTH_OK;
   bleAuthDeadlineMs = 0;
   bleAuthNotifyPending = BLE_META_AUTH_OK;
-  clipStart(clipRune, millis());
+  clipStart(clipRune, now);
   Serial.println("BLE auth ok");
 }
 
