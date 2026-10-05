@@ -600,15 +600,12 @@ static void scAnimations() {
   noInterrupts();
   g_revCount = (unsigned long)(9950000.0 / cfg.wheelCircMm);
   interrupts();
-  runUntil([] { return clipMsLive.on; }, 30000, "10 km milestone");
-  frames("anim_milestone_live", 15, 50, "10 km milestone while riding",
-         {{5, "36_anim_milestone_live", "Passing 10 km: the gauge fills and a dim wash follows"}});
+  runUntil([] { return clipMilestone.on; }, 30000, "10 km milestone");
+  frames("anim_milestone", 58, 50, "10 km milestone while riding",
+         {{18, "36_anim_milestone", "Passing 10 km: the distance pops up between sparkles"}});
   rideProfile(30, 1, 4000);
 
   rampTo(0, 5000);
-  runUntil([] { return clipMsStop.on; }, 20000, "milestone at the stop");
-  frames("anim_milestone", 58, 50, "10 km milestone at the next stop",
-         {{18, "37_anim_milestone_stop", "At the next stop the milestone pops up between sparkles"}});
 
   runUntil([] { return stillMs() >= FACE_AFTER_MS; }, 20000, "face");
   frames("anim_face_wake", 20, 50, "Face appears",

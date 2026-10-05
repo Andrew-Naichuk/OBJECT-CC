@@ -85,7 +85,6 @@ ANIMS = {
     "anim-boot": ("anim_boot", *MATRIX_ROWS),
     "anim-heartbeat": ("anim_heartbeat", *MATRIX_ROWS),
     "anim-new-max": ("anim_new_max", *MATRIX_ROWS),
-    "anim-milestone-live": ("anim_milestone_live", *MATRIX_ROWS),
     "anim-milestone": ("anim_milestone", *MATRIX_ROWS),
     "anim-face-wake": ("anim_face_wake", *MATRIX_ROWS),
     "anim-face": ("anim_face", *MATRIX_ROWS),

@@ -330,12 +330,11 @@ struct AnimClip {
   unsigned long startMs;
 };
 static AnimClip clipBoot, clipBeat, clipFirework, clipAuth, clipRune;
-static AnimClip clipNewMax, clipMsLive, clipMsStop;
+static AnimClip clipNewMax, clipMsLive, clipMilestone;
 static bool animBootPending = false;
 static float animMaxBaseline = 0.0f;
 static long msBaseline = 0;
 static bool msBaselineValid = false;
-static uint16_t msPending = 0;
 static uint16_t msShowValue = 0;
 static unsigned long msEndMs = 0;
 static unsigned long animRevSeen = 0;
@@ -458,11 +457,10 @@ static void clipStart(AnimClip &c, unsigned long now) {
 static void animResetRide() {
   animMaxBaseline = 0.0f;
   msBaselineValid = false;
-  msPending = 0;
   clipNewMax.on = false;
   clipNewMax.startMs = 0;
   clipMsLive.on = false;
-  clipMsStop.on = false;
+  clipMilestone.on = false;
 }
 
 void reedIsr() {
@@ -2731,8 +2729,8 @@ static uint8_t overlayState(unsigned long now, unsigned long *remainSec, int *ho
 // --- Matrix animations -------------------------------------------------
 // Each frame is a pure function of the time since its trigger (and a hash
 // seeded by that time), so the emulator captures the same pixels every run.
-// While the wheel turns the digits stay digits: only the heartbeat and the
-// gauge effects play.
+// While the wheel turns the digits stay digits: only the heartbeat, the
+// gauge effects and the distance milestone play.
 
 static const unsigned long ANIM_BOOT_MS = 700;
 static const unsigned long ANIM_BEAT_MS = 120;
@@ -2740,9 +2738,7 @@ static const unsigned long ANIM_FIREWORK_MS = BTN_FLASH_MS;
 static const unsigned long ANIM_RUNE_MS = 1300;
 static const unsigned long ANIM_NEWMAX_MS = 600;
 static const unsigned long ANIM_MS_LIVE_MS = 700;
-static const unsigned long ANIM_MS_STOP_MS = 2800;
-static const unsigned long ANIM_MS_AFTER_STOP_MS = 1000;
-static const unsigned long ANIM_MS_REQUEUE_MS = 1500;
+static const unsigned long ANIM_MILESTONE_MS = 2800;
 static const unsigned long NEWMAX_MOVING_MS = 120000;
 static const unsigned long NEWMAX_GAP_MS = 60000;
 static const float NEWMAX_STEP_KMH = 0.5f;
@@ -2805,10 +2801,15 @@ static void animTrackDistance(unsigned long now, float distanceKm) {
     return;
   }
   msBaseline = idx;
-  if (animOn()) {
+  if (!animOn()) {
+    return;
+  }
+  long value = idx * MILESTONE_STEP;
+  if (value < 1000) {
+    msShowValue = (uint16_t)value;
+    clipStart(clipMilestone, now);
+  } else {
     clipStart(clipMsLive, now);
-    long value = idx * MILESTONE_STEP;
-    msPending = value < 1000 ? (uint16_t)value : 0;
   }
 }
 
@@ -2952,7 +2953,7 @@ static void fxComet(unsigned long t) {
   }
 }
 
-// Milestone: the gauge fills left to right, then a dim wash follows it.
+// Milestone past 999: the gauge fills left to right, then a dim wash follows it.
 static void fxSweep(unsigned long t) {
   if (t < 350) {
     int k = (int)(t * (GAUGE_DOTS + 1) / 350);
@@ -3045,7 +3046,7 @@ static bool nearText(const char *s, int col0, int r, int c) {
   return false;
 }
 
-// Milestone at the next stop: sparkles, the distance pops in, dissolves to 0.0.
+// Milestone: sparkles, the distance pops in, then dissolves back to the speed.
 static void fxMilestone(unsigned long t, const char *digits, uint16_t value, uint32_t seed) {
   char num[6];
   snprintf(num, sizeof(num), "%u", (unsigned)value);
@@ -3287,11 +3288,13 @@ static void animCompose(unsigned long now, float speedKmh, uint8_t ovl, bool sen
     fxFirework(t, digits, clipFirework.startMs);
     return;
   }
+  if (ovl == OVL_NONE && !sending
+      && clipAt(clipMilestone, now, ANIM_MILESTONE_MS, &t)) {
+    fxMilestone(t, digits, msShowValue, clipMilestone.startMs);
+    msEndMs = now;
+    return;
+  }
   if (moving) {
-    if (clipMsStop.on && now - clipMsStop.startMs < ANIM_MS_REQUEUE_MS) {
-      msPending = msShowValue;
-    }
-    clipMsStop.on = false;
     fxHeartbeat(now);
     gaugeFx(now, ovl, sending);
     return;
@@ -3302,17 +3305,6 @@ static void animCompose(unsigned long now, float speedKmh, uint8_t ovl, bool sen
   }
   if (clipAt(clipRune, now, ANIM_RUNE_MS, &t)) {
     fxRune(t);
-    return;
-  }
-  if (!clipMsStop.on && msPending && ovl == OVL_NONE
-      && now - zeroSinceMs >= ANIM_MS_AFTER_STOP_MS) {
-    msShowValue = msPending;
-    msPending = 0;
-    clipStart(clipMsStop, now);
-  }
-  if (clipAt(clipMsStop, now, ANIM_MS_STOP_MS, &t)) {
-    fxMilestone(t, digits, msShowValue, clipMsStop.startMs);
-    msEndMs = now;
     return;
   }
   gaugeFx(now, ovl, sending);

@@ -73,7 +73,7 @@ Only one status shows at a time, in this order of priority:
 
 ## Animations
 
-The speed matrix and the gauge come alive when the bike stands still or when something happens. While the wheel turns, the speed always stays readable: the only effects then are a faint heartbeat and short sweeps along the gauge.
+The speed matrix and the gauge come alive when the bike stands still or when something happens. While the wheel turns, the speed stays readable: the only effects then are a faint heartbeat, short sweeps along the gauge, and the 10 km milestone, which covers the speed for about three seconds.
 
 <table>
 <tr>
@@ -82,23 +82,23 @@ The speed matrix and the gauge come alive when the bike stands still or when som
 </tr>
 <tr>
 <td align="center" valign="top"><img src="docs/screens/anim-new-max.gif" width="300" alt="A bright comet runs along the speed gauge twice"><br><sub><b>New max</b><br>beat your top speed by 0.5 km/h after two minutes moving, and a comet runs the gauge (at most once a minute)</sub></td>
-<td align="center" valign="top"><img src="docs/screens/anim-milestone-live.gif" width="300" alt="The gauge fills to the end, then a dim wash follows it"><br><sub><b>Every 10 km</b><br>or 10 mi, the gauge fills and fades as you pass it…</sub></td>
+<td align="center" valign="top"><img src="docs/screens/anim-milestone.gif" width="300" alt="The speed dissolves into sparkles, a large 10 appears, then dissolves back to the speed"><br><sub><b>Every 10 km</b><br>or 10 mi, the distance pops up between sparkles the moment you pass it</sub></td>
 </tr>
 <tr>
-<td align="center" valign="top"><img src="docs/screens/anim-milestone.gif" width="300" alt="The 0.0 dissolves into sparkles, a large 10 appears, then dissolves back to 0.0"><br><sub><b>…and at the next stop</b><br>the distance pops up between sparkles</sub></td>
 <td align="center" valign="top"><img src="docs/screens/anim-face-wake.gif" width="300" alt="Pupils fade into the two zeros of 0.0, which then blink"><br><sub><b>Stopped for 8 s</b><br>mid-ride, the 0.0 opens its eyes</sub></td>
-</tr>
-<tr>
 <td align="center" valign="top"><img src="docs/screens/anim-face.gif" width="300" alt="The eyes look left, right, up and down and blink"><br><sub><b>Waiting</b><br>it looks around and blinks</sub></td>
+</tr>
+<tr>
 <td align="center" valign="top"><img src="docs/screens/anim-face-sleep.gif" width="300" alt="Closed eyes, a z rising beside them and two gauge dots breathing"><br><sub><b>After 2 minutes</b><br>it dozes off. Any wheel turn brings the speed straight back</sub></td>
-</tr>
-<tr>
 <td align="center" valign="top"><img src="docs/screens/anim-drain.gif" width="300" alt="The 0.0 empties row by row from the top while the gauge fills"><br><sub><b>Hold for new ride</b><br>the digits drain as the gauge fills</sub></td>
-<td align="center" valign="top"><img src="docs/screens/anim-firework.gif" width="300" alt="A burst of particles from the centre, then 0.0 drops in from the top"><br><sub><b>Ride saved</b><br>a firework, then the fresh 0.0 drops in (also on Stats reset)</sub></td>
 </tr>
 <tr>
+<td align="center" valign="top"><img src="docs/screens/anim-firework.gif" width="300" alt="A burst of particles from the centre, then 0.0 drops in from the top"><br><sub><b>Ride saved</b><br>a firework, then the fresh 0.0 drops in (also on Stats reset)</sub></td>
 <td align="center" valign="top"><img src="docs/screens/anim-press.gif" width="300" alt="Three chevrons flow downward through the matrix"><br><sub><b>Press to allow</b><br>arrows point down to the button</sub></td>
+</tr>
+<tr>
 <td align="center" valign="top"><img src="docs/screens/anim-rune.gif" width="300" alt="The Bluetooth symbol is drawn stroke by stroke, then fades"><br><sub><b>Phone allowed</b><br>the Bluetooth mark draws itself, then fades</sub></td>
+<td></td>
 </tr>
 </table>
 
