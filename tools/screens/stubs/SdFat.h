@@ -121,6 +121,8 @@ class File32 {
 class SdFat {
  public:
   bool begin(const SdSpiConfig &) { emuOnSdBegin(); return g_card.present; }
+  uint32_t clusterCount() const { return g_card.present ? 973584 : 0; }
+  uint16_t bytesPerCluster() const { return 32768; }
   bool exists(const char *p) { return g_card.files.count(p) > 0; }
   bool remove(const char *p) { return g_card.files.erase(p) > 0; }
   bool rename(const char *a, const char *b) {

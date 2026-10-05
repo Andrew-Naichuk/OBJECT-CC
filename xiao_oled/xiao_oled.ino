@@ -3822,9 +3822,13 @@ static bool bleScanOneEntry() {
   return false;
 }
 
+// List end carries the card's FAT volume size in KiB, u32 little-endian.
 static bool bleFinishList() {
-  uint8_t endb = BLE_META_LIST_END;
-  if (!bleNotifyMeta(&endb, 1)) {
+  uint32_t kib = (uint32_t)(((uint64_t)sd.clusterCount() * sd.bytesPerCluster()) >> 10);
+  uint8_t endb[5] = {BLE_META_LIST_END,
+                     (uint8_t)(kib & 0xff), (uint8_t)((kib >> 8) & 0xff),
+                     (uint8_t)((kib >> 16) & 0xff), (uint8_t)((kib >> 24) & 0xff)};
+  if (!bleNotifyMeta(endb, sizeof(endb))) {
     return false;
   }
   bleCloseFiles();

@@ -155,7 +155,10 @@
       if (!settings.card) return err(1);
       let delay = 0;
       for (const [n, body] of files) later(() => meta.emit(named(0x01, n, body.length)), (delay += 40));
-      later(() => meta.emit(new Uint8Array([0x02])), delay + 40);
+      const end = new Uint8Array(5);
+      end[0] = 0x02;
+      putU32(end, 1, 31154688);
+      later(() => meta.emit(end), delay + 40);
     } else if (op === 0x02) {
       send(name);
     } else if (op === 0x03) {

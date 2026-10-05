@@ -3,13 +3,46 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>OBJECT — Ride transfer</title>
+  <title>OBJECT HUB</title>
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=Doto:wght@900&display=swap" rel="stylesheet">
+  <link rel="preload" href="fonts/archivo-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/doto-latin.woff2" as="font" type="font/woff2" crossorigin>
   <style>
+    @font-face {
+      font-family: "Archivo";
+      font-style: normal;
+      font-weight: 400 900;
+      font-stretch: 62% 125%;
+      font-display: swap;
+      src: url("fonts/archivo-latin-ext.woff2") format("woff2");
+      unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+    }
+    @font-face {
+      font-family: "Archivo";
+      font-style: normal;
+      font-weight: 400 900;
+      font-stretch: 62% 125%;
+      font-display: swap;
+      src: url("fonts/archivo-latin.woff2") format("woff2");
+      unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+    }
+    @font-face {
+      font-family: "Doto";
+      font-style: normal;
+      font-weight: 900;
+      font-display: swap;
+      src: url("fonts/doto-latin-ext.woff2") format("woff2");
+      unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+    }
+    @font-face {
+      font-family: "Doto";
+      font-style: normal;
+      font-weight: 900;
+      font-display: swap;
+      src: url("fonts/doto-latin.woff2") format("woff2");
+      unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+    }
     :root {
       color-scheme: light dark;
       --paper: #ffffff;
@@ -17,6 +50,9 @@
       --quiet: #6f6f6f;
       --rule: #e4e4e4;
       --wash: #f2f2f2;
+      --danger: #d71921;
+      --danger-wash: rgba(215, 25, 33, 0.08);
+      --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23000000' stroke-width='1.75' stroke-linecap='square'%3E%3Cpath d='M5.5 8 10 12.5 14.5 8'/%3E%3C/svg%3E");
       --shell: #161616;
       --shell-edge: #2e2e2e;
       --px: #ffffff;
@@ -33,6 +69,9 @@
         --quiet: #8f8f8f;
         --rule: #232323;
         --wash: #0f0f0f;
+        --danger: #ffffff;
+        --danger-wash: rgba(255, 69, 58, 0.12);
+        --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23ffffff' stroke-width='1.75' stroke-linecap='square'%3E%3Cpath d='M5.5 8 10 12.5 14.5 8'/%3E%3C/svg%3E");
         --shell: #141414;
         --shell-edge: #333333;
         --drop: none;
@@ -68,7 +107,7 @@
         max(16px, env(safe-area-inset-left));
     }
 
-    /* Top line: wordmark and link state */
+    /* Top line: wordmark and link actions */
     .top {
       display: flex;
       justify-content: space-between;
@@ -81,32 +120,29 @@
       margin: 0;
       font-weight: 850;
       font-stretch: 125%;
-      font-size: 1.3rem;
+      font-size: 1.125rem;
       line-height: 1;
       letter-spacing: 0.02em;
     }
-    .link {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      color: var(--quiet);
-      font-size: 0.9375rem;
-      white-space: nowrap;
+    .actions { display: flex; gap: 0.375rem; }
+    .actions button {
+      width: 2.25rem;
+      height: 2.25rem;
+      display: grid;
+      place-items: center;
+      margin: -0.4rem 0;
+      padding: 0;
+      border: 1.5px solid var(--rule);
+      border-radius: 10px;
+      background: transparent;
+      transition: background-color 0.15s ease;
     }
-    .led {
-      width: 0.55rem;
-      height: 0.55rem;
-      border-radius: 50%;
-      border: 1.5px solid currentColor;
+    .actions svg { width: 1.15rem; height: 1.15rem; display: block; }
+    @media (hover: hover) {
+      .actions button:not(:disabled):hover { background: var(--wash); }
     }
-    body[data-link="on"] .link { color: var(--ink); }
-    body[data-link="on"] .led { background: var(--ink); border-color: var(--ink); }
-    body[data-phase="pairing"] .led,
-    body[data-phase="listing"] .led,
-    body[data-phase="downloading"] .led,
-    body[data-phase="deleting"] .led,
-    body[data-phase="reading"] .led,
-    body[data-phase="saving"] .led { animation: blink 0.9s steps(2, jump-none) infinite; }
+    .actions button:active:not(:disabled) { background: var(--wash); }
+    .actions button:disabled { opacity: 0.4; }
 
     /* The object: a drawing of the computer, its screen mirrors the device */
     .device {
@@ -157,6 +193,16 @@
     }
     .screen-top span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .screen-top span + span { flex: none; }
+    #caption {
+      white-space: normal;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+    }
+    #caption.error { color: var(--px); }
+    #caption.error::before { content: "! "; }
+    body[data-link="off"] .screen > .screen-top:has(.error) { opacity: 1; }
 
     .figure {
       display: flex;
@@ -200,24 +246,7 @@
     body[data-phase="reading"] .gauge .fill,
     body[data-phase="saving"] .gauge .fill { animation: sweep 1.5s steps(24) infinite; }
 
-    /* Status and controls */
-    #status { margin: 0 0 1rem; min-height: 1.45em; color: var(--quiet); }
-    #status.error { display: flex; gap: 0.55rem; color: var(--ink); font-weight: 600; }
-    #status.error::before {
-      content: "!";
-      flex: none;
-      display: grid;
-      place-items: center;
-      width: 1.3rem;
-      height: 1.3rem;
-      margin-top: 0.05rem;
-      border-radius: 50%;
-      background: var(--ink);
-      color: var(--paper);
-      font-size: 0.8rem;
-      font-weight: 850;
-    }
-
+    /* Controls */
     #connect {
       width: 100%;
       height: 3.6rem;
@@ -232,39 +261,14 @@
     #connect:active:not(:disabled) { transform: scale(0.985); }
     #connect:disabled { opacity: 0.45; }
 
-    .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
-    .pair button {
-      height: 3.25rem;
-      border: 1.5px solid var(--rule);
-      border-radius: 12px;
-      background: transparent;
-      font-weight: 600;
-    }
-    .pair button:active:not(:disabled) { background: var(--wash); }
-    .pair button:disabled { opacity: 0.4; }
     body[data-link="on"] #connect,
     body[data-link="off"] .when-on { display: none; }
 
     /* Ride list */
-    .rides { margin-top: 2.5rem; }
-    .rides-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      gap: 1rem;
-      padding-bottom: 0.7rem;
-      border-bottom: 2px solid var(--ink);
-    }
-    .rides-head h2 {
-      margin: 0;
-      font-size: 1.375rem;
-      font-weight: 750;
-      font-stretch: 112%;
-      line-height: 1.1;
-    }
-    .hint { color: var(--quiet); font-size: 0.875rem; }
+    .rides { margin-top: 0; }
 
     ul { list-style: none; margin: 0; padding: 0; }
+    #files { padding: 24px 0; }
     li {
       margin: 0;
       display: grid;
@@ -296,16 +300,15 @@
       border-left: 1px solid var(--rule);
       border-radius: 0;
       background: transparent;
-      color: var(--quiet);
-      transition: background-color 0.15s ease, color 0.15s ease;
+      color: var(--danger);
+      transition: background-color 0.15s ease;
     }
     @media (hover: hover) {
-      li button.ride:not(:disabled):hover,
-      li button.del:not(:disabled):hover { background: var(--wash); }
-      li button.del:not(:disabled):hover { color: var(--ink); }
+      li button.ride:not(:disabled):hover { background: var(--wash); }
+      li button.del:not(:disabled):hover { background: var(--danger-wash); }
     }
-    li button.ride:active:not(:disabled),
-    li button.del:active:not(:disabled) { background: var(--wash); }
+    li button.ride:active:not(:disabled) { background: var(--wash); }
+    li button.del:active:not(:disabled) { background: var(--danger-wash); }
     li button:disabled { opacity: 0.38; }
     li button.ride.active { opacity: 1; }
 
@@ -318,7 +321,6 @@
       font-weight: 600;
       font-variant-numeric: tabular-nums;
     }
-    .ext { color: var(--quiet); font-weight: 400; }
     .tag {
       display: inline-block;
       margin-left: 0.55rem;
@@ -340,10 +342,47 @@
       color: var(--quiet);
     }
 
-    .note { margin: 2.75rem 0 0; width: 100%; color: var(--quiet); font-size: 0.875rem; }
+    .note { margin: 2.75rem 0 0; width: 100%; color: var(--quiet); font-size: 0.875rem; text-align: center; }
 
-    /* Rides / Settings switch and segmented choices share one look */
-    .tabs, .seg {
+    /* Rides / Settings switch: text tabs with a sliding underline */
+    .tabs {
+      position: relative;
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: 1fr;
+      margin-top: 2rem;
+      border-bottom: 1px solid var(--rule);
+    }
+    .tabs::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      bottom: -1px;
+      width: 50%;
+      height: 2px;
+      background: var(--ink);
+      transition: transform 0.25s ease;
+    }
+    body[data-view="settings"] .tabs::after { transform: translateX(100%); }
+    .tabs button {
+      height: 3rem;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--quiet);
+      font-size: 1.0625rem;
+      font-weight: 650;
+      transition: color 0.15s ease;
+    }
+    .tabs button[aria-selected="true"] { color: var(--ink); }
+    @media (hover: hover) {
+      .tabs button:not(:disabled):hover { color: var(--ink); }
+    }
+    .tabs button:disabled { opacity: 0.4; }
+    .tabs button:focus-visible { outline-offset: -2px; }
+
+    /* Segmented choices in Settings */
+    .seg {
       display: grid;
       grid-auto-flow: column;
       grid-auto-columns: 1fr;
@@ -352,8 +391,7 @@
       border-radius: 14px;
       background: var(--wash);
     }
-    .tabs { margin-top: 2rem; }
-    .tabs button, .seg span {
+    .seg span {
       display: grid;
       place-items: center;
       align-content: center;
@@ -368,9 +406,7 @@
       text-align: center;
       transition: background-color 0.15s ease, color 0.15s ease;
     }
-    .tabs button[aria-selected="true"],
     .seg input:checked + span { background: var(--ink); color: var(--paper); }
-    .tabs button:disabled { opacity: 0.4; }
     .seg label { position: relative; display: grid; cursor: pointer; }
     .seg input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
     .seg input:focus-visible + span { outline: 2px solid var(--ink); outline-offset: 2px; }
@@ -380,7 +416,7 @@
     body[data-view="rides"] .settings { display: none; }
 
     /* Settings */
-    .settings { margin-top: 2.5rem; }
+    .settings { margin-top: 1.75rem; }
     .settings fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
     .settings fieldset:disabled { opacity: 0.4; }
     .notice {
@@ -409,7 +445,6 @@
       font-weight: 600;
     }
     .field .val { color: var(--quiet); font-weight: 500; font-variant-numeric: tabular-nums; }
-    .field .help { margin: 0.45rem 0 0; color: var(--quiet); font-size: 0.875rem; }
     .field .bad { margin: 0.45rem 0 0; font-size: 0.875rem; font-weight: 650; }
     .settings select, .settings input[type="text"], .settings input[type="number"] {
       width: 100%;
@@ -422,9 +457,72 @@
       font: inherit;
       font-variant-numeric: tabular-nums;
     }
+    .settings select {
+      -webkit-appearance: none;
+      appearance: none;
+      padding-right: 2.75rem;
+      background: var(--paper) var(--chevron) no-repeat right 0.9rem center / 1.1rem;
+      text-overflow: ellipsis;
+    }
     .settings select:focus, .settings input:focus { border-color: var(--ink); outline: none; }
     .settings input[aria-invalid="true"] { border-color: var(--ink); border-width: 2.5px; }
-    .settings input[type="range"] { width: 100%; height: 2rem; margin: 0; accent-color: var(--ink); }
+    /* Range drawn as a dot row, like the gauge on the device screen */
+    .dots-range {
+      --p: 0;
+      position: relative;
+      display: grid;
+      align-items: center;
+      height: 2.75rem;
+    }
+    .dots-range::before,
+    .dots-range::after {
+      content: "";
+      position: absolute;
+      inset: 50% 0 auto;
+      height: 10px;
+      transform: translateY(-50%);
+      background: radial-gradient(circle at 5px 5px, var(--rule) 3.6px, transparent 4.2px) 0 0 / 14px 10px repeat-x;
+      pointer-events: none;
+    }
+    .dots-range::after {
+      background-image: radial-gradient(circle at 5px 5px, var(--ink) 3.6px, transparent 4.2px);
+      clip-path: inset(0 calc(100% - (100% - 6px) * var(--p) - 3px) 0 0);
+    }
+    .dots-range input {
+      -webkit-appearance: none;
+      appearance: none;
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      height: 28px;
+      margin: 0;
+      background: transparent;
+      cursor: pointer;
+    }
+    .dots-range input:focus-visible { outline: none; }
+    .dots-range input::-webkit-slider-runnable-track { height: 28px; background: transparent; }
+    .dots-range input::-moz-range-track { height: 28px; background: transparent; }
+    .dots-range input::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 6px;
+      height: 28px;
+      border: 0;
+      border-radius: 3px;
+      background: var(--ink);
+      box-shadow: 0 0 0 4px var(--paper);
+    }
+    .dots-range input::-moz-range-thumb {
+      width: 6px;
+      height: 28px;
+      border: 0;
+      border-radius: 3px;
+      background: var(--ink);
+      box-shadow: 0 0 0 4px var(--paper);
+    }
+    .dots-range input:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px var(--paper), 0 0 0 5px var(--ink); }
+    .dots-range input:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--paper), 0 0 0 5px var(--ink); }
+    .dots-range:has(input:disabled) { opacity: 0.4; }
+    .dots-range input:disabled { cursor: default; }
     .with-unit { position: relative; }
     .with-unit input { padding-right: 3.5rem; }
     .with-unit span {
@@ -497,8 +595,58 @@
     #cfg-save { border: 0; background: var(--ink); color: var(--paper); }
     .savebar button:disabled { opacity: 0.4; }
 
+    /* Delete confirmation */
+    .sheet {
+      width: calc(100% - 32px);
+      max-width: 22rem;
+      padding: 0;
+      border: 1.5px solid var(--ink);
+      border-radius: 24px;
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: var(--drop);
+    }
+    .sheet[open] { animation: rise 0.18s ease-out; }
+    .sheet::backdrop { background: rgba(0, 0, 0, 0.45); }
+    .sheet form { margin: 0; padding: 1.4rem 1.25rem 1.25rem; }
+    .sheet .eyebrow {
+      margin: 0 0 0.6rem;
+      color: var(--danger);
+      font-size: 0.8125rem;
+      font-weight: 650;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .sheet h2 {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 1rem;
+      margin: 0;
+      padding-bottom: 0.7rem;
+      border-bottom: 2px solid var(--ink);
+      font-size: 1.375rem;
+      font-weight: 750;
+      font-stretch: 112%;
+      line-height: 1.1;
+      font-variant-numeric: tabular-nums;
+    }
+    .sheet h2 .size { font-size: 0.9375rem; font-weight: 400; font-stretch: 100%; }
+    .sheet p.body { margin: 0.9rem 0 1.4rem; color: var(--quiet); font-size: 0.9375rem; }
+    .sheet .choices { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+    .sheet .choices button {
+      height: 3.25rem;
+      border-radius: 12px;
+      font-weight: 650;
+      transition: transform 0.12s ease;
+    }
+    .sheet .choices button:active { transform: scale(0.985); }
+    .sheet .cancel { border: 1.5px solid var(--rule); background: transparent; }
+    .sheet .confirm { border: 0; background: var(--danger); color: var(--paper); }
+
     @keyframes blink { 50% { opacity: 0.15; } }
     @keyframes breathe { 50% { opacity: 0.7; } }
+    @keyframes rise { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
     @keyframes sweep {
       0% { clip-path: inset(0 100% 0 0); }
       50% { clip-path: inset(0 0 0 0); }
@@ -516,13 +664,16 @@
       <div class="brand">
         <h1 class="mark">OBJECT HUB</h1>
       </div>
-      <span class="link" aria-live="polite"><span class="led" aria-hidden="true"></span><span id="link-label">Offline</span></span>
+      <div class="actions when-on">
+        <button id="refresh" type="button" aria-label="Refresh list" title="Refresh list" disabled><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M16 10a6 6 0 1 1-1.8-4.3M16.5 3v3.5H13"/></svg></button>
+        <button id="disconnect" type="button" aria-label="Disconnect" title="Disconnect" disabled><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M10 2.5v7M14.6 5.2a6.5 6.5 0 1 1-9.2 0"/></svg></button>
+      </div>
     </header>
 
     <section class="device" aria-label="Computer display">
       <div class="screen">
         <div class="screen-top">
-          <span id="caption">No computer</span>
+          <span id="caption" role="status">Wake the computer and keep it close, then connect</span>
           <span id="progress-label"></span>
         </div>
         <div class="figure" aria-live="polite">
@@ -534,14 +685,8 @@
       </div>
     </section>
 
-    <p id="status">Wake the computer and keep it close, then connect.</p>
-
     <div class="controls">
       <button id="connect" type="button">Connect</button>
-      <div class="pair when-on">
-        <button id="refresh" type="button" disabled>Refresh list</button>
-        <button id="disconnect" type="button" disabled>Disconnect</button>
-      </div>
     </div>
 
     <div class="tabs when-on" role="tablist" aria-label="View">
@@ -549,19 +694,11 @@
       <button id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="settings-view">Settings</button>
     </div>
 
-    <section class="rides when-on" id="rides-view" role="tabpanel" aria-labelledby="rides-title">
-      <div class="rides-head">
-        <h2 id="rides-title">Rides</h2>
-        <span class="hint">Tap one to save the GPX</span>
-      </div>
+    <section class="rides when-on" id="rides-view" role="tabpanel" aria-labelledby="tab-rides">
       <ul id="files"></ul>
     </section>
 
-    <section class="settings when-on" id="settings-view" role="tabpanel" aria-labelledby="settings-title">
-      <div class="rides-head">
-        <h2 id="settings-title">Settings</h2>
-        <span class="hint">Stored on the card</span>
-      </div>
+    <section class="settings when-on" id="settings-view" role="tabpanel" aria-labelledby="tab-settings">
       <p class="notice hide" id="cfg-notice"></p>
       <form id="cfg-form" novalidate>
         <fieldset id="cfg-fields" disabled>
@@ -580,22 +717,17 @@
                 <label><input type="radio" name="backlight" value="0"><span>Bright</span></label>
                 <label><input type="radio" name="backlight" value="1"><span>Dim</span></label>
                 <label><input type="radio" name="backlight" value="2"><span>Off</span></label>
-              </div>
-              <p class="help">A short press on the button still cycles it while you ride.</p>
-            </div>
+              </div>            </div>
             <div class="field">
               <label for="cfg-dim">Dim brightness <span class="val" id="cfg-dim-val"></span></label>
-              <input type="range" id="cfg-dim" min="5" max="100" step="1">
-              <p class="help">Used when the backlight is on Dim. Lower saves battery at night.</p>
+              <div class="dots-range"><input type="range" id="cfg-dim" min="5" max="100" step="1"></div>
             </div>
             <div class="field">
               <span class="label" id="animations-label">Animations</span>
               <div class="seg" role="radiogroup" aria-labelledby="animations-label">
                 <label><input type="radio" name="animations" value="1"><span>On</span></label>
                 <label><input type="radio" name="animations" value="0"><span>Off</span></label>
-              </div>
-              <p class="help">A face when you stop, celebrations and transitions on the speed display.</p>
-            </div>
+              </div>            </div>
           </div>
 
           <div class="group">
@@ -607,12 +739,10 @@
             <div class="field hide" id="cfg-wheel-field">
               <label for="cfg-wheel">Circumference</label>
               <div class="with-unit">
-                <input type="number" id="cfg-wheel" inputmode="numeric" min="1000" max="3000" step="1" aria-describedby="cfg-wheel-help">
+                <input type="number" id="cfg-wheel" inputmode="numeric" min="1000" max="3000" step="1">
                 <span>mm</span>
               </div>
-              <p class="bad hide" id="cfg-wheel-bad">Enter 1000 to 3000 mm.</p>
-              <p class="help" id="cfg-wheel-help">For the best accuracy, mark the tyre, roll the bike one full turn with your weight on it and measure the distance.</p>
-            </div>
+              <p class="bad hide" id="cfg-wheel-bad">Enter 1000 to 3000 mm.</p>            </div>
           </div>
 
           <div class="group">
@@ -623,25 +753,19 @@
                 <button type="button" id="cfg-stopped-dec" aria-label="Shorter">&minus;</button>
                 <output id="cfg-stopped" aria-live="polite"></output>
                 <button type="button" id="cfg-stopped-inc" aria-label="Longer">+</button>
-              </div>
-              <p class="help">Moving time and average speed pause when the wheel has not turned for this long.</p>
-            </div>
+              </div>            </div>
           </div>
 
           <div class="group">
             <h3>Device</h3>
             <div class="field">
               <label for="cfg-name">Name</label>
-              <input type="text" id="cfg-name" maxlength="20" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-describedby="cfg-name-help">
-              <p class="bad hide" id="cfg-name-bad">Use 1 to 20 letters, digits or symbols, without spaces.</p>
-              <p class="help" id="cfg-name-help">Shown when you connect. A new name appears the next time you connect.</p>
-            </div>
+              <input type="text" id="cfg-name" maxlength="20" autocomplete="off" autocapitalize="characters" spellcheck="false">
+              <p class="bad hide" id="cfg-name-bad">Use 1 to 20 letters, digits or symbols, without spaces.</p>            </div>
             <div class="field">
               <label for="cfg-tz">Time zone</label>
               <select id="cfg-tz"></select>
-              <button type="button" class="linkish" id="cfg-tz-phone"></button>
-              <p class="help">Only used to name saved rides; GPS tracks stay in UTC. Change it when the clocks change.</p>
-            </div>
+              <button type="button" class="linkish" id="cfg-tz-phone"></button>            </div>
           </div>
 
           <details class="group">
@@ -652,9 +776,7 @@
                 <input type="number" id="cfg-max" inputmode="numeric" step="1">
                 <span id="cfg-max-unit">km/h</span>
               </div>
-              <p class="bad hide" id="cfg-max-bad"></p>
-              <p class="help">Faster wheel readings are treated as magnet noise and do not count towards speed or Max.</p>
-            </div>
+              <p class="bad hide" id="cfg-max-bad"></p>            </div>
           </details>
         </fieldset>
 
@@ -668,6 +790,17 @@
 
     <p class="note">Works in Chrome on Android when this page is served over HTTPS. Safari on iPhone has no Bluetooth; open the page in Bluefy instead.</p>
   </main>
+  <dialog class="sheet" id="del-dialog" aria-labelledby="del-title" aria-describedby="del-body">
+    <form method="dialog">
+      <p class="eyebrow">Delete ride</p>
+      <h2 id="del-title"><span id="del-name"></span><span class="size" id="del-size"></span></h2>
+      <p class="body" id="del-body">The track is removed from the card in the computer. This cannot be undone.</p>
+      <div class="choices">
+        <button type="submit" class="cancel" value="cancel" autofocus>Cancel</button>
+        <button type="submit" class="confirm" value="delete">Delete</button>
+      </div>
+    </form>
+  </dialog>
   <script>
     // Same bytes as xiao_oled.ino.
     const SERVICE = "7a1e0001-4c8b-4d2e-9f63-1b5a0c7e8d24";
@@ -705,7 +838,6 @@
       7: "A setting is out of range"
     };
 
-    const statusEl = document.getElementById("status");
     const connectBtn = document.getElementById("connect");
     const refreshBtn = document.getElementById("refresh");
     const disconnectBtn = document.getElementById("disconnect");
@@ -715,7 +847,6 @@
     const valueEl = document.getElementById("value");
     const unitEl = document.getElementById("unit");
     const captionEl = document.getElementById("caption");
-    const linkLabel = document.getElementById("link-label");
     const tabRides = document.getElementById("tab-rides");
     const tabSettings = document.getElementById("tab-settings");
     const $ = (id) => document.getElementById(id);
@@ -735,6 +866,7 @@
     const tzPhoneBtn = $("cfg-tz-phone");
     const maxInput = $("cfg-max");
     const stoppedOut = $("cfg-stopped");
+    const delDialog = $("del-dialog");
 
     let device = null;
     let cmdChar = null;
@@ -742,6 +874,7 @@
     let authorized = false;
     let userDisconnect = false;
     let rides = [];
+    let cardBytes = 0;
     let fileBuf = null;
     let fileName = "";
     let received = 0;
@@ -757,16 +890,16 @@
     const DOWN_ICON = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M10 3v10M5.5 8.5 10 13l4.5-4.5M4 17h12"/></svg>';
     const DEL_ICON = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M4 6h12M8 6V4h4v2M7 6v10h6V6"/></svg>';
 
+    function fillRange(input) {
+      const min = Number(input.min), max = Number(input.max);
+      input.parentElement.style.setProperty("--p", (Number(input.value) - min) / (max - min));
+    }
+
     function pad2(n) {
       return n < 10 ? "0" + n : String(n);
     }
 
-    function splitName(name) {
-      const dot = name.lastIndexOf(".");
-      return dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
-    }
-
-    // Mirrors the transfer state onto the drawn display and the link indicator.
+    // Mirrors the transfer state onto the drawn display.
     function syncUI() {
       const linked = !!cmdChar;
       const pairing = !linked && connectBtn.disabled;
@@ -780,7 +913,6 @@
       tabRides.disabled = tabSettings.disabled = phase !== "idle";
       let value = "--";
       let unit = "";
-      let caption = "No computer";
       let right = "";
       let p = 0;
       const stored = rides.reduce((sum, r) => sum + r.size, 0);
@@ -790,54 +922,40 @@
         const pct = total ? Math.floor((prog.got / total) * 100) : 0;
         value = String(pct);
         unit = "%";
-        caption = fileName || "Saving";
         right = total ? formatSize(prog.got) + " / " + formatSize(total) : "Requesting";
         p = pct / 100;
       } else if (phase === "deleting") {
         value = "--";
-        caption = fileName || "Deleting";
         right = "Remove";
       } else if (phase === "listing") {
         value = pad2(rides.length);
-        caption = "Reading card";
       } else if (phase === "awaiting") {
-        caption = "Press to allow";
         right = "10 s";
-      } else if (phase === "reading" || phase === "saving") {
-        caption = phase === "reading" ? "Reading settings" : "Saving settings";
-      } else if (linked) {
+      } else if (linked && phase === "idle") {
         value = pad2(rides.length);
-        caption = rides.length === 1 ? "Ride on card" : "Rides on card";
-        right = rides.length ? formatSize(stored) : "";
-      } else if (pairing) {
-        caption = "Pairing";
+        right = cardBytes ? formatSize(stored) + " / " + formatSize(cardBytes) : (rides.length ? formatSize(stored) : "");
       }
 
       valueEl.textContent = value;
       unitEl.textContent = unit;
-      captionEl.textContent = caption;
       progressLabel.textContent = right;
       progressEl.style.setProperty("--p", p);
       progressEl.setAttribute("aria-valuenow", String(Math.round(p * 100)));
-
-      linkLabel.textContent = !linked
-        ? (pairing ? "Pairing" : "Offline")
-        : ({ awaiting: "Confirm", listing: "Reading", downloading: "Transferring", deleting: "Deleting", reading: "Reading", saving: "Saving" }[phase] || "Connected");
-
       const activeSize = document.getElementById("active-size");
       if (activeSize) activeSize.textContent = phase === "downloading" ? value + "%" : "";
     }
 
     function setStatus(text, isError) {
-      statusEl.textContent = text;
-      statusEl.className = isError ? "error" : "";
+      captionEl.textContent = String(text).replace(/(?<!\.)\.$/, "");
+      captionEl.className = isError ? "error" : "";
       syncUI();
     }
 
     function formatSize(n) {
       if (n < 1024) return n + " B";
       if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10 * 1024 ? 1 : 0) + " KB";
-      return (n / (1024 * 1024)).toFixed(1) + " MB";
+      if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
+      return (n / (1024 * 1024 * 1024)).toFixed(1) + " GB";
     }
 
     function crc32(bytes) {
@@ -917,16 +1035,11 @@
 
         const name = document.createElement("span");
         name.className = "name";
-        const [base, ext] = splitName(ride.name);
-        name.append(base);
-        const extEl = document.createElement("span");
-        extEl.className = "ext";
-        extEl.textContent = ext.toLowerCase();
-        name.append(extEl);
+        name.append(ride.name.replace(/\.gpx$/i, ""));
         if (isCurrent) {
           const tag = document.createElement("span");
           tag.className = "tag";
-          tag.textContent = "Recording";
+          tag.textContent = "In progress";
           name.append(tag);
         }
 
@@ -1055,8 +1168,9 @@
       }
       if (type === META_LIST_END) {
         clearTimeout(stallTimer);
+        if (bytes.length >= 5) cardBytes = u32le(bytes, 1) * 1024;
         phase = "idle";
-        setStatus(rides.length ? rides.length + " ride" + (rides.length === 1 ? "" : "s") + " on the card." : "No GPX files on the card.");
+        setStatus(rides.length ? rides.length + " ride" + (rides.length === 1 ? "" : "s") + " on the device." : "No GPX files on the device.");
         renderRides();
         if (currentView === "settings" && !cfgDevice) requestSettings().catch(onSettingsError);
         return;
@@ -1186,10 +1300,27 @@
       await writeCmd(body);
     }
 
+    function confirmDelete(name) {
+      if (typeof delDialog.showModal !== "function") return Promise.resolve(confirm("Delete " + name + " from the computer?"));
+      const ride = rides.find((r) => r.name === name);
+      $("del-name").textContent = name.replace(/\.gpx$/i, "");
+      $("del-size").textContent = ride ? formatSize(ride.size) : "";
+      delDialog.returnValue = "";
+      delDialog.showModal();
+      return new Promise((resolve) => {
+        delDialog.addEventListener("close", () => resolve(delDialog.returnValue === "delete"), { once: true });
+      });
+    }
+
+    delDialog.addEventListener("click", (event) => {
+      if (event.target === delDialog) delDialog.close();
+    });
+
     async function deleteRide(name) {
       if (!cmdChar || !authorized || phase !== "idle") return;
       if (name === "CURRENT.GPX") return;
-      if (!confirm("Delete " + name + " from the computer?")) return;
+      if (!(await confirmDelete(name))) return;
+      if (!cmdChar || !authorized || phase !== "idle") return;
       phase = "deleting";
       resetTransfer();
       fileName = name;
@@ -1360,6 +1491,7 @@
       setRadio("animations", c.animations);
       dimInput.value = String(dimPct(c.dim));
       $("cfg-dim-val").textContent = dimPct(c.dim) + " %";
+      fillRange(dimInput);
 
       const preset = TYRES.some(([, list]) => list.some(([, , mm]) => mm === c.wheel));
       const custom = cfgCustom || !preset;
@@ -1472,6 +1604,7 @@
         input.addEventListener("change", () => editSettings({ animations: Number(input.value) }));
       }
       dimInput.addEventListener("input", () => {
+        fillRange(dimInput);
         editSettings({ dim: Math.max(1, Math.min(254, Math.round(Number(dimInput.value) * 254 / 100))) });
       });
       tyreSel.addEventListener("change", () => {
@@ -1564,12 +1697,14 @@
 
     function onDisconnected() {
       clearTimeout(stallTimer);
+      if (delDialog.open) delDialog.close();
       const wasAwaiting = phase === "awaiting" && !authorized;
       const timedOut = wasAwaiting && !userDisconnect;
       cmdChar = null;
       authorized = false;
       phase = "idle";
       rides = [];
+      cardBytes = 0;
       cfgDevice = null;
       cfgDraft = null;
       cfgCustom = false;
