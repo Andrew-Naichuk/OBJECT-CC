@@ -85,7 +85,6 @@
       line-height: 1;
       letter-spacing: 0.02em;
     }
-    .sub { color: var(--quiet); font-size: 0.9375rem; white-space: nowrap; }
     .link {
       display: inline-flex;
       align-items: center;
@@ -341,7 +340,7 @@
       color: var(--quiet);
     }
 
-    .note { margin: 2.75rem 0 0; max-width: 36ch; color: var(--quiet); font-size: 0.875rem; }
+    .note { margin: 2.75rem 0 0; width: 100%; color: var(--quiet); font-size: 0.875rem; }
 
     /* Rides / Settings switch and segmented choices share one look */
     .tabs, .seg {
@@ -515,8 +514,7 @@
   <main>
     <header class="top">
       <div class="brand">
-        <h1 class="mark">OBJECT</h1>
-        <span class="sub" id="sub">Ride transfer</span>
+        <h1 class="mark">OBJECT HUB</h1>
       </div>
       <span class="link" aria-live="polite"><span class="led" aria-hidden="true"></span><span id="link-label">Offline</span></span>
     </header>
@@ -718,7 +716,6 @@
     const unitEl = document.getElementById("unit");
     const captionEl = document.getElementById("caption");
     const linkLabel = document.getElementById("link-label");
-    const subEl = document.getElementById("sub");
     const tabRides = document.getElementById("tab-rides");
     const tabSettings = document.getElementById("tab-settings");
     const $ = (id) => document.getElementById(id);
@@ -781,8 +778,6 @@
       tabRides.setAttribute("aria-selected", String(currentView === "rides"));
       tabSettings.setAttribute("aria-selected", String(currentView === "settings"));
       tabRides.disabled = tabSettings.disabled = phase !== "idle";
-      subEl.textContent = currentView === "settings" ? "Settings" : "Ride transfer";
-
       let value = "--";
       let unit = "";
       let caption = "No computer";
@@ -1611,6 +1606,12 @@
 
     wireSettings();
     renderSettings();
+
+    if (new URLSearchParams(location.search).has("mock")) {
+      const mock = document.createElement("script");
+      mock.src = "../tools/hub-mock/mock-ble.js";
+      document.body.append(mock);
+    }
   </script>
 </body>
 </html>
