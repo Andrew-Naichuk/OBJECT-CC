@@ -1,10 +1,10 @@
 {
-  "version": "2026.10.05-ab74b96",
-  "built": "2026-10-05T21:39:21Z",
-  "commit": "ab74b96",
-  "notes": "BLE updates-by-air",
+  "version": "2026.10.05-330a5ed",
+  "built": "2026-10-05T21:56:18Z",
+  "commit": "330a5ed",
+  "notes": "Merge branch 'main' of https://github.com/Andrew-Naichuk/OBJECT-CC",
   "board": "Seeed XIAO nRF52840 Sense",
-  "size": 216660,
+  "size": 217560,
   "bin": "firmware.bin",
   "dat": "firmware.dat"
 }
