@@ -13,6 +13,22 @@ arduino-cli upload -p COM7 --fqbn Seeeduino:nrf52:xiaonRF52840Sense "c:\Developm
 - Upload port is usually `COM7` (confirm with `arduino-cli board list` if upload fails)
 - On PowerShell, run compile then upload sequentially (`&&` may not work); only upload if compile succeeds
 
+### On macOS
+
+`arduino-cli` is not on the agent shell's PATH; it lives at `~/bin/arduino-cli`. The Seeed core's post-build step runs `python`, which macOS does not have (only `/usr/bin/python3`), so the build fails with `exec: "python": executable file not found` or `exit status 72`. A symlink named `python` does not work because Apple's `/usr/bin/python3` launcher dispatches on its invoked name; use a wrapper script:
+
+```bash
+mkdir -p /tmp/pyshim
+[ -x /tmp/pyshim/python ] || { printf '#!/bin/sh\nexec /usr/bin/python3 "$@"\n' > /tmp/pyshim/python && chmod +x /tmp/pyshim/python; }
+export PATH=/tmp/pyshim:$PATH
+cd /Users/andriinaichuk/Desktop/DEV/object-1
+~/bin/arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense xiao_oled \
+  && ~/bin/arduino-cli upload -p /dev/cu.usbmodem2101 --fqbn Seeeduino:nrf52:xiaonRF52840Sense xiao_oled
+```
+
+- Upload port is usually `/dev/cu.usbmodem2101`; confirm with `~/bin/arduino-cli board list` (pick the row whose board name is "Seeed XIAO nRF52840 Sense", not the other `usbmodem` device)
+- Upload takes about 45 seconds; it is done when it prints `Device programmed.`
+
 ## README screens — regenerate after display changes
 
 The images in `docs/screens/` are generated from the firmware by `tools/screens/`. Never edit them by hand.
