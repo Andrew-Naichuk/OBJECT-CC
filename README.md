@@ -18,7 +18,7 @@ The aim is simple: readable numbers on the handlebars, one button, and a record 
 - **A track to take home.** The GPS supplies position, altitude and UTC time for GPX recording on the microSD card.
 - **One button.** A short press changes the backlight; a four-second hold while stopped finishes the current ride and starts a fresh one.
 - **Battery level.** The top left shows a five-bar icon and a percentage, read from the LiPo through a divider on the button pin. Readings run high while charging.
-- **Phone downloads.** Connect to `OBJECT-001` through the [ride-transfer page](https://object.nav-tech.workers.dev), confirm on the device within 10 seconds, and download a GPX file, including a snapshot of the current track.
+- **Phone downloads.** Connect to `OBJECT-001` through the [ride-transfer page](https://andrew-naichuk.github.io/OBJECT-CC/), confirm on the device within 10 seconds, and download a GPX file, including a snapshot of the current track.
 - **Trip recovery.** Saved counters are restored after a restart when a valid checkpoint is available.
 
 The trip starts with the first wheel pulse. GPS recording begins when the firmware has the required fix, position and time data. You can ride without a GPS fix, but those wheel stats are not currently archived as a separate ride summary.
@@ -165,7 +165,7 @@ The track in `CURRENT.GPX` is renamed to a dated archive such as `26100115.GPX`,
 ## Download a ride to your phone
 
 1. Power on OBJECT and keep it near your phone.
-2. Open the [OBJECT HUB](https://object.nav-tech.workers.dev).
+2. Open the [OBJECT HUB](https://andrew-naichuk.github.io/OBJECT-CC/).
 3. Tap **Connect**, choose the **OBJECT** device (name from `ble_name`, default `OBJECT-001`).
 4. On OBJECT, press the button within **10 seconds** when it shows **Press to allow**. If you miss the window, the link drops and no files are listed — connect again.
 5. Tap a ride to download its GPX file. Rides are listed by date under month headings. After a download, the hub remembers the ride's distance, elapsed time and climb and shows them in the list.
@@ -201,6 +201,14 @@ After connecting and allowing the link, switch the hub from **Rides** to **Setti
 Change what you need and tap **Save**. OBJECT checks every value, rewrites `CONFIG.TXT` on the card and applies it straight away, with no reboot. A new wheel size counts only from that moment, so the distance already ridden stays correct. A new name is used from the next connection. Saving needs a card in the device.
 
 <p align="center"><img src="docs/screens/settings-saved.png" width="180" alt="Ride screen reading Settings saved, now in mph and miles"><br><sub><b>Settings saved</b><br>switched to imperial from the hub mid-ride</sub></p>
+
+## Update the firmware from your phone
+
+The hub's **Settings** tab ends with a **Firmware** section. After you allow the link, OBJECT reports the build it is running (the same string as the dim version on the boot splash). The hub compares that with the latest build published in this repository.
+
+If a newer build is available, tap **Update OBJECT**. Finish the ride you are on first: OBJECT restarts, its screen stays dark while the image is sent, and a failed transfer leaves it in update mode until you retry or power it off and on. The first install of a board that does not yet speak this protocol is still over USB; later updates can come over Bluetooth.
+
+Each push that changes the firmware produces a new build. Local USB flashes report `dev` and the hub always offers to replace them with the published one.
 
 ## Ride files
 
@@ -355,13 +363,14 @@ arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense xiao_oled
 arduino-cli upload -p <PORT> --fqbn Seeeduino:nrf52:xiaonRF52840Sense xiao_oled
 ```
 
-Replace `<PORT>` with your board's port and upload only after compilation succeeds. Serial diagnostics use **115200 baud**.
+Replace `<PORT>` with your board's port and upload only after compilation succeeds. Serial diagnostics use **115200 baud**. A local compile reports firmware version `dev`. Builds published by [`.github/workflows/firmware.yml`](.github/workflows/firmware.yml) stamp `FW_VERSION` as `YYYY.MM.DD` plus the short commit, write the DFU image to [`docs/firmware/`](docs/firmware/), and the hub offers that build over Bluetooth.
 
 ## Repository layout
 
 ```text
 xiao_oled/     Cycling computer firmware
-docs/          Ride-transfer page, assembly schematic, CONFIG.TXT.example, README screens
+docs/          Ride-transfer page, firmware builds, assembly schematic, CONFIG.TXT.example, README screens
+.github/       Publishes a new DFU image to docs/firmware/ on each firmware push
 tools/screens/ Emulator that regenerates the README screens from the firmware
 AGENTS.md      Notes for automated agents
 ```

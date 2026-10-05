@@ -47,3 +47,7 @@ On macOS or Linux, run `python3 tools/screens/regenerate.py`.
 - If the emulator fails to compile, the sketch is using an Arduino, SdFat or Bluefruit call the stubs do not have. Add it in `tools/screens/stubs/`.
 - To document a new screen state, follow "Change what is captured" in `tools/screens/README.md`.
 - If the README text describes something the new screens contradict, update the text in the same change.
+
+## Firmware OTA — CI publishes on push
+
+Do not build or copy OTA images by hand. A push to `main` that touches `xiao_oled/` runs `.github/workflows/firmware.yml`, which stamps `FW_VERSION`, compiles the sketch and commits `docs/firmware/` (`firmware.bin`, `firmware.dat`, `manifest.json`). Local USB flashes still report `dev` and still need the compile-and-upload step above. The hub fetches the published manifest from GitHub Pages.

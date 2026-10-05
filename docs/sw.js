@@ -30,6 +30,10 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(req.url);
   if (req.method !== "GET" || url.origin !== location.origin) return;
 
+  // Firmware builds must never come from the cache: a stale manifest would
+  // hide an update, and a stale image would be flashed onto the device.
+  if (url.pathname.includes("/firmware/")) return;
+
   // The page itself: always try for the latest copy, fall back to the cached one offline.
   if (req.mode === "navigate") {
     const root = new URL("./", location).pathname;

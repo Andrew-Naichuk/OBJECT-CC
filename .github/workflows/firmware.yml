@@ -1,0 +1,86 @@
+name: Firmware
+
+# Builds the sketch and publishes it for the hub's over-the-air update.
+# The version is the build date plus the commit it came from, and it is
+# compiled in, so a device can report exactly what it runs.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "xiao_oled/**"
+      - ".github/workflows/firmware.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: firmware
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  FQBN: Seeeduino:nrf52:xiaonRF52840Sense
+  SEEED_INDEX: https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Name this build
+        run: echo "FW_VERSION=$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      - name: Install the board core and libraries
+        run: |
+          # The core's build steps call plain "python" and adafruit-nrfutil,
+          # which it only bundles for Windows and macOS.
+          sudo ln -sf "$(command -v python3)" /usr/local/bin/python
+          pipx install adafruit-nrfutil
+          adafruit-nrfutil version
+          arduino-cli core update-index --additional-urls "$SEEED_INDEX"
+          arduino-cli core install Seeeduino:nrf52 --additional-urls "$SEEED_INDEX"
+          arduino-cli lib install "Adafruit ILI9341" "Adafruit GFX Library" "Adafruit BusIO"
+
+      - name: Compile
+        run: |
+          printf '#define FW_VERSION "%s"\n' "$FW_VERSION" > xiao_oled/fw_version.h
+          arduino-cli compile --fqbn "$FQBN" --output-dir build/out xiao_oled
+          unzip -o build/out/xiao_oled.ino.zip -d build/pkg
+
+      - name: Publish to docs/firmware
+        run: |
+          mkdir -p docs/firmware
+          cp build/pkg/xiao_oled.ino.bin docs/firmware/firmware.bin
+          cp build/pkg/xiao_oled.ino.dat docs/firmware/firmware.dat
+          NOTES="$(git log -1 --pretty=%s)" python3 - <<'PY'
+          import datetime, json, os, pathlib
+          out = pathlib.Path("docs/firmware")
+          manifest = {
+              "version": os.environ["FW_VERSION"],
+              "built": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "commit": os.environ["GITHUB_SHA"][:7],
+              "notes": os.environ["NOTES"],
+              "board": "Seeed XIAO nRF52840 Sense",
+              "size": (out / "firmware.bin").stat().st_size,
+              "bin": "firmware.bin",
+              "dat": "firmware.dat",
+          }
+          (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          print(json.dumps(manifest, indent=2))
+          PY
+
+      - name: Commit the build
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/firmware
+          if git diff --cached --quiet; then
+            echo "The published build is already current."
+            exit 0
+          fi
+          git commit -m "firmware $FW_VERSION [skip ci]"
+          git push

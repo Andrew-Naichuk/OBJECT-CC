@@ -4,6 +4,8 @@
 //   ?mock=nocard   no SD card in the computer
 //   ?mock=manual   do not connect on load; press Connect
 //   ?mock=deny     never allowed; drops the link after the 10 s window
+//   ?mock=latest   already runs the published firmware, so no update is offered
+//   ?mock=old      firmware from before the version command
 (() => {
   const mode = new URLSearchParams(location.search).get("mock") || "";
   const CHUNK = 240;
@@ -38,6 +40,43 @@
     }
     return new TextEncoder().encode(s + "</trkseg></trk></gpx>\n");
   }
+
+  // CRC-16-CCITT, the one Nordic's bootloader uses to check a received image.
+  function crc16(bytes) {
+    let crc = 0xffff;
+    for (const b of bytes) {
+      crc = ((crc >> 8) | (crc << 8)) & 0xffff;
+      crc ^= b;
+      crc ^= (crc & 0xff) >> 4;
+      crc ^= (crc << 12) & 0xffff;
+      crc ^= ((crc & 0xff) << 5) & 0xffff;
+    }
+    return crc;
+  }
+
+  // Stands in for docs/firmware/, which the page would fetch from GitHub
+  // Pages. A short image keeps the fake transfer quick.
+  const published = "2026.10.05-a6e3bc5";
+  const fwVersion = mode === "latest" ? published : "2026.09.20-1f2a3b4";
+  const fwImage = new Uint8Array(24 * 1024);
+  for (let i = 0; i < fwImage.length; i++) fwImage[i] = (i * 31 + (i >> 8)) & 0xff;
+  const fwInit = new Uint8Array(14);
+  {
+    const v = new DataView(fwInit.buffer);
+    v.setUint16(0, 0x0052, true);       // device type: nRF52
+    v.setUint16(2, 0xffff, true);       // any device revision
+    v.setUint32(4, 0xffffffff, true);   // any application version
+    v.setUint16(8, 1, true);            // one SoftDevice requirement
+    v.setUint16(10, 0x0123, true);      // s140 7.3.0
+    v.setUint16(12, crc16(fwImage), true);
+  }
+  window.objectMockManifest = {
+    version: published,
+    notes: "distance milestone fix",
+    bin: URL.createObjectURL(new Blob([fwImage])),
+    dat: URL.createObjectURL(new Blob([fwInit])),
+    size: fwImage.length
+  };
 
   const files = new Map();
   if (settings.card && mode !== "empty") {
@@ -103,20 +142,33 @@
     settings.animations = b[33];
   }
 
+  // One queue for every write, so writes arrive in the order they were made
+  // even when two characteristics answer at different speeds.
+  let writeQueue = Promise.resolve();
+
   class Char extends EventTarget {
-    constructor(onWrite) {
+    constructor(onWrite, link, delay) {
       super();
       this.value = null;
       this.onWrite = onWrite;
+      this.link = link;
+      this.delay = delay === undefined ? 20 : delay;
     }
+    get gatt() { return this.link ? this.link.gatt : device.gatt; }
     async startNotifications() { return this; }
     async writeValue(buf) {
-      if (!device.gatt.connected) throw new Error("GATT Server is disconnected.");
-      const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf.buffer || buf);
-      setTimeout(() => this.onWrite(new Uint8Array(b)), 20);
+      if (!this.gatt.connected) throw new Error("GATT Server is disconnected.");
+      const b = new Uint8Array(buf instanceof Uint8Array ? buf : new Uint8Array(buf.buffer || buf));
+      writeQueue = writeQueue.then(() => new Promise((done) => {
+        setTimeout(() => {
+          this.onWrite(b);
+          done();
+        }, this.delay);
+      }));
     }
+    async writeValueWithoutResponse(buf) { return this.writeValue(buf); }
     emit(bytes) {
-      if (!device.gatt.connected) return;
+      if (!this.gatt.connected) return;
       this.value = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
       this.dispatchEvent(new Event("characteristicvaluechanged"));
     }
@@ -191,6 +243,15 @@
         meta.emit(new Uint8Array([0x09]));
         meta.emit(packCfg());
       }, 400);
+    } else if (op === 0x07) {
+      if (mode === "old") return err(2);
+      const info = new Uint8Array(1 + fwVersion.length);
+      info[0] = 0x0a;
+      for (let i = 0; i < fwVersion.length; i++) info[1 + i] = fwVersion.charCodeAt(i);
+      later(() => meta.emit(info), 120);
+    } else if (op === 0x08) {
+      console.info("[mock-ble] firmware update requested; a real bootloader is needed from here");
+      later(() => device.gatt.disconnect(), 300);
     }
   });
 
@@ -221,9 +282,92 @@
     }
   };
 
+  // The bootloader's OTA DFU mode, checked the way the real one checks: start,
+  // init packet, the image in 20-byte packets, then the CRC16 from the init
+  // packet. Anything out of order answers with a failure status.
+  const dfu = { stage: "idle", size: 0, init: [], image: null, got: 0, batch: 0, prn: 0, crc: 0 };
+  const dfuDevice = new EventTarget();
+
+  const dfuCtrl = new Char((b) => {
+    const op = b[0];
+    const respond = (status) => dfuCtrl.emit(new Uint8Array([0x10, op, status]));
+    if (op === 0x01) {
+      dfu.stage = b[1] === 0x04 ? "sizes" : "idle";
+      if (dfu.stage === "idle") respond(0x06);
+    } else if (op === 0x02 && b[1] === 0x00) {
+      dfu.stage = "init";
+      dfu.init = [];
+    } else if (op === 0x02) {
+      dfu.crc = dfu.init[12] | (dfu.init[13] << 8);
+      respond(dfu.init.length === 14 && (dfu.init[0] | (dfu.init[1] << 8)) === 0x0052 ? 0x01 : 0x03);
+    } else if (op === 0x08) {
+      dfu.prn = b[1] | (b[2] << 8);
+    } else if (op === 0x03) {
+      dfu.stage = "image";
+      dfu.image = new Uint8Array(dfu.size);
+      dfu.got = 0;
+      dfu.batch = 0;
+    } else if (op === 0x04) {
+      const whole = dfu.got === dfu.size && crc16(dfu.image) === dfu.crc;
+      console.info("[mock-ble] fake bootloader validated " + dfu.got + " bytes: " + (whole ? "ok" : "bad"));
+      respond(whole ? 0x01 : 0x05);
+    } else if (op === 0x05) {
+      console.info("[mock-ble] fake bootloader activated the image and restarted");
+      setTimeout(() => dfuDevice.gatt.disconnect(), 100);
+    }
+  }, dfuDevice);
+
+  const dfuPkt = new Char((b) => {
+    if (dfu.stage === "sizes") {
+      dfu.size = b[8] | (b[9] << 8) | (b[10] << 16) | (b[11] << 24);
+      dfu.stage = "started";
+      dfuCtrl.emit(new Uint8Array([0x10, 0x01, 0x01]));
+    } else if (dfu.stage === "init") {
+      dfu.init.push(...b);
+    } else if (dfu.stage === "image") {
+      dfu.image.set(b, dfu.got);
+      dfu.got += b.length;
+      if (++dfu.batch === dfu.prn && dfu.got < dfu.size) {
+        dfu.batch = 0;
+        const note = new Uint8Array(5);
+        note[0] = 0x11;
+        putU32(note, 1, dfu.got);
+        dfuCtrl.emit(note);
+      }
+      if (dfu.got >= dfu.size) dfuCtrl.emit(new Uint8Array([0x10, 0x03, 0x01]));
+    }
+  }, dfuDevice, 0);
+
+  dfuDevice.name = "AdaDFU";
+  dfuDevice.gatt = {
+    connected: false,
+    async connect() {
+      await new Promise((r) => setTimeout(r, 200));
+      this.connected = true;
+      dfu.stage = "idle";
+      return {
+        getPrimaryService: async () => ({
+          async getCharacteristic(uuid) {
+            return uuid.slice(0, 8) === "00001531" ? dfuCtrl : dfuPkt;
+          }
+        })
+      };
+    },
+    disconnect() {
+      if (!this.connected) return;
+      this.connected = false;
+      setTimeout(() => dfuDevice.dispatchEvent(new Event("gattserverdisconnected")), 0);
+    }
+  };
+
   Object.defineProperty(navigator, "bluetooth", {
     configurable: true,
-    value: { requestDevice: async () => device }
+    value: {
+      requestDevice: async (options) => {
+        const wanted = (options && options.filters || []).flatMap((f) => f.services || []);
+        return wanted.some((s) => String(s).startsWith("00001530")) ? dfuDevice : device;
+      }
+    }
   });
 
   console.info("[mock-ble] fake OBJECT computer active (" + (mode || "default") + ")");

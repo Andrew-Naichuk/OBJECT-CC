@@ -46,6 +46,12 @@
  *   connection). Open that page over HTTPS (Android Chrome, or a Web
  *   Bluetooth browser on iPhone).
  *
+ * BLE firmware update:
+ *   The page reads FW_VERSION over BLE and compares it with the build
+ *   published at docs/firmware/manifest.json. Accepting an update closes the
+ *   card and reboots into the stock bootloader's OTA DFU mode, where it
+ *   advertises as "AdaDFU" and the page sends the new image.
+ *
  * microSD CONFIG.TXT (created with defaults on first boot if missing):
  *   wheel_circ_mm, timezone_offset_min, backlight, ble_name, units,
  *   backlight_dim, max_speed_kmh, stopped_ms, animations. See
@@ -86,6 +92,18 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <math.h>
+
+// Build identity. The CI workflow writes xiao_oled/fw_version.h before it
+// compiles; a build from this computer has no such file and reports "dev",
+// which the hub always offers to replace with the published build.
+#if defined(__has_include)
+#if __has_include("fw_version.h")
+#include "fw_version.h"
+#endif
+#endif
+#ifndef FW_VERSION
+#define FW_VERSION "dev"
+#endif
 
 static const int PIN_LCD_CS = D1;
 static const int PIN_LCD_DC = D2;
@@ -3500,7 +3518,13 @@ static void drawSplash(const char *line) {
   display.setTextColor(COL_DIM);
   display.setCursor((SCREEN_W - (int)bw) / 2 - bx, 198);
   printDrained(line);
+
   display.setFont(NULL);
+  display.setTextSize(1);
+  display.setTextColor(COL_LO);
+  const int vw = (int)strlen(FW_VERSION) * 6;  // built-in font cell
+  display.setCursor((SCREEN_W - vw) / 2, 218);
+  printDrained(FW_VERSION);
 }
 
 // Phone download of root *.GPX files. Callbacks only set flags; loop()
@@ -3517,7 +3541,9 @@ enum {
   BLE_OP_ABORT = 0x03,
   BLE_OP_DELETE = 0x04,
   BLE_OP_CFG_GET = 0x05,
-  BLE_OP_CFG_SET = 0x06
+  BLE_OP_CFG_SET = 0x06,
+  BLE_OP_INFO = 0x07,
+  BLE_OP_DFU = 0x08
 };
 
 enum {
@@ -3530,6 +3556,7 @@ enum {
   BLE_META_DELETED = 0x07,
   BLE_META_CFG = 0x08,
   BLE_META_CFG_SAVED = 0x09,
+  BLE_META_INFO = 0x0A,
   BLE_META_ERROR = 0x7F
 };
 
@@ -3582,6 +3609,8 @@ static uint8_t bleErrorPending = 0;
 static uint8_t bleDeletedPending = 0;
 static uint8_t bleCfgPending = 0;
 static uint8_t bleCfgSavedPending = 0;
+static uint8_t bleInfoPending = 0;
+static uint8_t bleDfuPending = 0;
 static bool bleRenamePending = false;
 static uint8_t bleAuthState = BLE_AUTH_NONE;
 static unsigned long bleAuthDeadlineMs = 0;
@@ -4176,6 +4205,15 @@ static void bleTakeCommand() {
     bleBeginCfgSet(body, bodyLen);
     return;
   }
+  if (op == BLE_OP_INFO) {
+    bleInfoPending = 1;
+    return;
+  }
+  if (op == BLE_OP_DFU) {
+    // loop() owns the card and the counters, so it performs the handover.
+    bleDfuPending = 1;
+    return;
+  }
   bleQueueError(BLE_ERR_NAME);
 }
 
@@ -4289,6 +4327,20 @@ static bool bleService() {
     bleCfgPending = 0;
     return true;
   }
+  if (bleInfoPending) {
+    uint8_t buf[1 + BLE_CFG_LEN];
+    size_t n = strlen(FW_VERSION);
+    if (n > BLE_CFG_LEN) {
+      n = BLE_CFG_LEN;
+    }
+    buf[0] = BLE_META_INFO;
+    memcpy(buf + 1, FW_VERSION, n);
+    if (!bleNotifyMeta(buf, (uint16_t)(1 + n))) {
+      return false;
+    }
+    bleInfoPending = 0;
+    return true;
+  }
   if (bleJob == BLE_JOB_LIST) {
     return blePumpList();
   }
@@ -4296,6 +4348,30 @@ static bool bleService() {
     return blePumpSend();
   }
   return false;
+}
+
+// Hand the radio to the bootloader for an over-the-air update. The card is
+// closed first, so a ride in progress survives the reboot the same way a
+// power cycle does. The bootloader then advertises as "AdaDFU" and
+// docs/index.html sends the image; a failed transfer leaves it waiting there.
+static void bleEnterDfu(uint32_t revCount, uint32_t elapsedMsNow) {
+  bleDfuPending = 0;
+  bleResetXfer();
+  Serial.println("BLE firmware update — closing card, rebooting into DFU");
+  if (sdReady) {
+    if (gpxFile.isOpen()) {
+      gpxFinalize();
+      gpxFile.close();
+    }
+    tripDatSave(revCount, elapsedMsNow);
+  }
+  drawSplash("Updating");
+  if (Bluefruit.connected()) {
+    Bluefruit.Advertising.restartOnDisconnect(false);
+    Bluefruit.disconnect(Bluefruit.connHandle());
+  }
+  delay(400);
+  enterOTADfu();
 }
 
 static void bleOnWrite(uint16_t conn_hdl, BLECharacteristic *chr, uint8_t *data, uint16_t len) {
@@ -4406,6 +4482,8 @@ void setup() {
   delay(1500);
   Serial.println();
   Serial.println("XIAO cycling computer — ILI9341 + reed D0 + btn/batt A4 + GPS Serial1 + SD D5");
+  Serial.print("Firmware ");
+  Serial.println(FW_VERSION);
 
   // Hardware SPI: SCK=D8, MOSI=D10, MISO=D9. LCD CS=D1, SD CS=D5.
   // RST is tied to 3.3V; begin() sends a software reset. Backlight is D3.
@@ -4539,6 +4617,10 @@ void loop() {
   digitalWrite(LED_BUILTIN, (speedKmh > 0.05f) ? LOW : HIGH);
 
   bool bleSent = bleService();
+  if (bleDfuPending) {
+    bleEnterDfu((uint32_t)revCount, (uint32_t)elapsedMs);
+    return;  // not reached: the board resets into the bootloader
+  }
   if (bleSent) {
     gpsDrain();
   } else if (bleActive()) {

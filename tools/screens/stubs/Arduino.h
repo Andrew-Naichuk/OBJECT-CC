@@ -58,6 +58,7 @@ void attachInterrupt(int irq, void (*fn)(), int mode);
 inline int digitalPinToInterrupt(int p) { return p; }
 inline void noInterrupts() {}
 inline void interrupts() {}
+inline void enterOTADfu() {}
 
 class HardwareSerial : public Print {
  public:

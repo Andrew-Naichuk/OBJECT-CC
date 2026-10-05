@@ -640,6 +640,41 @@
     #cfg-save { border: 0; background: var(--ink); color: var(--paper); }
     .savebar button:disabled { opacity: 0.4; }
 
+    /* Firmware */
+    .firmware { border-bottom: 0; }
+    .firmware dl {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.5rem 1rem;
+      margin: 0 0 1.1rem;
+    }
+    .firmware dt { font-weight: 600; }
+    .firmware dd {
+      margin: 0;
+      color: var(--quiet);
+      font-weight: 500;
+      text-align: right;
+      overflow-wrap: anywhere;
+      font-variant-numeric: tabular-nums;
+    }
+    .firmware p { margin: 0 0 1.1rem; color: var(--quiet); font-size: 0.9375rem; }
+    .firmware .linkish { margin: 0; }
+    #fw-update {
+      width: 100%;
+      height: 3.25rem;
+      border: 0;
+      border-radius: 12px;
+      background: var(--ink);
+      color: var(--paper);
+      font-weight: 650;
+    }
+    #fw-update:disabled { opacity: 0.4; }
+    #fw-dialog { padding: 1.4rem 1.25rem 1.25rem; }
+    #fw-dialog .eyebrow { color: var(--quiet); }
+    #fw-dialog .body { white-space: pre-line; }
+    #fw-dialog .confirm { background: var(--ink); color: var(--paper); }
+    #fw-dialog .choices:has(button.hide) { grid-template-columns: 1fr; }
+
     /* Delete confirmation */
     .sheet {
       width: calc(100% - 32px);
@@ -833,6 +868,19 @@
           <button type="submit" id="cfg-save">Save</button>
         </div>
       </form>
+
+      <div class="group firmware" id="fw-group">
+        <h3>Firmware</h3>
+        <dl>
+          <dt>On OBJECT</dt>
+          <dd id="fw-installed">—</dd>
+          <dt>Latest</dt>
+          <dd id="fw-latest">—</dd>
+        </dl>
+        <p id="fw-note"></p>
+        <button type="button" id="fw-update" class="hide"></button>
+        <button type="button" class="linkish hide" id="fw-recheck">Check again</button>
+      </div>
     </section>
 
     <p class="install hide" id="install-row"><button type="button" class="linkish" id="install">Add OBJECT HUB to the home screen</button></p>
@@ -849,6 +897,15 @@
       </div>
     </form>
   </dialog>
+  <dialog class="sheet" id="fw-dialog" aria-labelledby="fw-title" aria-describedby="fw-body">
+    <p class="eyebrow" id="fw-eyebrow">Firmware update</p>
+    <h2 id="fw-title"></h2>
+    <p class="body" id="fw-body"></p>
+    <div class="choices">
+      <button type="button" class="cancel" id="fw-dismiss">Cancel</button>
+      <button type="button" class="confirm" id="fw-go">Update</button>
+    </div>
+  </dialog>
   <script>
     // Same bytes as xiao_oled.ino.
     const SERVICE = "7a1e0001-4c8b-4d2e-9f63-1b5a0c7e8d24";
@@ -861,6 +918,8 @@
     const OP_DELETE = 0x04;
     const OP_CFG_GET = 0x05;
     const OP_CFG_SET = 0x06;
+    const OP_INFO = 0x07;
+    const OP_DFU = 0x08;
     const META_ENTRY = 0x01;
     const META_LIST_END = 0x02;
     const META_START = 0x03;
@@ -870,6 +929,7 @@
     const META_DELETED = 0x07;
     const META_CFG = 0x08;
     const META_CFG_SAVED = 0x09;
+    const META_INFO = 0x0a;
     const META_ERROR = 0x7f;
     const CFG_VERSION = 2;
     const CFG_LEN = 34;
@@ -879,7 +939,23 @@
     const MAX_FILE = 16 * 1024 * 1024;
     const STALL_MS = 15000;
     const AUTH_MS = 10000;
-    const BUSY = ["listing", "downloading", "deleting", "reading", "saving"];
+    const BUSY = ["listing", "downloading", "deleting", "reading", "saving", "updating"];
+
+    // Builds published by .github/workflows/firmware.yml. The URL is absolute
+    // so the update works from any copy of this page.
+    const FW_MANIFEST = "https://andrew-naichuk.github.io/OBJECT-CC/firmware/manifest.json";
+    // Nordic legacy DFU: what the XIAO bootloader speaks once OBJECT reboots
+    // into update mode, where it advertises as AdaDFU.
+    const DFU_SVC = "00001530-1212-efde-1523-785feabcd123";
+    const DFU_CTRL = "00001531-1212-efde-1523-785feabcd123";
+    const DFU_PKT = "00001532-1212-efde-1523-785feabcd123";
+    const DFU_START = 0x01, DFU_INIT = 0x02, DFU_RECEIVE = 0x03, DFU_VALIDATE = 0x04;
+    const DFU_ACTIVATE = 0x05, DFU_PRN_REQ = 0x08;
+    const DFU_RESPONSE = 0x10, DFU_PRN = 0x11;
+    const DFU_APP = 0x04;        // image type: application
+    const DFU_CHUNK = 20;        // the packet characteristic takes 20 bytes
+    const DFU_PRN_EVERY = 32;    // packets between receipt notifications
+    const DFU_STEP_MS = 20000;
     const ERRORS = {
       1: "No SD card",
       2: "Bad file name",
@@ -919,6 +995,12 @@
     const maxInput = $("cfg-max");
     const stoppedOut = $("cfg-stopped");
     const delDialog = $("del-dialog");
+    const fwDialog = $("fw-dialog");
+    const fwInstalledEl = $("fw-installed");
+    const fwLatestEl = $("fw-latest");
+    const fwNote = $("fw-note");
+    const fwUpdateBtn = $("fw-update");
+    const fwRecheckBtn = $("fw-recheck");
     const cancelBtn = $("cancel");
     const srProgress = $("sr-progress");
     const noteEl = $("note");
@@ -948,6 +1030,15 @@
     let spokenStep = -1;
     let wakeLock = null;
     let wakePending = false;
+    let fwInstalled = null;   // version OBJECT reports, or "" when it cannot
+    let fwLatest = null;      // manifest.json from the repository
+    let fwProbing = false;
+    let fwProbeTimer = 0;
+    let fwBusy = false;       // an update is running, so a drop is expected
+    let fwWaiting = false;    // OBJECT sits in its bootloader, update unfinished
+    let fwCaption = "";
+    let fwImage = null;       // { bin, dat, version } once downloaded
+    let fwGoAction = null;    // what the dialog's primary button does
 
     const DOWN_ICON = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M10 3v10M5.5 8.5 10 13l4.5-4.5M4 17h12"/></svg>';
     const DEL_ICON = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M4 6h12M8 6V4h4v2M7 6v10h6V6"/></svg>';
@@ -979,7 +1070,13 @@
       let p = 0;
       const stored = rides.reduce((sum, r) => sum + r.size, 0);
 
-      if (phase === "downloading") {
+      if (phase === "updating") {
+        const pct = prog && prog.total ? Math.floor((prog.got / prog.total) * 100) : 0;
+        value = String(pct);
+        unit = "%";
+        right = fwCaption;
+        p = pct / 100;
+      } else if (phase === "downloading") {
         const total = prog && fileBuf ? prog.total : 0;
         const pct = total ? Math.floor((prog.got / total) * 100) : 0;
         value = String(pct);
@@ -1285,7 +1382,8 @@
 
     function noteActivity() {
       clearTimeout(stallTimer);
-      if (BUSY.includes(phase)) {
+      // An update has its own timeouts and survives the device rebooting.
+      if (BUSY.includes(phase) && phase !== "updating") {
         stallTimer = setTimeout(() => {
           setStatus("Transfer stalled. Move closer and try again.", true);
           phase = "idle";
@@ -1519,6 +1617,18 @@
         if (wasReading) setStatus(cfg.card ? "Settings loaded." : "No SD card in OBJECT.", !cfg.card);
         renderRides();
         renderSettings();
+        fwProbe();
+        return;
+      }
+      if (type === META_INFO) {
+        clearTimeout(fwProbeTimer);
+        fwProbing = false;
+        let version = "";
+        for (let i = 1; i < bytes.length; i++) {
+          if (bytes[i]) version += String.fromCharCode(bytes[i]);
+        }
+        fwInstalled = version || "unknown";
+        renderFirmware();
         return;
       }
       if (type === META_CFG_SAVED) {
@@ -1570,6 +1680,14 @@
       }
       if (type === META_ERROR && bytes.length >= 2) {
         clearTimeout(stallTimer);
+        // Firmware from before the version command answers with ERR_NAME.
+        if (fwProbing && bytes[1] === ERR_NAME) {
+          clearTimeout(fwProbeTimer);
+          fwProbing = false;
+          fwInstalled = "";
+          renderFirmware();
+          return;
+        }
         if (cancelling && bytes[1] === ERR_ABORT) {
           cancelling = false;
           return;
@@ -1826,6 +1944,7 @@
 
     // Draws the form from cfgDraft; the inputs only write back into cfgDraft.
     function renderSettings() {
+      renderFirmware();
       const ready = !!(cmdChar && authorized && cfgDraft);
       const busy = phase !== "idle";
       cfgFields.disabled = !ready || busy || !cfgDraft.card;
@@ -1930,6 +2049,356 @@
       renderSettings();
     }
 
+    // Firmware over the air. OBJECT reports the build it runs; the newest
+    // build is published beside this page by the firmware workflow. Accepting
+    // an update reboots OBJECT into its bootloader, which takes the image
+    // over Nordic's legacy DFU protocol.
+
+    function fwUpdateAvailable() {
+      return !!(fwLatest && fwInstalled && fwLatest.version !== fwInstalled);
+    }
+
+    function renderFirmware() {
+      const ready = !!(cmdChar && authorized);
+      fwInstalledEl.textContent = fwProbing ? "Reading…" : (fwInstalled || "—");
+      fwLatestEl.textContent = fwLatest ? fwLatest.version : "—";
+
+      let note = "";
+      let action = "";
+      let recheck = false;
+      if (fwWaiting) {
+        note = "OBJECT is in update mode and its screen is dark. Finish the update, or switch OBJECT off and on to go back to riding.";
+        action = "Finish the update";
+      } else if (!ready || fwProbing) {
+        note = "";
+      } else if (fwInstalled === "") {
+        note = "This OBJECT's firmware is older than this page. Flash it once over USB, and later updates can come over Bluetooth.";
+      } else if (!fwInstalled || !fwLatest) {
+        note = !fwLatest && fwInstalled
+          ? "Could not reach the list of published builds. Check the connection and try again."
+          : "";
+        recheck = true;
+      } else if (fwUpdateAvailable()) {
+        note = fwLatest.notes ? "Latest change: " + fwLatest.notes : "A newer build is available.";
+        action = "Update OBJECT";
+      } else {
+        note = "OBJECT runs the latest published build.";
+      }
+
+      fwNote.textContent = note;
+      fwNote.classList.toggle("hide", !note);
+      fwUpdateBtn.textContent = action;
+      fwUpdateBtn.classList.toggle("hide", !action);
+      fwUpdateBtn.disabled = !fwWaiting && phase !== "idle";
+      fwRecheckBtn.classList.toggle("hide", !(ready && recheck));
+    }
+
+    async function fwReadManifest() {
+      if (window.objectMockManifest) {
+        fwLatest = window.objectMockManifest;
+        renderFirmware();
+        return;
+      }
+      try {
+        const res = await fetch(FW_MANIFEST, { cache: "no-store" });
+        if (!res.ok) throw new Error(String(res.status));
+        const m = await res.json();
+        if (!m || typeof m.version !== "string" || typeof m.bin !== "string" || typeof m.dat !== "string") {
+          throw new Error("unexpected manifest");
+        }
+        fwLatest = m;
+      } catch (e) {
+        fwLatest = null;
+      }
+      renderFirmware();
+    }
+
+    // Asks OBJECT for its version. Firmware without the command answers with
+    // ERR_NAME, which onMeta turns into the "flash it over USB" note.
+    function fwProbe() {
+      if (!cmdChar || !authorized || phase !== "idle" || fwProbing || fwWaiting) return;
+      if (!fwLatest) fwReadManifest();
+      if (fwInstalled !== null) return;
+      fwProbing = true;
+      renderFirmware();
+      clearTimeout(fwProbeTimer);
+      fwProbeTimer = setTimeout(() => {
+        fwProbing = false;
+        renderFirmware();
+      }, 4000);
+      writeCmd(new Uint8Array([OP_INFO])).catch(() => {
+        clearTimeout(fwProbeTimer);
+        fwProbing = false;
+        renderFirmware();
+      });
+    }
+
+    function fwSheet(title, body, primary, secondary) {
+      $("fw-title").textContent = title;
+      $("fw-body").textContent = body;
+      $("fw-go").textContent = primary || "";
+      $("fw-go").classList.toggle("hide", !primary);
+      $("fw-go").disabled = false;
+      $("fw-dismiss").textContent = secondary || "";
+      $("fw-dismiss").classList.toggle("hide", !secondary);
+      if (!fwDialog.open && typeof fwDialog.showModal === "function") fwDialog.showModal();
+    }
+
+    function fwAsk() {
+      if (!fwUpdateAvailable()) return;
+      fwGoAction = fwStart;
+      fwSheet("Update to " + fwLatest.version,
+        "OBJECT restarts and its screen stays dark until the update finishes, about a minute. Finish the ride you are on first, then keep this page open with the phone close to OBJECT.",
+        "Update", "Cancel");
+    }
+
+    function fwFail(err) {
+      fwBusy = false;
+      phase = "idle";
+      hideProgress();
+      const msg = err && err.name === "NotFoundError"
+        ? "No device chosen."
+        : (err && err.message) || "The update failed.";
+      setStatus(msg, true);
+      if (fwWaiting) {
+        fwGoAction = fwRun;
+        fwSheet("Update unfinished",
+          msg + "\n\nOBJECT is still in update mode. Tap Retry, or switch OBJECT off and on to go back to riding.",
+          "Retry", "Close");
+      } else {
+        fwGoAction = null;
+        fwSheet("Update failed", msg, "", "Close");
+      }
+      renderSettings();
+    }
+
+    async function fwFetchBytes(url) {
+      const res = await fetch(String(url), { cache: "no-store" });
+      if (!res.ok) throw new Error("Could not download the firmware (" + res.status + ").");
+      return new Uint8Array(await res.arrayBuffer());
+    }
+
+    async function fwDownload() {
+      const base = new URL(FW_MANIFEST, location.href);
+      const bin = await fwFetchBytes(new URL(fwLatest.bin, base));
+      const dat = await fwFetchBytes(new URL(fwLatest.dat, base));
+      if (fwLatest.size && bin.length !== fwLatest.size) {
+        throw new Error("The downloaded firmware is incomplete. Try again.");
+      }
+      return { bin, dat, version: fwLatest.version };
+    }
+
+    // Step one: fetch the image, then ask OBJECT to reboot into its bootloader.
+    async function fwStart() {
+      if (!cmdChar || !authorized || phase !== "idle" || !fwUpdateAvailable()) return;
+      fwSheet("Update to " + fwLatest.version, "Downloading the new firmware…", "", "");
+      try {
+        fwImage = await fwDownload();
+      } catch (err) {
+        fwFail(err);
+        return;
+      }
+      fwBusy = true;
+      phase = "updating";
+      fwCaption = "Restarting";
+      showProgress("firmware", 0, fwImage.bin.length);
+      setStatus("Updating OBJECT");
+      renderSettings();
+      try {
+        await writeCmd(new Uint8Array([OP_DFU]));
+      } catch (err) {
+        // The link can drop as the board reboots; that is the expected end.
+      }
+      fwWaiting = true;
+      fwGoAction = fwRun;
+      fwSheet("Update mode",
+        "OBJECT has restarted into update mode. Tap Continue, then choose AdaDFU from the list the browser shows.",
+        "Continue", "Later");
+    }
+
+    // Step two: pair with the bootloader and send the image.
+    async function fwRun() {
+      if (!fwImage) {
+        fwFail(new Error("The firmware is no longer downloaded. Reload the page and start again."));
+        return;
+      }
+      fwBusy = true;
+      phase = "updating";
+      fwCaption = "Connecting";
+      showProgress("firmware", 0, fwImage.bin.length);
+      let dfuDevice = null;
+      try {
+        dfuDevice = await navigator.bluetooth.requestDevice({
+          filters: [{ services: [DFU_SVC] }, { namePrefix: "AdaDFU" }],
+          optionalServices: [DFU_SVC]
+        });
+        fwSheet("Sending", "Keep this page open and the phone close to OBJECT.", "", "");
+        const server = await dfuDevice.gatt.connect();
+        const svc = await server.getPrimaryService(DFU_SVC);
+        const ctrl = await svc.getCharacteristic(DFU_CTRL);
+        const pkt = await svc.getCharacteristic(DFU_PKT);
+        await dfuSend(ctrl, pkt, fwImage.bin, fwImage.dat);
+
+        const version = fwImage.version;
+        fwImage = null;
+        fwWaiting = false;
+        fwBusy = false;
+        fwInstalled = null;
+        phase = "idle";
+        hideProgress();
+        setStatus("OBJECT updated to " + version);
+        fwGoAction = null;
+        fwSheet("Updated", "OBJECT is running " + version + " and has restarted. Connect again when you need it.", "", "Close");
+        renderSettings();
+      } catch (err) {
+        fwFail(err);
+      } finally {
+        if (dfuDevice && dfuDevice.gatt.connected) {
+          try { dfuDevice.gatt.disconnect(); } catch (e) {}
+        }
+      }
+    }
+
+    // Nordic legacy DFU, as the SDK 11 bootloader on this board expects it:
+    // start, init packet, image in 20-byte packets, validate, activate.
+    async function dfuSend(ctrl, pkt, bin, dat) {
+      const seen = [];
+      let waiter = null;
+
+      const matches = (b, want) =>
+        (b[0] === DFU_RESPONSE && b.length >= 3 && b[1] === want) || (b[0] === DFU_PRN && want === DFU_PRN);
+
+      function check(b, want) {
+        if (b[0] === DFU_RESPONSE && b[2] !== 0x01) {
+          throw new Error("OBJECT's bootloader refused the update (step " + want + ", code " + b[2] + ").");
+        }
+        return b;
+      }
+
+      const onNote = (event) => {
+        const v = event.target.value;
+        const b = new Uint8Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength));
+        if (waiter && matches(b, waiter.want)) {
+          const w = waiter;
+          waiter = null;
+          clearTimeout(w.timer);
+          w.settle(b);
+          return;
+        }
+        seen.push(b);
+        if (seen.length > 8) seen.shift();
+      };
+
+      function expect(want, ms) {
+        const hit = seen.findIndex((b) => matches(b, want));
+        if (hit >= 0) {
+          const b = seen.splice(hit, 1)[0];
+          return Promise.resolve().then(() => check(b, want));
+        }
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            waiter = null;
+            reject(new Error("OBJECT stopped answering during the update."));
+          }, ms || DFU_STEP_MS);
+          waiter = {
+            want,
+            timer,
+            settle: (b) => {
+              try { resolve(check(b, want)); } catch (e) { reject(e); }
+            }
+          };
+        });
+      }
+
+      const writePkt = pkt.writeValueWithoutResponse
+        ? (bytes) => pkt.writeValueWithoutResponse(bytes)
+        : (bytes) => pkt.writeValue(bytes);
+
+      ctrl.addEventListener("characteristicvaluechanged", onNote);
+      try {
+        await ctrl.startNotifications();
+
+        fwCaption = "Preparing";
+        syncUI();
+        await ctrl.writeValue(new Uint8Array([DFU_START, DFU_APP]));
+        const sizes = new Uint8Array(12);
+        new DataView(sizes.buffer).setUint32(8, bin.length, true);
+        await writePkt(sizes);
+        await expect(DFU_START);
+
+        await ctrl.writeValue(new Uint8Array([DFU_INIT, 0x00]));
+        await writePkt(dat);
+        await ctrl.writeValue(new Uint8Array([DFU_INIT, 0x01]));
+        await expect(DFU_INIT);
+
+        await ctrl.writeValue(new Uint8Array([DFU_PRN_REQ, DFU_PRN_EVERY & 0xff, DFU_PRN_EVERY >> 8]));
+        await ctrl.writeValue(new Uint8Array([DFU_RECEIVE]));
+
+        fwCaption = "Sending";
+        let sent = 0;
+        let batch = 0;
+        let shownPct = -1;
+        while (sent < bin.length) {
+          const end = Math.min(sent + DFU_CHUNK, bin.length);
+          await writePkt(bin.subarray(sent, end));
+          sent = end;
+          if (++batch === DFU_PRN_EVERY && sent < bin.length) {
+            batch = 0;
+            await expect(DFU_PRN);
+          }
+          const pct = Math.floor((sent / bin.length) * 100);
+          if (pct !== shownPct) {
+            shownPct = pct;
+            showProgress("firmware", sent, bin.length);
+            $("fw-body").textContent = "Sending " + pct + "%. Keep this page open and the phone close to OBJECT.";
+          }
+        }
+        await expect(DFU_RECEIVE, 60000);
+
+        fwCaption = "Checking";
+        syncUI();
+        await ctrl.writeValue(new Uint8Array([DFU_VALIDATE]));
+        await expect(DFU_VALIDATE, 30000);
+
+        fwCaption = "Restarting";
+        syncUI();
+        try {
+          await ctrl.writeValue(new Uint8Array([DFU_ACTIVATE]));
+        } catch (e) {
+          // The board resets on this write, so losing the ack is normal.
+        }
+      } finally {
+        ctrl.removeEventListener("characteristicvaluechanged", onNote);
+      }
+    }
+
+    function wireFirmware() {
+      fwUpdateBtn.addEventListener("click", () => {
+        if (fwWaiting) fwRun().catch(fwFail);
+        else fwAsk();
+      });
+      fwRecheckBtn.addEventListener("click", () => {
+        fwInstalled = null;
+        fwLatest = null;
+        renderFirmware();
+        fwProbe();
+      });
+      $("fw-go").addEventListener("click", () => {
+        const action = fwGoAction;
+        if (!action) return;
+        $("fw-go").disabled = true;
+        action().catch(fwFail);
+      });
+      $("fw-dismiss").addEventListener("click", () => fwDialog.close());
+      fwDialog.addEventListener("click", (event) => {
+        if (event.target === fwDialog && !fwBusy) fwDialog.close();
+      });
+      fwDialog.addEventListener("cancel", (event) => {
+        if (fwBusy) event.preventDefault();
+      });
+      fwDialog.addEventListener("close", renderFirmware);
+    }
+
     function setView(next, push) {
       if (next === currentView) return;
       if (phase !== "idle") {
@@ -1941,6 +2410,7 @@
         history.pushState(null, "", next === "settings" ? "#settings" : location.pathname + location.search);
       }
       if (currentView === "settings" && !cfgDirty()) requestSettings().catch(onSettingsError);
+      if (currentView === "settings") fwProbe();
       renderSettings();
     }
 
@@ -2057,13 +2527,16 @@
 
     function onDisconnected() {
       clearTimeout(stallTimer);
+      clearTimeout(fwProbeTimer);
+      fwProbing = false;
+      fwInstalled = null;
       if (delDialog.open) delDialog.close();
       const wasAwaiting = phase === "awaiting" && !authorized;
       const timedOut = wasAwaiting && !userDisconnect;
       stopAuthCountdown();
       cmdChar = null;
       authorized = false;
-      phase = "idle";
+      phase = fwBusy ? "updating" : "idle";
       cancelling = false;
       rides = [];
       cardBytes = 0;
@@ -2078,7 +2551,9 @@
       refreshBtn.disabled = true;
       disconnectBtn.disabled = true;
       connectBtn.textContent = timedOut ? "Try again" : "Connect";
-      if (timedOut) {
+      if (fwBusy) {
+        setStatus("OBJECT restarted for the update");
+      } else if (timedOut) {
         setStatus("Not allowed in time. Tap Try again, then press the button on OBJECT.", true);
       } else {
         setStatus("Disconnected.");
@@ -2124,6 +2599,7 @@
     });
 
     wireSettings();
+    wireFirmware();
     renderSettings();
     loadStats().then(() => { if (cmdChar && phase === "idle") renderRides(); });
 
