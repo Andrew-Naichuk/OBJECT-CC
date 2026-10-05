@@ -919,7 +919,9 @@
     const OP_CFG_GET = 0x05;
     const OP_CFG_SET = 0x06;
     const OP_INFO = 0x07;
-    const OP_DFU = 0x08;
+    const OP_FW_BEGIN = 0x08;
+    const OP_FW_DATA = 0x09;
+    const OP_FW_COMMIT = 0x0a;
     const META_ENTRY = 0x01;
     const META_LIST_END = 0x02;
     const META_START = 0x03;
@@ -930,6 +932,9 @@
     const META_CFG = 0x08;
     const META_CFG_SAVED = 0x09;
     const META_INFO = 0x0a;
+    const META_FW_READY = 0x0b;
+    const META_FW_DONE = 0x0c;
+    const META_FW_PROGRESS = 0x0d;
     const META_ERROR = 0x7f;
     const CFG_VERSION = 2;
     const CFG_LEN = 34;
@@ -940,22 +945,11 @@
     const STALL_MS = 15000;
     const AUTH_MS = 10000;
     const BUSY = ["listing", "downloading", "deleting", "reading", "saving", "updating"];
+    const FW_CHUNK = 244;
 
     // Builds published by .github/workflows/firmware.yml. The URL is absolute
     // so the update works from any copy of this page.
     const FW_MANIFEST = "https://andrew-naichuk.github.io/OBJECT-CC/firmware/manifest.json";
-    // Nordic legacy DFU: what the XIAO bootloader speaks once OBJECT reboots
-    // into update mode, where it advertises as AdaDFU.
-    const DFU_SVC = "00001530-1212-efde-1523-785feabcd123";
-    const DFU_CTRL = "00001531-1212-efde-1523-785feabcd123";
-    const DFU_PKT = "00001532-1212-efde-1523-785feabcd123";
-    const DFU_START = 0x01, DFU_INIT = 0x02, DFU_RECEIVE = 0x03, DFU_VALIDATE = 0x04;
-    const DFU_ACTIVATE = 0x05, DFU_PRN_REQ = 0x08;
-    const DFU_RESPONSE = 0x10, DFU_PRN = 0x11;
-    const DFU_APP = 0x04;        // image type: application
-    const DFU_CHUNK = 20;        // the packet characteristic takes 20 bytes
-    const DFU_PRN_EVERY = 32;    // packets between receipt notifications
-    const DFU_STEP_MS = 20000;
     const ERRORS = {
       1: "No SD card",
       2: "Bad file name",
@@ -963,7 +957,8 @@
       4: "Card I/O failed",
       5: "Transfer aborted",
       6: "Confirm on OBJECT",
-      7: "A setting is out of range"
+      7: "A setting is out of range",
+      8: "Firmware update failed"
     };
 
     const connectBtn = document.getElementById("connect");
@@ -1035,10 +1030,12 @@
     let fwProbing = false;
     let fwProbeTimer = 0;
     let fwBusy = false;       // an update is running, so a drop is expected
-    let fwWaiting = false;    // OBJECT sits in its bootloader, update unfinished
     let fwCaption = "";
-    let fwImage = null;       // { bin, dat, version } once downloaded
+    let fwImage = null;       // { bin, version } once downloaded
     let fwGoAction = null;    // what the dialog's primary button does
+    let fwReadyWait = null;   // resolve when META_FW_READY arrives
+    let fwDoneWait = null;    // resolve when META_FW_DONE arrives
+    let fwProgressWait = null; // resolve when META_FW_PROGRESS arrives
 
     const DOWN_ICON = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M10 3v10M5.5 8.5 10 13l4.5-4.5M4 17h12"/></svg>';
     const DEL_ICON = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M4 6h12M8 6V4h4v2M7 6v10h6V6"/></svg>';
@@ -1631,6 +1628,30 @@
         renderFirmware();
         return;
       }
+      if (type === META_FW_READY) {
+        if (fwReadyWait) {
+          const done = fwReadyWait;
+          fwReadyWait = null;
+          done();
+        }
+        return;
+      }
+      if (type === META_FW_PROGRESS) {
+        if (fwProgressWait) {
+          const done = fwProgressWait;
+          fwProgressWait = null;
+          done(bytes.length >= 5 ? u32le(bytes, 1) : 0);
+        }
+        return;
+      }
+      if (type === META_FW_DONE) {
+        if (fwDoneWait) {
+          const done = fwDoneWait;
+          fwDoneWait = null;
+          done();
+        }
+        return;
+      }
       if (type === META_CFG_SAVED) {
         const renamed = cfgDevice && cfgDraft && cfgDraft.name !== cfgDevice.name;
         setStatus(renamed
@@ -1686,6 +1707,10 @@
           fwProbing = false;
           fwInstalled = "";
           renderFirmware();
+          return;
+        }
+        if (fwBusy) {
+          fwFail(new Error(ERRORS[bytes[1]] || "Firmware update failed."));
           return;
         }
         if (cancelling && bytes[1] === ERR_ABORT) {
@@ -2050,9 +2075,9 @@
     }
 
     // Firmware over the air. OBJECT reports the build it runs; the newest
-    // build is published beside this page by the firmware workflow. Accepting
-    // an update reboots OBJECT into its bootloader, which takes the image
-    // over Nordic's legacy DFU protocol.
+    // build is published beside this page by the firmware workflow. The image
+    // is sent over the same OBJECT BLE service (Chrome blocklists the Nordic
+    // bootloader DFU UUID, so AdaDFU cannot be used from the browser).
 
     function fwUpdateAvailable() {
       return !!(fwLatest && fwInstalled && fwLatest.version !== fwInstalled);
@@ -2066,10 +2091,7 @@
       let note = "";
       let action = "";
       let recheck = false;
-      if (fwWaiting) {
-        note = "OBJECT is in update mode and its screen is dark. Finish the update, or switch OBJECT off and on to go back to riding.";
-        action = "Finish the update";
-      } else if (!ready || fwProbing) {
+      if (!ready || fwProbing) {
         note = "";
       } else if (fwInstalled === "") {
         note = "This OBJECT's firmware is older than this page. Flash it once over USB, and later updates can come over Bluetooth.";
@@ -2089,7 +2111,7 @@
       fwNote.classList.toggle("hide", !note);
       fwUpdateBtn.textContent = action;
       fwUpdateBtn.classList.toggle("hide", !action);
-      fwUpdateBtn.disabled = !fwWaiting && phase !== "idle";
+      fwUpdateBtn.disabled = phase !== "idle" || fwBusy;
       fwRecheckBtn.classList.toggle("hide", !(ready && recheck));
     }
 
@@ -2103,7 +2125,7 @@
         const res = await fetch(FW_MANIFEST, { cache: "no-store" });
         if (!res.ok) throw new Error(String(res.status));
         const m = await res.json();
-        if (!m || typeof m.version !== "string" || typeof m.bin !== "string" || typeof m.dat !== "string") {
+        if (!m || typeof m.version !== "string" || typeof m.bin !== "string") {
           throw new Error("unexpected manifest");
         }
         fwLatest = m;
@@ -2116,7 +2138,7 @@
     // Asks OBJECT for its version. Firmware without the command answers with
     // ERR_NAME, which onMeta turns into the "flash it over USB" note.
     function fwProbe() {
-      if (!cmdChar || !authorized || phase !== "idle" || fwProbing || fwWaiting) return;
+      if (!cmdChar || !authorized || phase !== "idle" || fwProbing || fwBusy) return;
       if (!fwLatest) fwReadManifest();
       if (fwInstalled !== null) return;
       fwProbing = true;
@@ -2148,27 +2170,21 @@
       if (!fwUpdateAvailable()) return;
       fwGoAction = fwStart;
       fwSheet("Update to " + fwLatest.version,
-        "OBJECT restarts and its screen stays dark until the update finishes, about a minute. Finish the ride you are on first, then keep this page open with the phone close to OBJECT.",
+        "The new firmware is sent over this Bluetooth link. Keep this page open and the phone close to OBJECT. Finish the ride you are on first — about a minute.",
         "Update", "Cancel");
     }
 
     function fwFail(err) {
       fwBusy = false;
+      fwReadyWait = null;
+      fwDoneWait = null;
+      fwProgressWait = null;
       phase = "idle";
       hideProgress();
-      const msg = err && err.name === "NotFoundError"
-        ? "No device chosen."
-        : (err && err.message) || "The update failed.";
+      const msg = (err && err.message) || "The update failed.";
       setStatus(msg, true);
-      if (fwWaiting) {
-        fwGoAction = fwRun;
-        fwSheet("Update unfinished",
-          msg + "\n\nOBJECT is still in update mode. Tap Retry, or switch OBJECT off and on to go back to riding.",
-          "Retry", "Close");
-      } else {
-        fwGoAction = null;
-        fwSheet("Update failed", msg, "", "Close");
-      }
+      fwGoAction = null;
+      fwSheet("Update failed", msg, "", "Close");
       renderSettings();
     }
 
@@ -2178,17 +2194,38 @@
       return new Uint8Array(await res.arrayBuffer());
     }
 
+    function fwCrc32(bytes) {
+      let c = 0xffffffff;
+      for (let i = 0; i < bytes.length; i++) {
+        c ^= bytes[i];
+        for (let b = 0; b < 8; b++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+      }
+      return (~c) >>> 0;
+    }
+
     async function fwDownload() {
       const base = new URL(FW_MANIFEST, location.href);
       const bin = await fwFetchBytes(new URL(fwLatest.bin, base));
-      const dat = await fwFetchBytes(new URL(fwLatest.dat, base));
       if (fwLatest.size && bin.length !== fwLatest.size) {
         throw new Error("The downloaded firmware is incomplete. Try again.");
       }
-      return { bin, dat, version: fwLatest.version };
+      return { bin, version: fwLatest.version, crc: fwCrc32(bin) };
     }
 
-    // Step one: fetch the image, then ask OBJECT to reboot into its bootloader.
+    function fwWaitMeta(setter, ms) {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          setter(null);
+          reject(new Error("OBJECT stopped answering during the update."));
+        }, ms || 20000);
+        setter(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    }
+
+    // Fetch the image, stream it over the OBJECT link, then let OBJECT install it.
     async function fwStart() {
       if (!cmdChar || !authorized || phase !== "idle" || !fwUpdateAvailable()) return;
       fwSheet("Update to " + fwLatest.version, "Downloading the new firmware…", "", "");
@@ -2198,50 +2235,54 @@
         fwFail(err);
         return;
       }
+
       fwBusy = true;
       phase = "updating";
-      fwCaption = "Restarting";
+      fwCaption = "Preparing";
       showProgress("firmware", 0, fwImage.bin.length);
       setStatus("Updating OBJECT");
       renderSettings();
-      try {
-        await writeCmd(new Uint8Array([OP_DFU]));
-      } catch (err) {
-        // The link can drop as the board reboots; that is the expected end.
-      }
-      fwWaiting = true;
-      fwGoAction = fwRun;
-      fwSheet("Update mode",
-        "OBJECT has restarted into update mode. Tap Continue, then choose AdaDFU from the list the browser shows.",
-        "Continue", "Later");
-    }
 
-    // Step two: pair with the bootloader and send the image.
-    async function fwRun() {
-      if (!fwImage) {
-        fwFail(new Error("The firmware is no longer downloaded. Reload the page and start again."));
-        return;
-      }
-      fwBusy = true;
-      phase = "updating";
-      fwCaption = "Connecting";
-      showProgress("firmware", 0, fwImage.bin.length);
-      let dfuDevice = null;
       try {
-        dfuDevice = await navigator.bluetooth.requestDevice({
-          filters: [{ services: [DFU_SVC] }, { namePrefix: "AdaDFU" }],
-          optionalServices: [DFU_SVC]
-        });
-        fwSheet("Sending", "Keep this page open and the phone close to OBJECT.", "", "");
-        const server = await dfuDevice.gatt.connect();
-        const svc = await server.getPrimaryService(DFU_SVC);
-        const ctrl = await svc.getCharacteristic(DFU_CTRL);
-        const pkt = await svc.getCharacteristic(DFU_PKT);
-        await dfuSend(ctrl, pkt, fwImage.bin, fwImage.dat);
+        const begin = new Uint8Array(9);
+        begin[0] = OP_FW_BEGIN;
+        const view = new DataView(begin.buffer);
+        view.setUint32(1, fwImage.bin.length, true);
+        view.setUint32(5, fwImage.crc, true);
+        const ready = fwWaitMeta((fn) => { fwReadyWait = fn; }, 10000);
+        await writeCmd(begin);
+        await ready;
+
+        fwCaption = "Sending";
+        let sent = 0;
+        let shownPct = -1;
+        while (sent < fwImage.bin.length) {
+          const end = Math.min(sent + FW_CHUNK, fwImage.bin.length);
+          const pkt = new Uint8Array(1 + (end - sent));
+          pkt[0] = OP_FW_DATA;
+          pkt.set(fwImage.bin.subarray(sent, end), 1);
+          const progress = fwWaitMeta((fn) => { fwProgressWait = fn; }, 15000);
+          await writeCmd(pkt);
+          await progress;
+          sent = end;
+          const pct = Math.floor((sent / fwImage.bin.length) * 100);
+          if (pct !== shownPct) {
+            shownPct = pct;
+            showProgress("firmware", sent, fwImage.bin.length);
+            $("fw-body").textContent = "Sending " + pct + "%. Keep this page open and the phone close to OBJECT.";
+            fwSheet("Sending", $("fw-body").textContent, "", "");
+          }
+        }
+
+        fwCaption = "Installing";
+        syncUI();
+        $("fw-body").textContent = "OBJECT is installing the update and will restart…";
+        const done = fwWaitMeta((fn) => { fwDoneWait = fn; }, 60000);
+        await writeCmd(new Uint8Array([OP_FW_COMMIT]));
+        await done;
 
         const version = fwImage.version;
         fwImage = null;
-        fwWaiting = false;
         fwBusy = false;
         fwInstalled = null;
         phase = "idle";
@@ -2252,131 +2293,11 @@
         renderSettings();
       } catch (err) {
         fwFail(err);
-      } finally {
-        if (dfuDevice && dfuDevice.gatt.connected) {
-          try { dfuDevice.gatt.disconnect(); } catch (e) {}
-        }
-      }
-    }
-
-    // Nordic legacy DFU, as the SDK 11 bootloader on this board expects it:
-    // start, init packet, image in 20-byte packets, validate, activate.
-    async function dfuSend(ctrl, pkt, bin, dat) {
-      const seen = [];
-      let waiter = null;
-
-      const matches = (b, want) =>
-        (b[0] === DFU_RESPONSE && b.length >= 3 && b[1] === want) || (b[0] === DFU_PRN && want === DFU_PRN);
-
-      function check(b, want) {
-        if (b[0] === DFU_RESPONSE && b[2] !== 0x01) {
-          throw new Error("OBJECT's bootloader refused the update (step " + want + ", code " + b[2] + ").");
-        }
-        return b;
-      }
-
-      const onNote = (event) => {
-        const v = event.target.value;
-        const b = new Uint8Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength));
-        if (waiter && matches(b, waiter.want)) {
-          const w = waiter;
-          waiter = null;
-          clearTimeout(w.timer);
-          w.settle(b);
-          return;
-        }
-        seen.push(b);
-        if (seen.length > 8) seen.shift();
-      };
-
-      function expect(want, ms) {
-        const hit = seen.findIndex((b) => matches(b, want));
-        if (hit >= 0) {
-          const b = seen.splice(hit, 1)[0];
-          return Promise.resolve().then(() => check(b, want));
-        }
-        return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => {
-            waiter = null;
-            reject(new Error("OBJECT stopped answering during the update."));
-          }, ms || DFU_STEP_MS);
-          waiter = {
-            want,
-            timer,
-            settle: (b) => {
-              try { resolve(check(b, want)); } catch (e) { reject(e); }
-            }
-          };
-        });
-      }
-
-      const writePkt = pkt.writeValueWithoutResponse
-        ? (bytes) => pkt.writeValueWithoutResponse(bytes)
-        : (bytes) => pkt.writeValue(bytes);
-
-      ctrl.addEventListener("characteristicvaluechanged", onNote);
-      try {
-        await ctrl.startNotifications();
-
-        fwCaption = "Preparing";
-        syncUI();
-        await ctrl.writeValue(new Uint8Array([DFU_START, DFU_APP]));
-        const sizes = new Uint8Array(12);
-        new DataView(sizes.buffer).setUint32(8, bin.length, true);
-        await writePkt(sizes);
-        await expect(DFU_START);
-
-        await ctrl.writeValue(new Uint8Array([DFU_INIT, 0x00]));
-        await writePkt(dat);
-        await ctrl.writeValue(new Uint8Array([DFU_INIT, 0x01]));
-        await expect(DFU_INIT);
-
-        await ctrl.writeValue(new Uint8Array([DFU_PRN_REQ, DFU_PRN_EVERY & 0xff, DFU_PRN_EVERY >> 8]));
-        await ctrl.writeValue(new Uint8Array([DFU_RECEIVE]));
-
-        fwCaption = "Sending";
-        let sent = 0;
-        let batch = 0;
-        let shownPct = -1;
-        while (sent < bin.length) {
-          const end = Math.min(sent + DFU_CHUNK, bin.length);
-          await writePkt(bin.subarray(sent, end));
-          sent = end;
-          if (++batch === DFU_PRN_EVERY && sent < bin.length) {
-            batch = 0;
-            await expect(DFU_PRN);
-          }
-          const pct = Math.floor((sent / bin.length) * 100);
-          if (pct !== shownPct) {
-            shownPct = pct;
-            showProgress("firmware", sent, bin.length);
-            $("fw-body").textContent = "Sending " + pct + "%. Keep this page open and the phone close to OBJECT.";
-          }
-        }
-        await expect(DFU_RECEIVE, 60000);
-
-        fwCaption = "Checking";
-        syncUI();
-        await ctrl.writeValue(new Uint8Array([DFU_VALIDATE]));
-        await expect(DFU_VALIDATE, 30000);
-
-        fwCaption = "Restarting";
-        syncUI();
-        try {
-          await ctrl.writeValue(new Uint8Array([DFU_ACTIVATE]));
-        } catch (e) {
-          // The board resets on this write, so losing the ack is normal.
-        }
-      } finally {
-        ctrl.removeEventListener("characteristicvaluechanged", onNote);
       }
     }
 
     function wireFirmware() {
-      fwUpdateBtn.addEventListener("click", () => {
-        if (fwWaiting) fwRun().catch(fwFail);
-        else fwAsk();
-      });
+      fwUpdateBtn.addEventListener("click", fwAsk);
       fwRecheckBtn.addEventListener("click", () => {
         fwInstalled = null;
         fwLatest = null;
@@ -2553,6 +2474,14 @@
       connectBtn.textContent = timedOut ? "Try again" : "Connect";
       if (fwBusy) {
         setStatus("OBJECT restarted for the update");
+        fwBusy = false;
+        phase = "idle";
+        hideProgress();
+        if (fwDoneWait) {
+          const done = fwDoneWait;
+          fwDoneWait = null;
+          done();
+        }
       } else if (timedOut) {
         setStatus("Not allowed in time. Tap Try again, then press the button on OBJECT.", true);
       } else {

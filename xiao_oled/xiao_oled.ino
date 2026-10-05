@@ -48,9 +48,11 @@
  *
  * BLE firmware update:
  *   The page reads FW_VERSION over BLE and compares it with the build
- *   published at docs/firmware/manifest.json. Accepting an update closes the
- *   card and reboots into the stock bootloader's OTA DFU mode, where it
- *   advertises as "AdaDFU" and the page sends the new image.
+ *   published at docs/firmware/manifest.json. Accepting an update sends the
+ *   new image over this same OBJECT service (Chrome blocklists the Nordic
+ *   bootloader DFU UUID, so the image cannot go through AdaDFU from the
+ *   browser). The sketch stages the image in unused flash, then copies it
+ *   over itself and resets.
  *
  * microSD CONFIG.TXT (created with defaults on first boot if missing):
  *   wheel_circ_mm, timezone_offset_min, backlight, ble_name, units,
@@ -3543,7 +3545,9 @@ enum {
   BLE_OP_CFG_GET = 0x05,
   BLE_OP_CFG_SET = 0x06,
   BLE_OP_INFO = 0x07,
-  BLE_OP_DFU = 0x08
+  BLE_OP_FW_BEGIN = 0x08,   // size u32 + crc32 u32
+  BLE_OP_FW_DATA = 0x09,    // image chunk
+  BLE_OP_FW_COMMIT = 0x0A
 };
 
 enum {
@@ -3557,6 +3561,9 @@ enum {
   BLE_META_CFG = 0x08,
   BLE_META_CFG_SAVED = 0x09,
   BLE_META_INFO = 0x0A,
+  BLE_META_FW_READY = 0x0B,
+  BLE_META_FW_DONE = 0x0C,
+  BLE_META_FW_PROGRESS = 0x0D,
   BLE_META_ERROR = 0x7F
 };
 
@@ -3567,7 +3574,8 @@ enum {
   BLE_ERR_IO = 4,
   BLE_ERR_ABORT = 5,
   BLE_ERR_DENIED = 6,
-  BLE_ERR_CFG = 7
+  BLE_ERR_CFG = 7,
+  BLE_ERR_FW = 8
 };
 
 // Settings record, little-endian, after the op / meta type byte:
@@ -3577,7 +3585,16 @@ enum {
 //   12 ble_name length, 13-32 ble_name, 33 animations (0 off, 1 on).
 static const uint8_t BLE_CFG_VERSION = 2;
 static const uint16_t BLE_CFG_LEN = 34;
-static const uint16_t BLE_CMD_MAX = 1 + BLE_CFG_LEN;
+static const uint16_t BLE_FW_CHUNK = 244;
+static const uint16_t BLE_CMD_MAX = 1 + BLE_FW_CHUNK;
+
+// Stage the new image here, then copy it onto the running app. Must sit
+// above the current sketch (about 220 KB from 0x27000) and below the
+// bootloader. 0x90000 leaves ~320 KB, enough for this firmware.
+static const uint32_t OTA_BANK_ADDR = 0x90000UL;
+static const uint32_t OTA_BANK_MAX = 0x50000UL;
+static const uint32_t OTA_APP_ADDR = 0x27000UL;
+static const uint32_t OTA_PAGE = 4096UL;
 
 enum {
   BLE_JOB_IDLE = 0,
@@ -3602,7 +3619,7 @@ static volatile uint8_t bleLinkLost = 0;
 static volatile uint8_t bleLinkUpEdge = 0;
 static uint8_t bleCmdOp = 0;
 static char bleCmdName[13];
-static uint8_t bleCmdBody[BLE_CFG_LEN];
+static uint8_t bleCmdBody[BLE_FW_CHUNK];
 static uint16_t bleCmdBodyLen = 0;
 static uint8_t bleJob = BLE_JOB_IDLE;
 static uint8_t bleErrorPending = 0;
@@ -3610,7 +3627,11 @@ static uint8_t bleDeletedPending = 0;
 static uint8_t bleCfgPending = 0;
 static uint8_t bleCfgSavedPending = 0;
 static uint8_t bleInfoPending = 0;
-static uint8_t bleDfuPending = 0;
+static uint8_t bleFwReadyPending = 0;
+static uint8_t bleFwDonePending = 0;
+static uint8_t bleFwProgressPending = 0;
+static uint8_t bleFwApplyPending = 0;  // commit requested; verify then notify
+static uint8_t bleFwApplyNow = 0;      // FW_DONE sent; copy image next
 static bool bleRenamePending = false;
 static uint8_t bleAuthState = BLE_AUTH_NONE;
 static unsigned long bleAuthDeadlineMs = 0;
@@ -3629,6 +3650,19 @@ static bool bleFooterFromRam = false;
 static bool bleStartSent = false;
 static uint32_t bleCrc = 0xFFFFFFFFUL;
 static uint8_t bleChunk[244];
+
+// In-app OTA: phone writes the image into OTA_BANK_ADDR, then we copy it.
+static bool otaActive = false;
+static uint32_t otaSize = 0;
+static uint32_t otaCrcExpect = 0;
+static uint32_t otaCrc = 0xFFFFFFFFUL;
+static uint32_t otaGot = 0;
+static uint32_t otaPageAddr = 0;
+static uint16_t otaPageUsed = 0;
+static uint8_t otaPage[OTA_PAGE] __attribute__((aligned(4)));
+static uint8_t otaFwChunk[BLE_FW_CHUNK];
+static uint16_t otaFwChunkLen = 0;
+static volatile uint8_t otaChunkPending = 0;
 
 static bool blePhoneConnected() {
   return bleReady && bleAuthState == BLE_AUTH_OK && Bluefruit.connected() > 0;
@@ -4159,10 +4193,204 @@ static void bleBeginCfgSet(const uint8_t *body, uint16_t len) {
   configLog();
 }
 
+#if defined(NRF52840_XXAA)
+static bool otaFlashWait(void) {
+  for (;;) {
+    uint32_t evt = 0;
+    uint32_t err = sd_evt_get(&evt);
+    if (err == NRF_ERROR_NOT_FOUND) {
+      yield();
+      continue;
+    }
+    if (err != NRF_SUCCESS) {
+      return false;
+    }
+    if (evt == NRF_EVT_FLASH_OPERATION_SUCCESS) {
+      return true;
+    }
+    if (evt == NRF_EVT_FLASH_OPERATION_ERROR) {
+      return false;
+    }
+  }
+}
+
+static bool otaFlashErasePage(uint32_t addr) {
+  if (sd_flash_page_erase(addr / OTA_PAGE) != NRF_SUCCESS) {
+    return false;
+  }
+  return otaFlashWait();
+}
+
+static bool otaFlashWritePage(uint32_t addr, const uint8_t *data) {
+  if (((uint32_t)data & 3u) != 0) {
+    return false;
+  }
+  if (sd_flash_write((uint32_t *)addr, (const uint32_t *)data, OTA_PAGE / 4) != NRF_SUCCESS) {
+    return false;
+  }
+  return otaFlashWait();
+}
+
+// Runs from RAM after SoftDevice is off: copy staged image onto the app and reset.
+static void otaCopyAndReset(uint32_t src, uint32_t dst, uint32_t len) {
+  __disable_irq();
+  for (uint32_t off = 0; off < len; off += OTA_PAGE) {
+    uint32_t page = dst + off;
+    NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Een << NVMC_CONFIG_WEN_Pos;
+    while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {
+    }
+    NRF_NVMC->ERASEPAGE = page;
+    while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {
+    }
+
+    NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Wen << NVMC_CONFIG_WEN_Pos;
+    while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {
+    }
+    uint32_t n = len - off;
+    if (n > OTA_PAGE) {
+      n = OTA_PAGE;
+    }
+    for (uint32_t i = 0; i < n; i += 4) {
+      *(volatile uint32_t *)(page + i) = *(const uint32_t *)(src + off + i);
+      while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {
+      }
+    }
+  }
+  NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren << NVMC_CONFIG_WEN_Pos;
+  while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {
+  }
+  NVIC_SystemReset();
+}
+#else
+static bool otaFlashErasePage(uint32_t) { return true; }
+static bool otaFlashWritePage(uint32_t, const uint8_t *) { return true; }
+static void otaCopyAndReset(uint32_t, uint32_t, uint32_t) {}
+#endif
+
+static void otaCancel(void) {
+  otaActive = false;
+  otaChunkPending = 0;
+  otaFwChunkLen = 0;
+  otaPageUsed = 0;
+  bleFwReadyPending = 0;
+  bleFwDonePending = 0;
+  bleFwProgressPending = 0;
+  bleFwApplyPending = 0;
+  bleFwApplyNow = 0;
+}
+
+static bool otaFlushPage(bool pad) {
+  if (otaPageUsed == 0) {
+    return true;
+  }
+  if (!pad && otaPageUsed != OTA_PAGE) {
+    return true;
+  }
+  while (otaPageUsed < OTA_PAGE) {
+    otaPage[otaPageUsed++] = 0xFF;
+  }
+  if (!otaFlashErasePage(otaPageAddr)) {
+    return false;
+  }
+  if (!otaFlashWritePage(otaPageAddr, otaPage)) {
+    return false;
+  }
+  otaPageAddr += OTA_PAGE;
+  otaPageUsed = 0;
+  return true;
+}
+
+static bool otaBegin(uint32_t size, uint32_t crc) {
+  if (size < 256 || size > OTA_BANK_MAX || (size & 3u) != 0) {
+    return false;
+  }
+  otaCancel();
+  otaActive = true;
+  otaSize = size;
+  otaCrcExpect = crc;
+  otaCrc = 0xFFFFFFFFUL;
+  otaGot = 0;
+  otaPageAddr = OTA_BANK_ADDR;
+  otaPageUsed = 0;
+  return true;
+}
+
+static bool otaAcceptChunk(const uint8_t *data, uint16_t len) {
+  if (!otaActive || len == 0) {
+    return false;
+  }
+  if ((uint32_t)len > otaSize - otaGot) {
+    return false;
+  }
+  otaCrc = crc32Update(otaCrc, data, len);
+  uint16_t off = 0;
+  while (off < len) {
+    uint16_t n = (uint16_t)(OTA_PAGE - otaPageUsed);
+    uint16_t left = (uint16_t)(len - off);
+    if (n > left) {
+      n = left;
+    }
+    memcpy(otaPage + otaPageUsed, data + off, n);
+    otaPageUsed = (uint16_t)(otaPageUsed + n);
+    off = (uint16_t)(off + n);
+    otaGot += n;
+    if (otaPageUsed == OTA_PAGE) {
+      if (!otaFlushPage(false)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static bool otaCommit(void) {
+  if (!otaActive || otaGot != otaSize) {
+    return false;
+  }
+  if (!otaFlushPage(true)) {
+    return false;
+  }
+  if ((~otaCrc) != otaCrcExpect) {
+    return false;
+  }
+  return true;
+}
+
+// SoftDevice off, then run the flash copy from RAM so erasing the app is safe.
+static void otaApply(uint32_t revCount, uint32_t elapsedMsNow) {
+  Serial.println("BLE firmware apply — copying staged image");
+  if (sdReady) {
+    if (gpxFile.isOpen()) {
+      gpxFinalize();
+      gpxFile.close();
+    }
+    tripDatSave(revCount, elapsedMsNow);
+  }
+  drawSplash("Updating");
+  delay(50);
+#if defined(NRF52840_XXAA)
+  if (Bluefruit.connected()) {
+    Bluefruit.Advertising.restartOnDisconnect(false);
+    Bluefruit.disconnect(Bluefruit.connHandle());
+    delay(200);
+  }
+  sd_softdevice_disable();
+  static uint8_t ramFn[512];
+  uint32_t srcFn = (uint32_t)&otaCopyAndReset;
+  memcpy(ramFn, (const void *)(srcFn & ~1u), sizeof(ramFn));
+  typedef void (*ota_fn_t)(uint32_t, uint32_t, uint32_t);
+  ota_fn_t fn = (ota_fn_t)(((uint32_t)ramFn) | 1u);
+  fn(OTA_BANK_ADDR, OTA_APP_ADDR, otaSize);
+#else
+  (void)revCount;
+  (void)elapsedMsNow;
+#endif
+}
+
 static void bleTakeCommand() {
   uint8_t op;
   char name[13];
-  uint8_t body[BLE_CFG_LEN];
+  uint8_t body[BLE_FW_CHUNK];
   uint16_t bodyLen;
   noInterrupts();
   op = bleCmdOp;
@@ -4173,6 +4401,10 @@ static void bleTakeCommand() {
   interrupts();
 
   if (op == BLE_OP_ABORT) {
+    if (otaActive) {
+      otaCancel();
+      Serial.println("BLE firmware update aborted");
+    }
     if (bleJob != BLE_JOB_IDLE || bleErrorPending != 0 || bleDeletedPending != 0) {
       bleDeletedPending = 0;
       bleQueueError(BLE_ERR_ABORT);
@@ -4209,16 +4441,42 @@ static void bleTakeCommand() {
     bleInfoPending = 1;
     return;
   }
-  if (op == BLE_OP_DFU) {
-    // loop() owns the card and the counters, so it performs the handover.
-    bleDfuPending = 1;
+  if (op == BLE_OP_FW_BEGIN) {
+    if (bodyLen < 8) {
+      bleQueueError(BLE_ERR_FW);
+      return;
+    }
+    uint32_t size = (uint32_t)body[0] | ((uint32_t)body[1] << 8) |
+                    ((uint32_t)body[2] << 16) | ((uint32_t)body[3] << 24);
+    uint32_t crc = (uint32_t)body[4] | ((uint32_t)body[5] << 8) |
+                   ((uint32_t)body[6] << 16) | ((uint32_t)body[7] << 24);
+    if (!otaBegin(size, crc)) {
+      bleQueueError(BLE_ERR_FW);
+      return;
+    }
+    bleFwReadyPending = 1;
+    Serial.print("BLE firmware begin size=");
+    Serial.println(size);
+    return;
+  }
+  if (op == BLE_OP_FW_DATA) {
+    // Handled in bleOnWrite so chunks are not queued behind loop().
+    return;
+  }
+  if (op == BLE_OP_FW_COMMIT) {
+    if (!otaActive) {
+      bleQueueError(BLE_ERR_FW);
+      return;
+    }
+    bleFwApplyPending = 1;
     return;
   }
   bleQueueError(BLE_ERR_NAME);
 }
 
 static bool bleActive() {
-  return bleReady && (bleJob != BLE_JOB_IDLE || bleErrorPending != 0 || bleDeletedPending != 0);
+  return bleReady && (bleJob != BLE_JOB_IDLE || bleErrorPending != 0 || bleDeletedPending != 0 ||
+                      otaActive || otaChunkPending);
 }
 
 // Percent of the file sent to the phone, while a download runs.
@@ -4250,11 +4508,17 @@ static bool bleService() {
     bleLinkLost = 0;
     noInterrupts();
     bleCmdPending = 0;
+    otaChunkPending = 0;
     interrupts();
     bleErrorPending = 0;
     bleDeletedPending = 0;
     bleCfgPending = 0;
     bleCfgSavedPending = 0;
+    bleFwReadyPending = 0;
+    bleFwDonePending = 0;
+    if (otaActive && !bleFwApplyPending && !bleFwApplyNow) {
+      otaCancel();
+    }
     bleResetXfer();
     bleClearAuth();
     Serial.println("BLE disconnected");
@@ -4289,6 +4553,22 @@ static bool bleService() {
 
   if (bleCmdPending) {
     bleTakeCommand();
+    return true;
+  }
+  if (otaChunkPending) {
+    uint8_t chunk[BLE_FW_CHUNK];
+    uint16_t n;
+    noInterrupts();
+    n = otaFwChunkLen;
+    memcpy(chunk, otaFwChunk, n);
+    otaChunkPending = 0;
+    interrupts();
+    if (!otaAcceptChunk(chunk, n)) {
+      otaCancel();
+      bleQueueError(BLE_ERR_FW);
+    } else {
+      bleFwProgressPending = 1;
+    }
     return true;
   }
   if (bleErrorPending) {
@@ -4341,6 +4621,47 @@ static bool bleService() {
     bleInfoPending = 0;
     return true;
   }
+  if (bleFwReadyPending) {
+    uint8_t meta = BLE_META_FW_READY;
+    if (!bleNotifyMeta(&meta, 1)) {
+      return false;
+    }
+    bleFwReadyPending = 0;
+    return true;
+  }
+  if (bleFwProgressPending) {
+    uint8_t buf[5];
+    buf[0] = BLE_META_FW_PROGRESS;
+    buf[1] = (uint8_t)(otaGot);
+    buf[2] = (uint8_t)(otaGot >> 8);
+    buf[3] = (uint8_t)(otaGot >> 16);
+    buf[4] = (uint8_t)(otaGot >> 24);
+    if (!bleNotifyMeta(buf, sizeof(buf))) {
+      return false;
+    }
+    bleFwProgressPending = 0;
+    return true;
+  }
+  if (bleFwApplyPending) {
+    bleFwApplyPending = 0;
+    if (!otaCommit()) {
+      otaCancel();
+      bleQueueError(BLE_ERR_FW);
+      Serial.println("BLE firmware commit failed");
+      return true;
+    }
+    bleFwDonePending = 1;
+    return true;
+  }
+  if (bleFwDonePending) {
+    uint8_t meta = BLE_META_FW_DONE;
+    if (!bleNotifyMeta(&meta, 1)) {
+      return false;
+    }
+    bleFwDonePending = 0;
+    bleFwApplyNow = 1;
+    return true;
+  }
   if (bleJob == BLE_JOB_LIST) {
     return blePumpList();
   }
@@ -4348,30 +4669,6 @@ static bool bleService() {
     return blePumpSend();
   }
   return false;
-}
-
-// Hand the radio to the bootloader for an over-the-air update. The card is
-// closed first, so a ride in progress survives the reboot the same way a
-// power cycle does. The bootloader then advertises as "AdaDFU" and
-// docs/index.html sends the image; a failed transfer leaves it waiting there.
-static void bleEnterDfu(uint32_t revCount, uint32_t elapsedMsNow) {
-  bleDfuPending = 0;
-  bleResetXfer();
-  Serial.println("BLE firmware update — closing card, rebooting into DFU");
-  if (sdReady) {
-    if (gpxFile.isOpen()) {
-      gpxFinalize();
-      gpxFile.close();
-    }
-    tripDatSave(revCount, elapsedMsNow);
-  }
-  drawSplash("Updating");
-  if (Bluefruit.connected()) {
-    Bluefruit.Advertising.restartOnDisconnect(false);
-    Bluefruit.disconnect(Bluefruit.connHandle());
-  }
-  delay(400);
-  enterOTADfu();
 }
 
 static void bleOnWrite(uint16_t conn_hdl, BLECharacteristic *chr, uint8_t *data, uint16_t len) {
@@ -4392,10 +4689,27 @@ static void bleOnWrite(uint16_t conn_hdl, BLECharacteristic *chr, uint8_t *data,
       memcpy(name, data + 1, n);
     }
   }
+  // Queue one chunk for loop(). SoftDevice flash APIs must not run inside
+  // the BLE write callback.
+  if (op == BLE_OP_FW_DATA) {
+    if (!otaActive || len < 2 || otaChunkPending) {
+      otaCancel();
+      bleErrorPending = BLE_ERR_FW;
+      return;
+    }
+    uint16_t n = (uint16_t)(len - 1);
+    memcpy(otaFwChunk, data + 1, n);
+    otaFwChunkLen = n;
+    otaChunkPending = 1;
+    return;
+  }
   uint16_t bodyLen = 0;
   noInterrupts();
-  if (op == BLE_OP_CFG_SET) {
+  if (op == BLE_OP_CFG_SET || op == BLE_OP_FW_BEGIN) {
     bodyLen = (uint16_t)(len - 1);
+    if (bodyLen > sizeof(bleCmdBody)) {
+      bodyLen = sizeof(bleCmdBody);
+    }
     memcpy(bleCmdBody, data + 1, bodyLen);
   }
   bleCmdOp = op;
@@ -4617,9 +4931,10 @@ void loop() {
   digitalWrite(LED_BUILTIN, (speedKmh > 0.05f) ? LOW : HIGH);
 
   bool bleSent = bleService();
-  if (bleDfuPending) {
-    bleEnterDfu((uint32_t)revCount, (uint32_t)elapsedMs);
-    return;  // not reached: the board resets into the bootloader
+  if (bleFwApplyNow) {
+    bleFwApplyNow = 0;
+    otaApply((uint32_t)revCount, (uint32_t)elapsedMs);
+    return;  // not reached: the board resets into the new image
   }
   if (bleSent) {
     gpsDrain();

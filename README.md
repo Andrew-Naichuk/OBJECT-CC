@@ -206,7 +206,7 @@ Change what you need and tap **Save**. OBJECT checks every value, rewrites `CONF
 
 The hub's **Settings** tab ends with a **Firmware** section. After you allow the link, OBJECT reports the build it is running (the same string as the dim version on the boot splash). The hub compares that with the latest build published in this repository.
 
-If a newer build is available, tap **Update OBJECT**. Finish the ride you are on first: OBJECT restarts, its screen stays dark while the image is sent, and a failed transfer leaves it in update mode until you retry or power it off and on. The first install of a board that does not yet speak this protocol is still over USB; later updates can come over Bluetooth.
+If a newer build is available, tap **Update OBJECT**. Finish the ride you are on first: the hub sends the image over the same Bluetooth link (about a minute), then OBJECT installs it and restarts. Keep the page open and the phone close. The first install of a board that does not yet speak this protocol is still over USB; later updates can come over Bluetooth.
 
 Each push that changes the firmware produces a new build. Local USB flashes report `dev` and the hub always offers to replace them with the published one.
 
