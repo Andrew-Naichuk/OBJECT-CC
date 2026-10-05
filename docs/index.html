@@ -342,15 +342,28 @@
     li button:disabled { opacity: 0.38; }
     li button.ride.active { opacity: 1; }
 
-    .name {
+    .text { min-width: 0; display: grid; gap: 0.1rem; }
+    .name, .meta {
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      font-size: 1.0625rem;
-      font-weight: 600;
       font-variant-numeric: tabular-nums;
     }
+    .name { font-size: 1.0625rem; font-weight: 600; }
+    .meta { font-size: 0.9375rem; font-weight: 500; }
+    .meta:empty { display: none; }
+    .when { color: var(--quiet); font-weight: 500; }
+    li.month {
+      display: block;
+      padding: 1.6rem 0.35rem 0.55rem;
+      color: var(--quiet);
+      font-size: 0.8125rem;
+      font-weight: 650;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    li.month:first-child { padding-top: 0; }
     .tag {
       display: inline-block;
       margin-left: 0.55rem;
@@ -362,7 +375,7 @@
       font-weight: 650;
       vertical-align: 0.12em;
     }
-    .size { color: var(--quiet); font-size: 0.9375rem; font-variant-numeric: tabular-nums; }
+    .size { color: var(--quiet); font-size: 0.875rem; font-variant-numeric: tabular-nums; }
     .active .size { color: var(--ink); font-weight: 650; }
     li svg { width: 1.2rem; height: 1.2rem; display: block; }
     .active svg { animation: blink 0.9s steps(2, jump-none) infinite; }
@@ -1051,6 +1064,198 @@
       return (n / (1024 * 1024 * 1024)).toFixed(1) + " GB";
     }
 
+    const DAY_FMT = new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short" });
+    const DAY_LONG_FMT = new Intl.DateTimeFormat(undefined, { weekday: "long", day: "numeric", month: "long" });
+    const MONTH_FMT = new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" });
+    const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+    const KIND_CURRENT = 0, KIND_DATED = 1, KIND_NUMBERED = 2, KIND_OTHER = 3;
+
+    // Archive names from xiao_oled.ino: YYMMDDHH (local time when saved; on a
+    // collision the last pair is a sequence), else RIDEnnnn.
+    function parseRide(name) {
+      const stem = name.replace(/\.gpx$/i, "");
+      if (name === "CURRENT.GPX") return { kind: KIND_CURRENT, stem };
+      let m = /^(\d\d)(\d\d)(\d\d)(\d\d)$/.exec(stem);
+      if (m) {
+        const date = new Date(2000 + Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+        const hour = Number(m[4]);
+        if (date.getMonth() === Number(m[2]) - 1 && date.getDate() === Number(m[3])) {
+          return { kind: KIND_DATED, stem, date, hour: hour <= 23 ? hour : null };
+        }
+      }
+      m = /^RIDE(\d{1,4})$/i.exec(stem);
+      if (m) return { kind: KIND_NUMBERED, stem, n: Number(m[1]) };
+      return { kind: KIND_OTHER, stem };
+    }
+
+    function sameDay(a, b) {
+      return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    }
+
+    function dayLabel(date, long) {
+      const today = new Date();
+      const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+      if (sameDay(date, today)) return "Today";
+      if (sameDay(date, yesterday)) return "Yesterday";
+      return (long ? DAY_LONG_FMT : DAY_FMT).format(date);
+    }
+
+    function rideUnits() {
+      if (cfgDevice) return cfgDevice.units;
+      try { return Number(localStorage.getItem("object-hub-units")) === 1 ? 1 : 0; } catch (e) { return 0; }
+    }
+
+    function fmtDistance(m) {
+      return rideUnits() === 1 ? (m / 1609.344).toFixed(1) + " mi" : (m / 1000).toFixed(1) + " km";
+    }
+
+    function fmtClimb(m) {
+      return "↑ " + (rideUnits() === 1 ? Math.round(m * 3.28084) + " ft" : Math.round(m) + " m");
+    }
+
+    function fmtDuration(s) {
+      const min = Math.round(s / 60);
+      return Math.floor(min / 60) + ":" + pad2(min % 60);
+    }
+
+    // How a ride reads in the list: title, start time and stats when known.
+    function describeRide(ride) {
+      const info = parseRide(ride.name);
+      const st = stats.get(statsKey(ride.name, ride.size));
+      const start = st && st.start ? new Date(st.start) : null;
+      const view = { info, title: info.stem, time: "", spokenDay: "", label: "", group: "", stats: [] };
+      if (info.kind === KIND_CURRENT) {
+        view.title = "Current ride";
+        view.label = "the current ride";
+      } else if (info.kind === KIND_DATED) {
+        const day = dayLabel(info.date);
+        view.title = day;
+        view.spokenDay = dayLabel(info.date, true);
+        view.label = "the ride from " + (day === "Today" || day === "Yesterday" ? day.toLowerCase() : day);
+        view.group = MONTH_FMT.format(info.date);
+        if (start) view.time = TIME_FMT.format(start);
+        else if (info.hour !== null) view.time = TIME_FMT.format(new Date(info.date.getFullYear(), info.date.getMonth(), info.date.getDate(), info.hour));
+      } else {
+        if (info.kind === KIND_NUMBERED) view.title = "Ride " + info.n;
+        view.label = view.title;
+        view.group = "No date";
+        if (start) view.time = dayLabel(start);
+      }
+      if (st) {
+        view.stats.push(fmtDistance(st.dist));
+        if (st.secs) view.stats.push(fmtDuration(st.secs));
+        if (st.gain !== null) view.stats.push(fmtClimb(st.gain));
+      }
+      return view;
+    }
+
+    function compareRides(a, b) {
+      const pa = parseRide(a.name), pb = parseRide(b.name);
+      if (pa.kind !== pb.kind) return pa.kind - pb.kind;
+      if (pa.kind === KIND_NUMBERED) return pb.n - pa.n;
+      return a.name < b.name ? 1 : a.name > b.name ? -1 : 0;
+    }
+
+    function haversine(lat1, lon1, lat2, lon2) {
+      const r = Math.PI / 180;
+      const dLat = (lat2 - lat1) * r, dLon = (lon2 - lon1) * r;
+      const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(dLon / 2) ** 2;
+      return 12742000 * Math.asin(Math.min(1, Math.sqrt(h)));
+    }
+
+    // Distance, elapsed time and climb from the track points. GPS altitude is
+    // noisy, so climb only counts once it moves CLIMB_STEP away from the last turn.
+    const CLIMB_STEP = 4;
+    function gpxStats(bytes) {
+      const text = new TextDecoder().decode(bytes);
+      const re = /<trkpt\b([^>]*)>([\s\S]*?)<\/trkpt>/g;
+      let dist = 0, gain = null, ref = null, first = null, last = null;
+      let lat0 = null, lon0 = null, t0 = null, points = 0;
+      let m;
+      while ((m = re.exec(text))) {
+        const lat = Number((/\blat="([^"]+)"/.exec(m[1]) || [])[1]);
+        const lon = Number((/\blon="([^"]+)"/.exec(m[1]) || [])[1]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        const eleM = /<ele>([^<]+)<\/ele>/.exec(m[2]);
+        const timeM = /<time>([^<]+)<\/time>/.exec(m[2]);
+        const t = timeM ? Date.parse(timeM[1]) : NaN;
+        if (lat0 !== null) {
+          const d = haversine(lat0, lon0, lat, lon);
+          const dt = Number.isFinite(t) && t0 !== null ? (t - t0) / 1000 : 0;
+          if (!(dt > 0 && d / dt > 70)) dist += d;
+        }
+        lat0 = lat;
+        lon0 = lon;
+        if (Number.isFinite(t)) {
+          t0 = t;
+          if (first === null) first = t;
+          last = t;
+        }
+        if (eleM) {
+          const e = Number(eleM[1]);
+          if (Number.isFinite(e)) {
+            if (ref === null) { ref = e; gain = 0; }
+            else if (e >= ref + CLIMB_STEP) { gain += e - ref; ref = e; }
+            else if (e <= ref - CLIMB_STEP) ref = e;
+          }
+        }
+        points++;
+      }
+      if (!points) return null;
+      return { dist, secs: first !== null ? (last - first) / 1000 : null, gain, start: first };
+    }
+
+    // Ride stats worked out from downloaded GPX files, kept in IndexedDB.
+    const stats = new Map();
+    let statsDb = null;
+
+    function statsKey(name, size) {
+      return ((device && device.name) || "OBJECT") + "/" + name + "/" + size;
+    }
+
+    function loadStats() {
+      return new Promise((resolve) => {
+        if (!("indexedDB" in window)) return resolve();
+        let req;
+        try { req = indexedDB.open("object-hub", 1); } catch (e) { return resolve(); }
+        req.onupgradeneeded = () => req.result.createObjectStore("rides");
+        req.onerror = () => resolve();
+        req.onsuccess = () => {
+          statsDb = req.result;
+          const cursor = statsDb.transaction("rides").objectStore("rides").openCursor();
+          cursor.onsuccess = () => {
+            const c = cursor.result;
+            if (!c) return resolve();
+            stats.set(c.key, c.value);
+            c.continue();
+          };
+          cursor.onerror = () => resolve();
+        };
+      });
+    }
+
+    function storeStats(key, value) {
+      stats.set(key, value);
+      if (!statsDb) return;
+      try { statsDb.transaction("rides", "readwrite").objectStore("rides").put(value, key); } catch (e) {}
+    }
+
+    function dropStats(name) {
+      const prefix = statsKey(name, "");
+      for (const key of [...stats.keys()]) {
+        if (!key.startsWith(prefix)) continue;
+        stats.delete(key);
+        if (statsDb) {
+          try { statsDb.transaction("rides", "readwrite").objectStore("rides").delete(key); } catch (e) {}
+        }
+      }
+    }
+
+    function rideLabel(name) {
+      const ride = rides.find((r) => r.name === name) || { name, size: 0 };
+      return describeRide(ride).label;
+    }
+
     function crc32(bytes) {
       let c = 0xffffffff;
       for (let i = 0; i < bytes.length; i++) {
@@ -1103,11 +1308,7 @@
 
     function renderRides() {
       filesEl.replaceChildren();
-      const sorted = rides.slice().sort((a, b) => {
-        if (a.name === "CURRENT.GPX") return -1;
-        if (b.name === "CURRENT.GPX") return 1;
-        return a.name < b.name ? 1 : a.name > b.name ? -1 : 0;
-      });
+      const sorted = rides.slice().sort(compareRides);
       if (!sorted.length && cmdChar && phase === "idle") {
         const li = document.createElement("li");
         li.className = "empty";
@@ -1116,9 +1317,18 @@
           : "The card is empty. Record a ride, then refresh.";
         filesEl.append(li);
       }
+      let group = "";
       for (const ride of sorted) {
+        const view = describeRide(ride);
+        if (view.group && view.group !== group) {
+          group = view.group;
+          const head = document.createElement("li");
+          head.className = "month";
+          head.textContent = group;
+          filesEl.append(head);
+        }
         const li = document.createElement("li");
-        const isCurrent = ride.name === "CURRENT.GPX";
+        const isCurrent = view.info.kind === KIND_CURRENT;
         if (isCurrent) li.className = "recording";
 
         const btn = document.createElement("button");
@@ -1128,15 +1338,27 @@
         const isActive = phase === "downloading" && ride.name === fileName;
         if (isActive) btn.classList.add("active");
 
+        const text = document.createElement("span");
+        text.className = "text";
         const name = document.createElement("span");
         name.className = "name";
-        name.append(ride.name.replace(/\.gpx$/i, ""));
+        name.append(view.title);
+        if (view.time) {
+          const when = document.createElement("span");
+          when.className = "when";
+          when.textContent = " · " + view.time;
+          name.append(when);
+        }
         if (isCurrent) {
           const tag = document.createElement("span");
           tag.className = "tag";
           tag.textContent = "In progress";
           name.append(tag);
         }
+        const meta = document.createElement("span");
+        meta.className = "meta";
+        meta.textContent = view.stats.join(" · ");
+        text.append(name, meta);
 
         const size = document.createElement("span");
         size.className = "size";
@@ -1146,8 +1368,10 @@
         const icon = document.createElement("span");
         icon.innerHTML = DOWN_ICON;
 
-        btn.setAttribute("aria-label", "Save " + ride.name + ", " + formatSize(ride.size));
-        btn.append(name, size, icon);
+        const spoken = [view.spokenDay || view.title, view.time, ...view.stats.map((s) => s.replace("↑ ", "climb "))]
+          .filter(Boolean).join(", ");
+        btn.setAttribute("aria-label", "Save " + spoken + ", " + formatSize(ride.size));
+        btn.append(text, size, icon);
         btn.addEventListener("click", () => {
           downloadRide(ride.name).catch((err) => {
             phase = "idle";
@@ -1164,7 +1388,7 @@
           del.className = "del";
           del.disabled = phase !== "idle";
           del.innerHTML = DEL_ICON;
-          del.setAttribute("aria-label", "Delete " + ride.name);
+          del.setAttribute("aria-label", "Delete " + view.label);
           del.addEventListener("click", (event) => {
             event.stopPropagation();
             deleteRide(ride.name).catch((err) => {
@@ -1207,7 +1431,12 @@
       a.download = fileName;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 4000);
-      setStatus("Saved " + fileName + ".");
+      try {
+        const summary = gpxStats(fileBuf);
+        if (summary) storeStats(statsKey(fileName, fileBuf.length), summary);
+      } catch (e) {}
+      const label = rideLabel(fileName);
+      setStatus("Saved " + label + ".");
       phase = "idle";
       resetTransfer();
       renderRides();
@@ -1286,7 +1515,9 @@
         cfgDevice = cfg;
         cfgDraft = Object.assign({}, cfg);
         cfgCustom = false;
+        try { localStorage.setItem("object-hub-units", String(cfg.units)); } catch (e) {}
         if (wasReading) setStatus(cfg.card ? "Settings loaded." : "No SD card in OBJECT.", !cfg.card);
+        renderRides();
         renderSettings();
         return;
       }
@@ -1328,10 +1559,12 @@
       if (type === META_DELETED) {
         clearTimeout(stallTimer);
         const removed = fileName;
+        const label = removed ? rideLabel(removed) : "";
         rides = rides.filter((r) => r.name !== removed);
+        if (removed) dropStats(removed);
         phase = "idle";
         resetTransfer();
-        setStatus(removed ? "Deleted " + removed + "." : "Deleted.");
+        setStatus(removed ? "Deleted " + label + "." : "Deleted.");
         renderRides();
         return;
       }
@@ -1390,7 +1623,7 @@
       const name = fileName;
       phase = "idle";
       resetTransfer();
-      setStatus(name ? "Stopped saving " + name + "." : "Download stopped.");
+      setStatus(name ? "Stopped saving " + rideLabel(name) + "." : "Download stopped.");
       renderRides();
       await writeCmd(new Uint8Array([OP_ABORT]));
     }
@@ -1413,7 +1646,7 @@
       resetTransfer();
       fileName = name;
       renderRides();
-      setStatus("Saving " + name + "…");
+      setStatus("Saving " + rideLabel(name) + "…");
       showProgress(name, 0, 1);
       noteActivity();
       const body = new Uint8Array(1 + name.length);
@@ -1423,10 +1656,11 @@
     }
 
     function confirmDelete(name) {
-      if (typeof delDialog.showModal !== "function") return Promise.resolve(confirm("Delete " + name + " from OBJECT?"));
-      const ride = rides.find((r) => r.name === name);
-      $("del-name").textContent = name.replace(/\.gpx$/i, "");
-      $("del-size").textContent = ride ? formatSize(ride.size) : "";
+      const ride = rides.find((r) => r.name === name) || { name, size: 0 };
+      const view = describeRide(ride);
+      if (typeof delDialog.showModal !== "function") return Promise.resolve(confirm("Delete " + view.label + " from OBJECT?"));
+      $("del-name").textContent = [view.title, view.time].filter(Boolean).join(" · ");
+      $("del-size").textContent = ride.size ? formatSize(ride.size) : "";
       delDialog.returnValue = "";
       delDialog.showModal();
       return new Promise((resolve) => {
@@ -1447,7 +1681,7 @@
       resetTransfer();
       fileName = name;
       renderRides();
-      setStatus("Deleting " + name + "…");
+      setStatus("Deleting " + rideLabel(name) + "…");
       noteActivity();
       const body = new Uint8Array(1 + name.length);
       body[0] = OP_DELETE;
@@ -1891,6 +2125,7 @@
 
     wireSettings();
     renderSettings();
+    loadStats().then(() => { if (cmdChar && phase === "idle") renderRides(); });
 
     if (new URLSearchParams(location.search).has("mock")) {
       const mock = document.createElement("script");

@@ -22,22 +22,28 @@
     animations: 1
   };
 
-  function gpx(seed, size) {
-    let s = '<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="OBJECT"><trk><trkseg>\n';
-    let i = 0;
-    while (s.length < size - 40) {
+  // Points every 2 s, ending at the hour in a YYMMDDHH name (or now).
+  function gpx(name, seed, size) {
+    const head = '<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="OBJECT"><trk><trkseg>\n';
+    const m = /^(\d\d)(\d\d)(\d\d)(\d\d)\./.exec(name);
+    const end = m ? new Date(2000 + +m[1], m[2] - 1, +m[3], Math.min(+m[4], 23), 40).getTime() : Date.now();
+    const points = Math.floor((size - head.length) / 125);
+    let s = head;
+    for (let i = 0; i < points; i++) {
       const lat = (50.45 + Math.sin((i + seed) / 50) * 0.01).toFixed(6);
       const lon = (30.52 + Math.cos((i + seed) / 50) * 0.01).toFixed(6);
-      s += '<trkpt lat="' + lat + '" lon="' + lon + '"><ele>' + (170 + (i % 30)) + "</ele></trkpt>\n";
-      i++;
+      const ele = (170 + 25 * Math.sin((i + seed) / 90) + (i % 3) * 0.4).toFixed(1);
+      const t = new Date(end - (points - i) * 2000).toISOString().replace(/\.\d+Z$/, "Z");
+      s += '<trkpt lat="' + lat + '" lon="' + lon + '"><ele>' + ele + "</ele><time>" + t + "</time></trkpt>\n";
     }
     return new TextEncoder().encode(s + "</trkseg></trk></gpx>\n");
   }
 
   const files = new Map();
   if (settings.card && mode !== "empty") {
-    [["CURRENT.GPX", 18000], ["26100401.GPX", 142000], ["26100202.GPX", 96000], ["26100201.GPX", 51000], ["26092801.GPX", 7400]]
-      .forEach(([name, size], i) => files.set(name, gpx(i * 97, size)));
+    [["CURRENT.GPX", 18000], ["26100401.GPX", 142000], ["26100202.GPX", 96000], ["26100201.GPX", 51000],
+      ["26092801.GPX", 7400], ["RIDE0003.GPX", 23000]]
+      .forEach(([name, size], i) => files.set(name, gpx(name, i * 97, size)));
   }
 
   function crc32(bytes) {

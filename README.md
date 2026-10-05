@@ -168,7 +168,7 @@ The track in `CURRENT.GPX` is renamed to a dated archive such as `26100115.GPX`,
 2. Open the [OBJECT HUB](https://object.nav-tech.workers.dev).
 3. Tap **Connect**, choose the **OBJECT** device (name from `ble_name`, default `OBJECT-001`).
 4. On OBJECT, press the button within **10 seconds** when it shows **Press to allow**. If you miss the window, the link drops and no files are listed — connect again.
-5. Select a GPX file to download.
+5. Tap a ride to download its GPX file. Rides are listed by date under month headings. After a download, the hub remembers the ride's distance, elapsed time and climb and shows them in the list.
 6. Delete archived rides with the trash control when you want to free card space. `CURRENT.GPX` cannot be deleted while it is the live recording.
 
 <table>
