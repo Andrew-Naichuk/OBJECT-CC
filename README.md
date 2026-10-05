@@ -165,7 +165,7 @@ The track in `CURRENT.GPX` is renamed to a dated archive such as `26100115.GPX`,
 ## Download a ride to your phone
 
 1. Power on OBJECT and keep it near your phone.
-2. Open the [OBJECT CONNECT HUB](https://object.nav-tech.workers.dev).
+2. Open the [OBJECT HUB](https://object.nav-tech.workers.dev).
 3. Tap **Connect**, choose the **OBJECT** device (name from `ble_name`, default `OBJECT-001`).
 4. On OBJECT, press the button within **10 seconds** when it shows **Press to allow**. If you miss the window, the link drops and no files are listed — connect again.
 5. Select a GPX file to download.
@@ -181,6 +181,8 @@ The track in `CURRENT.GPX` is renamed to a dated archive such as `26100115.GPX`,
 </table>
 
 You can also download `CURRENT.GPX` without finishing the ride. The device sends a snapshot ending at the point where the transfer began.
+
+In Chrome on Android, tap **Add OBJECT HUB to the home screen** at the bottom of the page, or **Install app** in Chrome's menu. The hub then opens like an app and loads without a network connection, so you can download rides at the trailhead.
 
 For the documented browser setup, use **Chrome on Android**, or [Bluefy on iPhone](https://apps.apple.com/app/bluefy-web-ble-browser/id1492822185), since Safari does not expose Web Bluetooth. To host your own copy, serve [docs/index.html](docs/index.html) over **HTTPS**.
 

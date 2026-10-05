@@ -3,6 +3,7 @@
 //   ?mock=empty    card with no rides
 //   ?mock=nocard   no SD card in the computer
 //   ?mock=manual   do not connect on load; press Connect
+//   ?mock=deny     never allowed; drops the link after the 10 s window
 (() => {
   const mode = new URLSearchParams(location.search).get("mock") || "";
   const CHUNK = 240;
@@ -123,14 +124,18 @@
   const data = new Char(() => {});
   const err = (code) => meta.emit(new Uint8Array([0x7f, code]));
 
+  let sending = false;
+
   function send(name) {
     const body = files.get(name);
     if (!settings.card) return err(1);
     if (!body) return err(3);
     meta.emit(named(0x03, name, body.length));
+    sending = true;
     let off = 0;
     const step = () => {
       if (off >= body.length) {
+        sending = false;
         const done = new Uint8Array(5);
         done[0] = 0x04;
         putU32(done, 1, crc32(body));
@@ -163,6 +168,10 @@
       send(name);
     } else if (op === 0x03) {
       stopAll();
+      if (sending) {
+        sending = false;
+        err(5);
+      }
     } else if (op === 0x04) {
       if (!settings.card) return err(1);
       if (!files.delete(name)) return err(3);
@@ -193,12 +202,14 @@
       await new Promise((r) => setTimeout(r, 400));
       this.connected = true;
       later(() => meta.emit(new Uint8Array([0x05])), 300);
-      later(() => meta.emit(new Uint8Array([0x06])), 1300);
+      if (mode === "deny") later(() => device.gatt.disconnect(), 10000);
+      else later(() => meta.emit(new Uint8Array([0x06])), 1300);
       return { getPrimaryService: async () => service };
     },
     disconnect() {
       if (!this.connected) return;
       this.connected = false;
+      sending = false;
       stopAll();
       setTimeout(() => device.dispatchEvent(new Event("gattserverdisconnected")), 0);
     }

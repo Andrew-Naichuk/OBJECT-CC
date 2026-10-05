@@ -4,6 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>OBJECT HUB</title>
+  <meta name="description" content="Download rides from OBJECT and change its settings over Bluetooth.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-title" content="OBJECT">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
   <link rel="preload" href="fonts/archivo-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -126,11 +131,11 @@
     }
     .actions { display: flex; gap: 0.375rem; }
     .actions button {
-      width: 2.25rem;
-      height: 2.25rem;
+      width: 2.75rem;
+      height: 2.75rem;
       display: grid;
       place-items: center;
-      margin: -0.4rem 0;
+      margin: -0.65rem 0;
       padding: 0;
       border: 1.5px solid var(--rule);
       border-radius: 10px;
@@ -261,8 +266,33 @@
     #connect:active:not(:disabled) { transform: scale(0.985); }
     #connect:disabled { opacity: 0.45; }
 
+    #cancel {
+      width: 100%;
+      height: 3.25rem;
+      border: 1.5px solid var(--rule);
+      border-radius: 16px;
+      background: transparent;
+      font-weight: 650;
+      font-size: 1.0625rem;
+      transition: transform 0.12s ease;
+    }
+    #cancel:active { transform: scale(0.985); }
+    body:not([data-phase="downloading"]) #cancel { display: none; }
+
     body[data-link="on"] #connect,
     body[data-link="off"] .when-on { display: none; }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      border: 0;
+    }
 
     /* Ride list */
     .rides { margin-top: 0; }
@@ -343,6 +373,8 @@
     }
 
     .note { margin: 2.75rem 0 0; width: 100%; color: var(--quiet); font-size: 0.875rem; text-align: center; }
+    .install { margin: 2.75rem 0 0; text-align: center; }
+    .install + .note { margin-top: 1rem; }
 
     /* Rides / Settings switch: text tabs with a sliding underline */
     .tabs {
@@ -666,17 +698,17 @@
       </div>
       <div class="actions when-on">
         <button id="refresh" type="button" aria-label="Refresh list" title="Refresh list" disabled><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M16 10a6 6 0 1 1-1.8-4.3M16.5 3v3.5H13"/></svg></button>
-        <button id="disconnect" type="button" aria-label="Disconnect" title="Disconnect" disabled><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M10 2.5v7M14.6 5.2a6.5 6.5 0 1 1-9.2 0"/></svg></button>
+        <button id="disconnect" type="button" aria-label="Disconnect" title="Disconnect" disabled><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M8.5 5.5 10.6 3.4a3 3 0 0 1 4.2 0l1.8 1.8a3 3 0 0 1 0 4.2l-2.1 2.1M11.5 14.5 9.4 16.6a3 3 0 0 1-4.2 0l-1.8-1.8a3 3 0 0 1 0-4.2l2.1-2.1M3 3l14 14"/></svg></button>
       </div>
     </header>
 
-    <section class="device" aria-label="Computer display">
+    <section class="device" aria-label="OBJECT display">
       <div class="screen">
         <div class="screen-top">
-          <span id="caption" role="status">Wake the computer and keep it close, then connect</span>
+          <span id="caption" role="status">Wake OBJECT and keep it close, then connect</span>
           <span id="progress-label"></span>
         </div>
-        <div class="figure" aria-live="polite">
+        <div class="figure" aria-hidden="true">
           <span id="value">--</span><span id="unit"></span>
         </div>
         <div class="gauge" id="progress" role="progressbar" aria-label="Transfer progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
@@ -687,6 +719,8 @@
 
     <div class="controls">
       <button id="connect" type="button">Connect</button>
+      <button id="cancel" type="button">Cancel download</button>
+      <span class="sr-only" id="sr-progress" aria-live="polite"></span>
     </div>
 
     <div class="tabs when-on" role="tablist" aria-label="View">
@@ -788,13 +822,14 @@
       </form>
     </section>
 
-    <p class="note">Works in Chrome on Android when this page is served over HTTPS. Safari on iPhone has no Bluetooth; open the page in Bluefy instead.</p>
+    <p class="install hide" id="install-row"><button type="button" class="linkish" id="install">Add OBJECT HUB to the home screen</button></p>
+    <p class="note hide" id="note">Works in Chrome on Android when this page is served over HTTPS. Safari on iPhone has no Bluetooth; open the page in Bluefy instead.</p>
   </main>
   <dialog class="sheet" id="del-dialog" aria-labelledby="del-title" aria-describedby="del-body">
     <form method="dialog">
       <p class="eyebrow">Delete ride</p>
       <h2 id="del-title"><span id="del-name"></span><span class="size" id="del-size"></span></h2>
-      <p class="body" id="del-body">The track is removed from the card in the computer. This cannot be undone.</p>
+      <p class="body" id="del-body">The track is removed from the card in OBJECT. This cannot be undone.</p>
       <div class="choices">
         <button type="submit" class="cancel" value="cancel" autofocus>Cancel</button>
         <button type="submit" class="confirm" value="delete">Delete</button>
@@ -825,16 +860,20 @@
     const META_ERROR = 0x7f;
     const CFG_VERSION = 2;
     const CFG_LEN = 34;
+    const ERR_NO_SD = 1;
     const ERR_NAME = 2;
+    const ERR_ABORT = 5;
     const MAX_FILE = 16 * 1024 * 1024;
     const STALL_MS = 15000;
+    const AUTH_MS = 10000;
+    const BUSY = ["listing", "downloading", "deleting", "reading", "saving"];
     const ERRORS = {
       1: "No SD card",
       2: "Bad file name",
       3: "File not found",
       4: "Card I/O failed",
       5: "Transfer aborted",
-      6: "Confirm on the computer",
+      6: "Confirm on OBJECT",
       7: "A setting is out of range"
     };
 
@@ -867,6 +906,9 @@
     const maxInput = $("cfg-max");
     const stoppedOut = $("cfg-stopped");
     const delDialog = $("del-dialog");
+    const cancelBtn = $("cancel");
+    const srProgress = $("sr-progress");
+    const noteEl = $("note");
 
     let device = null;
     let cmdChar = null;
@@ -886,6 +928,13 @@
     let cfgDevice = null;
     let cfgDraft = null;
     let cfgCustom = false;
+    let cardMissing = false;
+    let cancelling = false;
+    let authDeadline = 0;
+    let authTimer = 0;
+    let spokenStep = -1;
+    let wakeLock = null;
+    let wakePending = false;
 
     const DOWN_ICON = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M10 3v10M5.5 8.5 10 13l4.5-4.5M4 17h12"/></svg>';
     const DEL_ICON = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M4 6h12M8 6V4h4v2M7 6v10h6V6"/></svg>';
@@ -929,8 +978,10 @@
         right = "Remove";
       } else if (phase === "listing") {
         value = pad2(rides.length);
-      } else if (phase === "awaiting") {
-        right = "10 s";
+      } else if (phase === "awaiting" && authDeadline) {
+        const left = Math.max(0, authDeadline - Date.now());
+        right = Math.ceil(left / 1000) + " s";
+        p = left / AUTH_MS;
       } else if (linked && phase === "idle") {
         value = pad2(rides.length);
         right = cardBytes ? formatSize(stored) + " / " + formatSize(cardBytes) : (rides.length ? formatSize(stored) : "");
@@ -943,6 +994,48 @@
       progressEl.setAttribute("aria-valuenow", String(Math.round(p * 100)));
       const activeSize = document.getElementById("active-size");
       if (activeSize) activeSize.textContent = phase === "downloading" ? value + "%" : "";
+
+      const step = phase === "downloading" && prog && prog.total > 1 ? Math.floor(p * 4) : -1;
+      if (step !== spokenStep) {
+        spokenStep = step;
+        if (step >= 0 && step < 4) srProgress.textContent = step * 25 + " percent";
+      }
+      noteEl.classList.toggle("hide", !!navigator.bluetooth);
+      holdWake(BUSY.includes(phase));
+    }
+
+    // Android suspends the page, and with it the link, when the screen locks.
+    function holdWake(on) {
+      if (!("wakeLock" in navigator)) return;
+      if (on && !wakeLock && !wakePending && document.visibilityState === "visible") {
+        wakePending = true;
+        navigator.wakeLock.request("screen").then((lock) => {
+          wakePending = false;
+          wakeLock = lock;
+          lock.addEventListener("release", () => { if (wakeLock === lock) wakeLock = null; });
+          if (!BUSY.includes(phase)) holdWake(false);
+        }, () => { wakePending = false; });
+      } else if (!on && wakeLock) {
+        const lock = wakeLock;
+        wakeLock = null;
+        lock.release().catch(() => {});
+      }
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") holdWake(BUSY.includes(phase));
+    });
+
+    function startAuthCountdown() {
+      if (authDeadline) return;
+      authDeadline = Date.now() + AUTH_MS;
+      clearInterval(authTimer);
+      authTimer = setInterval(syncUI, 250);
+    }
+
+    function stopAuthCountdown() {
+      authDeadline = 0;
+      clearInterval(authTimer);
     }
 
     function setStatus(text, isError) {
@@ -987,7 +1080,7 @@
 
     function noteActivity() {
       clearTimeout(stallTimer);
-      if (["listing", "downloading", "deleting", "reading", "saving"].includes(phase)) {
+      if (BUSY.includes(phase)) {
         stallTimer = setTimeout(() => {
           setStatus("Transfer stalled. Move closer and try again.", true);
           phase = "idle";
@@ -1018,7 +1111,9 @@
       if (!sorted.length && cmdChar && phase === "idle") {
         const li = document.createElement("li");
         li.className = "empty";
-        li.textContent = "The card is empty. Record a ride, then refresh.";
+        li.textContent = cardMissing
+          ? "No card in OBJECT. Insert one, then refresh."
+          : "The card is empty. Record a ride, then refresh.";
         filesEl.append(li);
       }
       for (const ride of sorted) {
@@ -1142,12 +1237,14 @@
       if (type === META_AUTH_WAIT) {
         if (phase === "awaiting" || !authorized) {
           phase = "awaiting";
-          setStatus("Confirm on the computer — press the button within 10 seconds.");
+          startAuthCountdown();
+          setStatus("Press the button on OBJECT to allow this phone");
         }
         return;
       }
       if (type === META_AUTH_OK) {
         if (authorized) return;
+        stopAuthCountdown();
         authorized = true;
         phase = "idle";
         refreshBtn.disabled = false;
@@ -1169,6 +1266,7 @@
       if (type === META_LIST_END) {
         clearTimeout(stallTimer);
         if (bytes.length >= 5) cardBytes = u32le(bytes, 1) * 1024;
+        cardMissing = false;
         phase = "idle";
         setStatus(rides.length ? rides.length + " ride" + (rides.length === 1 ? "" : "s") + " on the device." : "No GPX files on the device.");
         renderRides();
@@ -1181,25 +1279,26 @@
         const wasReading = phase === "reading";
         if (phase === "reading" || phase === "saving") phase = "idle";
         if (!cfg) {
-          setStatus("This computer sent settings this page does not understand. Update the page.", true);
+          setStatus("OBJECT sent settings this page does not understand. Update the page.", true);
           renderSettings();
           return;
         }
         cfgDevice = cfg;
         cfgDraft = Object.assign({}, cfg);
         cfgCustom = false;
-        if (wasReading) setStatus(cfg.card ? "Settings loaded." : "No SD card in the computer.", !cfg.card);
+        if (wasReading) setStatus(cfg.card ? "Settings loaded." : "No SD card in OBJECT.", !cfg.card);
         renderSettings();
         return;
       }
       if (type === META_CFG_SAVED) {
         const renamed = cfgDevice && cfgDraft && cfgDraft.name !== cfgDevice.name;
         setStatus(renamed
-          ? "Saved. The computer shows up as " + cfgDraft.name + " the next time you connect."
-          : "Saved to " + (cfgDraft ? cfgDraft.name : "the computer") + ".");
+          ? "Saved. OBJECT shows up as " + cfgDraft.name + " the next time you connect."
+          : "Saved to " + (cfgDraft ? cfgDraft.name : "OBJECT") + ".");
         return;
       }
       if (type === META_START && bytes.length >= 17) {
+        if (cancelling) return;
         fileName = readName(bytes.subarray(1, 13));
         const size = u32le(bytes, 13);
         if (size > MAX_FILE) {
@@ -1238,12 +1337,22 @@
       }
       if (type === META_ERROR && bytes.length >= 2) {
         clearTimeout(stallTimer);
+        if (cancelling && bytes[1] === ERR_ABORT) {
+          cancelling = false;
+          return;
+        }
+        cancelling = false;
         const wasReading = phase === "reading";
         const wasSaving = phase === "saving";
+        const wasListing = phase === "listing";
         phase = authorized ? "idle" : "awaiting";
         resetTransfer();
+        if (bytes[1] === ERR_NO_SD) {
+          cardMissing = true;
+          if (wasListing) rides = [];
+        }
         if (wasReading && bytes[1] === ERR_NAME) {
-          setStatus("This computer's firmware is too old to change settings here. Update it, then try again.", true);
+          setStatus("OBJECT's firmware is too old to change settings here. Update it, then try again.", true);
         } else if (wasSaving && bytes[1] === 1) {
           setStatus("Insert a card to save settings.", true);
         } else {
@@ -1257,7 +1366,7 @@
     function onData(event) {
       const view = event.target.value;
       const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-      if (bytes.length < 4) return;
+      if (bytes.length < 4 || cancelling) return;
       noteActivity();
       const offset = u32le(bytes, 0);
       const payload = bytes.subarray(4);
@@ -1270,7 +1379,20 @@
     }
 
     async function writeCmd(bytes) {
+      if (bytes[0] !== OP_ABORT) cancelling = false;
       await cmdChar.writeValue(bytes);
+    }
+
+    async function cancelDownload() {
+      if (!cmdChar || phase !== "downloading") return;
+      clearTimeout(stallTimer);
+      cancelling = true;
+      const name = fileName;
+      phase = "idle";
+      resetTransfer();
+      setStatus(name ? "Stopped saving " + name + "." : "Download stopped.");
+      renderRides();
+      await writeCmd(new Uint8Array([OP_ABORT]));
     }
 
     async function listRides() {
@@ -1301,7 +1423,7 @@
     }
 
     function confirmDelete(name) {
-      if (typeof delDialog.showModal !== "function") return Promise.resolve(confirm("Delete " + name + " from the computer?"));
+      if (typeof delDialog.showModal !== "function") return Promise.resolve(confirm("Delete " + name + " from OBJECT?"));
       const ride = rides.find((r) => r.name === name);
       $("del-name").textContent = name.replace(/\.gpx$/i, "");
       $("del-size").textContent = ride ? formatSize(ride.size) : "";
@@ -1475,13 +1597,13 @@
       cfgFields.disabled = !ready || busy || !cfgDraft.card;
 
       if (!ready) {
-        cfgNotice.textContent = !cmdChar || !authorized ? "" : phase === "reading" ? "Reading settings from the computer…" : "Settings are not loaded yet.";
+        cfgNotice.textContent = !cmdChar || !authorized ? "" : phase === "reading" ? "Reading settings from OBJECT…" : "Settings are not loaded yet.";
         cfgNotice.classList.toggle("hide", !cfgNotice.textContent);
         cfgBar.classList.add("hide");
         syncUI();
         return;
       }
-      cfgNotice.textContent = cfgDraft.card ? "" : "Insert a card in the computer to change settings.";
+      cfgNotice.textContent = cfgDraft.card ? "" : "Insert a card in OBJECT to change settings.";
       cfgNotice.classList.toggle("hide", cfgDraft.card);
 
       const c = cfgDraft;
@@ -1679,12 +1801,16 @@
         phase = "awaiting";
         refreshBtn.disabled = true;
         disconnectBtn.disabled = false;
-        setStatus("Confirm on the computer — press the button within 10 seconds.");
+        if (phase === "awaiting") {
+          startAuthCountdown();
+          setStatus("Press the button on OBJECT to allow this phone");
+        }
       } catch (err) {
         phase = "idle";
         authorized = false;
+        stopAuthCountdown();
         if (err && err.name === "NotFoundError") {
-          setStatus("No computer selected.");
+          setStatus("No device selected.");
         } else {
           setStatus(err && err.message ? err.message : "Connect failed.", true);
         }
@@ -1700,11 +1826,14 @@
       if (delDialog.open) delDialog.close();
       const wasAwaiting = phase === "awaiting" && !authorized;
       const timedOut = wasAwaiting && !userDisconnect;
+      stopAuthCountdown();
       cmdChar = null;
       authorized = false;
       phase = "idle";
+      cancelling = false;
       rides = [];
       cardBytes = 0;
+      cardMissing = false;
       cfgDevice = null;
       cfgDraft = null;
       cfgCustom = false;
@@ -1714,8 +1843,9 @@
       connectBtn.disabled = false;
       refreshBtn.disabled = true;
       disconnectBtn.disabled = true;
+      connectBtn.textContent = timedOut ? "Try again" : "Connect";
       if (timedOut) {
-        setStatus("Confirmation timed out. Connect again and press the button on the computer.", true);
+        setStatus("Not allowed in time. Tap Try again, then press the button on OBJECT.", true);
       } else {
         setStatus("Disconnected.");
       }
@@ -1738,6 +1868,26 @@
       renderRides();
     }));
     disconnectBtn.addEventListener("click", disconnect);
+    cancelBtn.addEventListener("click", () => cancelDownload().catch(() => {}));
+
+    let installPrompt = null;
+    const installRow = $("install-row");
+    window.addEventListener("beforeinstallprompt", (event) => {
+      event.preventDefault();
+      installPrompt = event;
+      installRow.classList.remove("hide");
+    });
+    window.addEventListener("appinstalled", () => {
+      installPrompt = null;
+      installRow.classList.add("hide");
+    });
+    $("install").addEventListener("click", async () => {
+      if (!installPrompt) return;
+      const prompt = installPrompt;
+      installPrompt = null;
+      installRow.classList.add("hide");
+      await prompt.prompt();
+    });
 
     wireSettings();
     renderSettings();
@@ -1746,6 +1896,8 @@
       const mock = document.createElement("script");
       mock.src = "../tools/hub-mock/mock-ble.js";
       document.body.append(mock);
+    } else if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
     }
   </script>
 </body>
