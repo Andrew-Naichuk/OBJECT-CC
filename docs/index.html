@@ -657,7 +657,7 @@
       overflow-wrap: anywhere;
       font-variant-numeric: tabular-nums;
     }
-    .firmware p { margin: 0 0 1.1rem; color: var(--quiet); font-size: 0.9375rem; }
+    .firmware p { margin: 0 0 1.1rem; color: var(--quiet); font-size: 0.9375rem; text-align: center; }
     .firmware .linkish { margin: 0; }
     #fw-update {
       width: 100%;
@@ -671,7 +671,16 @@
     #fw-update:disabled { opacity: 0.4; }
     #fw-dialog { padding: 1.4rem 1.25rem 1.25rem; }
     #fw-dialog .eyebrow { color: var(--quiet); }
-    #fw-dialog .body { white-space: pre-line; }
+    #fw-dialog .body { white-space: pre-line; color: var(--ink); }
+    #fw-dialog:has(#fw-progress:not(.hide)) .body { margin-bottom: 0.75rem; }
+    #fw-dialog .gauge {
+      margin: 0 0 1.4rem;
+      background: radial-gradient(circle at 3px 3px, var(--rule) 2.2px, transparent 2.7px) 0 0 / 9px 6px repeat-x;
+    }
+    #fw-dialog .gauge .fill {
+      background: radial-gradient(circle at 3px 3px, var(--ink) 2.2px, transparent 2.7px) 0 0 / 9px 6px repeat-x;
+    }
+    #fw-dialog .gauge.busy .fill { animation: sweep 1.5s steps(24) infinite; }
     #fw-dialog .confirm { background: var(--ink); color: var(--paper); }
     #fw-dialog .choices:has(button.hide) { grid-template-columns: 1fr; }
 
@@ -874,7 +883,7 @@
         <dl>
           <dt>On OBJECT</dt>
           <dd id="fw-installed">—</dd>
-          <dt>Latest</dt>
+          <dt id="fw-latest-label">Latest</dt>
           <dd id="fw-latest">—</dd>
         </dl>
         <p id="fw-note"></p>
@@ -901,6 +910,9 @@
     <p class="eyebrow" id="fw-eyebrow">Firmware update</p>
     <h2 id="fw-title"></h2>
     <p class="body" id="fw-body"></p>
+    <div class="gauge hide" id="fw-progress" role="progressbar" aria-label="Update progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <span class="fill"></span>
+    </div>
     <div class="choices">
       <button type="button" class="cancel" id="fw-dismiss">Cancel</button>
       <button type="button" class="confirm" id="fw-go">Update</button>
@@ -993,6 +1005,7 @@
     const fwDialog = $("fw-dialog");
     const fwInstalledEl = $("fw-installed");
     const fwLatestEl = $("fw-latest");
+    const fwLatestLabel = $("fw-latest-label");
     const fwNote = $("fw-note");
     const fwUpdateBtn = $("fw-update");
     const fwRecheckBtn = $("fw-recheck");
@@ -2096,6 +2109,7 @@
       let note = "";
       let action = "";
       let recheck = false;
+      let showLatest = true;
       if (!ready || fwProbing) {
         note = "";
       } else if (fwInstalled === "") {
@@ -2106,12 +2120,14 @@
           : "";
         recheck = true;
       } else if (fwUpdateAvailable()) {
-        note = fwLatest.notes ? "Latest change: " + fwLatest.notes : "A newer build is available.";
         action = "Update OBJECT";
       } else {
         note = "OBJECT runs the latest published build.";
+        showLatest = false;
       }
 
+      fwLatestLabel.classList.toggle("hide", !showLatest);
+      fwLatestEl.classList.toggle("hide", !showLatest);
       fwNote.textContent = note;
       fwNote.classList.toggle("hide", !note);
       fwUpdateBtn.textContent = action;
@@ -2160,7 +2176,28 @@
       });
     }
 
-    function fwSheet(title, body, primary, secondary) {
+    // progress: omit/null to hide, "busy" for indeterminate sweep, 0–1 for determinate fill
+    function fwSetProgress(progress) {
+      const el = $("fw-progress");
+      if (progress == null) {
+        el.classList.add("hide");
+        el.classList.remove("busy");
+        el.style.setProperty("--p", 0);
+        el.setAttribute("aria-valuenow", "0");
+        el.removeAttribute("aria-valuetext");
+        return;
+      }
+      const busy = progress === "busy";
+      const p = busy ? 0 : Math.max(0, Math.min(1, Number(progress) || 0));
+      el.classList.remove("hide");
+      el.classList.toggle("busy", busy);
+      el.style.setProperty("--p", p);
+      el.setAttribute("aria-valuenow", String(Math.round(p * 100)));
+      if (busy) el.setAttribute("aria-valuetext", "In progress");
+      else el.removeAttribute("aria-valuetext");
+    }
+
+    function fwSheet(title, body, primary, secondary, progress) {
       $("fw-title").textContent = title;
       $("fw-body").textContent = body;
       $("fw-go").textContent = primary || "";
@@ -2168,6 +2205,7 @@
       $("fw-go").disabled = false;
       $("fw-dismiss").textContent = secondary || "";
       $("fw-dismiss").classList.toggle("hide", !secondary);
+      fwSetProgress(progress === undefined ? null : progress);
       if (!fwDialog.open && typeof fwDialog.showModal === "function") fwDialog.showModal();
     }
 
@@ -2243,7 +2281,7 @@
     // Fetch the image, stream it over the OBJECT link, then let OBJECT install it.
     async function fwStart() {
       if (!cmdChar || !authorized || phase !== "idle" || !fwUpdateAvailable()) return;
-      fwSheet("Update to " + fwLatest.version, "Downloading the new firmware…", "", "");
+      fwSheet("Update to " + fwLatest.version, "Downloading the new firmware…", "", "", "busy");
       try {
         fwImage = await fwDownload();
       } catch (err) {
@@ -2255,6 +2293,7 @@
       phase = "updating";
       fwCaption = "Preparing";
       showProgress("firmware", 0, fwImage.bin.length);
+      fwSheet("Update to " + fwLatest.version, "Preparing OBJECT for the update…", "", "", "busy");
       setStatus("Updating OBJECT");
       renderSettings();
 
@@ -2284,14 +2323,15 @@
           if (pct !== shownPct) {
             shownPct = pct;
             showProgress("firmware", sent, fwImage.bin.length);
-            $("fw-body").textContent = "Sending " + pct + "%. Keep this page open and the phone close to OBJECT.";
-            fwSheet("Sending", $("fw-body").textContent, "", "");
+            fwSheet("Sending",
+              "Sending " + pct + "%. Keep this page open and the phone close to OBJECT.",
+              "", "", sent / fwImage.bin.length);
           }
         }
 
         fwCaption = "Installing";
         syncUI();
-        $("fw-body").textContent = "OBJECT is installing the update and will restart…";
+        fwSheet("Installing", "OBJECT is installing the update and will restart…", "", "", "busy");
         const done = fwWaitMeta((fn) => { fwDoneWait = fn; }, 60000);
         await writeCmd(new Uint8Array([OP_FW_COMMIT]));
         await done;
