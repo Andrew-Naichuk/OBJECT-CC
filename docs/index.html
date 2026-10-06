@@ -684,6 +684,54 @@
     #fw-dialog .confirm { background: var(--ink); color: var(--paper); }
     #fw-dialog .choices:has(button.hide) { grid-template-columns: 1fr; }
 
+    /* Post-download share sheet */
+    #share-dialog { max-width: 22rem; }
+    #share-dialog .eyebrow { color: var(--quiet); }
+    #share-dialog h2 { margin-bottom: 1rem; }
+    #share-dialog .seg { margin: 0 0 1rem; }
+    #share-dialog .preview-wrap {
+      position: relative;
+      margin: 0 auto 1.15rem;
+      width: min(100%, calc(42vh * 9 / 16));
+      aspect-ratio: 9 / 16;
+      max-height: 42vh;
+      border-radius: 14px;
+      overflow: hidden;
+      background: #000;
+    }
+    #share-dialog[data-mode="sticker"] .preview-wrap {
+      background-color: #c8c8c8;
+      background-image:
+        linear-gradient(45deg, #a8a8a8 25%, transparent 25%),
+        linear-gradient(-45deg, #a8a8a8 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #a8a8a8 75%),
+        linear-gradient(-45deg, transparent 75%, #a8a8a8 75%);
+      background-size: 16px 16px;
+      background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+    }
+    #share-preview {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: transparent;
+    }
+    #share-dialog .preview-wrap.busy #share-preview { opacity: 0.35; }
+    #share-dialog .share-actions { display: grid; gap: 0.5rem; }
+    #share-dialog #share-go {
+      height: 3.25rem;
+      border: 0;
+      border-radius: 12px;
+      background: var(--ink);
+      color: var(--paper);
+      font-weight: 650;
+      transition: transform 0.12s ease;
+    }
+    #share-dialog #share-go:active { transform: scale(0.985); }
+    #share-dialog #share-go:disabled { opacity: 0.4; }
+    #share-dialog .choices { grid-template-columns: 1fr 1fr; }
+    #share-dialog .choices .cancel { border: 1.5px solid var(--rule); background: transparent; }
+
     /* Delete confirmation */
     .sheet {
       width: calc(100% - 32px);
@@ -918,6 +966,32 @@
       <button type="button" class="confirm" id="fw-go">Update</button>
     </div>
   </dialog>
+  <dialog class="sheet" id="share-dialog" data-mode="card" aria-labelledby="share-title">
+    <form method="dialog">
+      <p class="eyebrow">Share</p>
+      <h2 id="share-title"></h2>
+      <div class="seg" role="radiogroup" aria-label="Share style">
+        <label>
+          <input type="radio" name="share-mode" value="card" checked>
+          <span>Card</span>
+        </label>
+        <label>
+          <input type="radio" name="share-mode" value="sticker">
+          <span>Sticker</span>
+        </label>
+      </div>
+      <div class="preview-wrap" id="share-preview-wrap">
+        <img id="share-preview" alt="Ride share preview">
+      </div>
+      <div class="share-actions">
+        <button type="button" id="share-go">Share</button>
+        <div class="choices">
+          <button type="button" class="cancel" id="share-save">Save image</button>
+          <button type="submit" class="cancel" value="cancel" id="share-dismiss">Not now</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
   <script>
     // Same bytes as xiao_oled.ino.
     const SERVICE = "7a1e0001-4c8b-4d2e-9f63-1b5a0c7e8d24";
@@ -1002,6 +1076,12 @@
     const maxInput = $("cfg-max");
     const stoppedOut = $("cfg-stopped");
     const delDialog = $("del-dialog");
+    const shareDialog = $("share-dialog");
+    const shareTitle = $("share-title");
+    const sharePreview = $("share-preview");
+    const sharePreviewWrap = $("share-preview-wrap");
+    const shareGo = $("share-go");
+    const shareSave = $("share-save");
     const fwDialog = $("fw-dialog");
     const fwInstalledEl = $("fw-installed");
     const fwLatestEl = $("fw-latest");
@@ -1304,12 +1384,26 @@
       return gain;
     }
 
-    function gpxStats(bytes) {
+    // Share cards keep a thinned polyline; IndexedDB still only stores the summary.
+    const MAX_SHARE_POINTS = 600;
+
+    function downsamplePoints(raw) {
+      const n = raw.length;
+      if (n <= MAX_SHARE_POINTS) return raw;
+      const out = new Array(MAX_SHARE_POINTS);
+      const stride = (n - 1) / (MAX_SHARE_POINTS - 1);
+      for (let i = 0; i < MAX_SHARE_POINTS; i++) out[i] = raw[Math.round(i * stride)];
+      out[MAX_SHARE_POINTS - 1] = raw[n - 1];
+      return out;
+    }
+
+    function gpxParse(bytes) {
       const text = new TextDecoder().decode(bytes);
       const re = /<trkpt\b([^>]*)>([\s\S]*?)<\/trkpt>/g;
       let dist = 0, first = null, last = null;
-      let lat0 = null, lon0 = null, t0 = null, points = 0;
+      let lat0 = null, lon0 = null, t0 = null, count = 0;
       const eles = [];
+      const raw = [];
       let m;
       while ((m = re.exec(text))) {
         const lat = Number((/\blat="([^"]+)"/.exec(m[1]) || [])[1]);
@@ -1325,6 +1419,7 @@
         }
         lat0 = lat;
         lon0 = lon;
+        raw.push([lat, lon]);
         if (Number.isFinite(t)) {
           t0 = t;
           if (first === null) first = t;
@@ -1334,16 +1429,24 @@
           const e = Number(eleM[1]);
           if (Number.isFinite(e)) eles.push(e);
         }
-        points++;
+        count++;
       }
-      if (!points) return null;
+      if (!count) return null;
       return {
-        v: STATS_VERSION,
-        dist,
-        secs: first !== null ? (last - first) / 1000 : null,
-        gain: climbGain(smoothElevations(eles)),
-        start: first
+        stats: {
+          v: STATS_VERSION,
+          dist,
+          secs: first !== null ? (last - first) / 1000 : null,
+          gain: climbGain(smoothElevations(eles)),
+          start: first
+        },
+        points: downsamplePoints(raw)
       };
+    }
+
+    function gpxStats(bytes) {
+      const parsed = gpxParse(bytes);
+      return parsed ? parsed.stats : null;
     }
 
     function rideStats(ride) {
@@ -1401,6 +1504,354 @@
       const ride = rides.find((r) => r.name === name) || { name, size: 0 };
       return describeRide(ride).label;
     }
+
+    // —— Post-download share PNGs (solid card + transparent sticker) ——
+    const SHARE_W = 1080;
+    const SHARE_H = 1920;
+    let sharePayload = null;
+    let shareBlobUrl = null;
+    let shareFile = null;
+    let shareRenderToken = 0;
+
+    function fmtDurationShort(s) {
+      const total = Math.max(0, Math.round(s));
+      const h = Math.floor(total / 3600);
+      const m = Math.floor((total % 3600) / 60);
+      if (h > 0) return h + "h " + m + "m";
+      if (m > 0) {
+        const sec = total % 60;
+        return m < 10 && sec > 0 ? m + "m " + sec + "s" : m + "m";
+      }
+      return (total % 60) + "s";
+    }
+
+    function fmtClimbPlain(m) {
+      return rideUnits() === 1 ? Math.round(m * 3.28084) + " ft" : Math.round(m) + " m";
+    }
+
+    function shareStatRows(stats) {
+      const rows = [{ label: "Distance", value: fmtDistance(stats.dist) }];
+      if (stats.secs != null && stats.secs > 0) rows.push({ label: "Time", value: fmtDurationShort(stats.secs) });
+      if (stats.gain != null) rows.push({ label: "Elev Gain", value: fmtClimbPlain(stats.gain) });
+      return rows;
+    }
+
+    function projectRoute(points, x, y, w, h) {
+      let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+      for (const p of points) {
+        minLat = Math.min(minLat, p[0]);
+        maxLat = Math.max(maxLat, p[0]);
+        minLon = Math.min(minLon, p[1]);
+        maxLon = Math.max(maxLon, p[1]);
+      }
+      const midLat = (minLat + maxLat) / 2;
+      const cos = Math.max(0.2, Math.cos(midLat * Math.PI / 180));
+      let minX = minLon * cos, maxX = maxLon * cos;
+      let minY = -maxLat, maxY = -minLat;
+      let dx = maxX - minX, dy = maxY - minY;
+      if (!(dx > 0) && !(dy > 0)) return null;
+      if (!(dx > 0)) dx = dy * 0.01;
+      if (!(dy > 0)) dy = dx * 0.01;
+      const scale = Math.min(w / dx, h / dy);
+      const cx = x + w / 2, cy = y + h / 2;
+      const midX = (minX + maxX) / 2, midY = (minY + maxY) / 2;
+      return points.map(([lat, lon]) => [
+        cx + (lon * cos - midX) * scale,
+        cy + (-lat - midY) * scale
+      ]);
+    }
+
+    function paintShareText(ctx, text, x, y, sticker) {
+      if (sticker) {
+        ctx.lineJoin = "round";
+        ctx.miterLimit = 2;
+        ctx.lineWidth = 10;
+        ctx.strokeStyle = "rgba(0,0,0,0.55)";
+        ctx.strokeText(text, x, y);
+        ctx.shadowColor = "rgba(0,0,0,0.75)";
+        ctx.shadowBlur = 14;
+        ctx.shadowOffsetY = 2;
+      }
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(text, x, y);
+      ctx.shadowColor = "transparent";
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetY = 0;
+    }
+
+    // Same 5x7 matrix as the device speed digits (xiao_oled DOT_FONT), plus the
+    // unit letters share cards need. Bit (cols-1) is the left column.
+    const SHARE_DOT_FONT = {
+      " ": { cols: 2, rows: [0, 0, 0, 0, 0, 0, 0] },
+      "0": { cols: 5, rows: [0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E] },
+      "1": { cols: 5, rows: [0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E] },
+      "2": { cols: 5, rows: [0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F] },
+      "3": { cols: 5, rows: [0x0E, 0x11, 0x01, 0x06, 0x01, 0x11, 0x0E] },
+      "4": { cols: 5, rows: [0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02] },
+      "5": { cols: 5, rows: [0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E] },
+      "6": { cols: 5, rows: [0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E] },
+      "7": { cols: 5, rows: [0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08] },
+      "8": { cols: 5, rows: [0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E] },
+      "9": { cols: 5, rows: [0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C] },
+      ".": { cols: 1, rows: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01] },
+      "-": { cols: 5, rows: [0x00, 0x00, 0x00, 0x0E, 0x00, 0x00, 0x00] },
+      "k": { cols: 5, rows: [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11] },
+      "m": { cols: 5, rows: [0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11] },
+      "i": { cols: 3, rows: [0x02, 0x00, 0x06, 0x02, 0x02, 0x02, 0x07] },
+      "h": { cols: 5, rows: [0x10, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x11] },
+      "s": { cols: 5, rows: [0x0E, 0x11, 0x10, 0x0E, 0x01, 0x11, 0x0E] },
+      "f": { cols: 5, rows: [0x07, 0x08, 0x08, 0x1C, 0x08, 0x08, 0x08] },
+      "t": { cols: 5, rows: [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x06] }
+    };
+    const SHARE_DOT_PITCH = 16;
+    const SHARE_DOT_SIZE = 12;
+    const SHARE_DOT_ROWS = 7;
+    const SHARE_DOT_HEIGHT = SHARE_DOT_ROWS * SHARE_DOT_PITCH - (SHARE_DOT_PITCH - SHARE_DOT_SIZE);
+
+    function shareDotGlyph(ch) {
+      return SHARE_DOT_FONT[ch] || SHARE_DOT_FONT[" "];
+    }
+
+    function shareDotTextCols(text) {
+      let cols = 0;
+      for (let i = 0; i < text.length; i++) {
+        cols += shareDotGlyph(text[i]).cols;
+        if (i) cols += 1;
+      }
+      return cols;
+    }
+
+    function paintShareDotText(ctx, text, cx, top, sticker) {
+      const cols = shareDotTextCols(text);
+      if (!cols) return;
+      const pitch = SHARE_DOT_PITCH;
+      const size = SHARE_DOT_SIZE;
+      const totalW = cols * pitch - (pitch - size);
+      const x0 = Math.round(cx - totalW / 2);
+      let col = 0;
+      for (let i = 0; i < text.length; i++) {
+        if (i) col += 1;
+        const g = shareDotGlyph(text[i]);
+        for (let r = 0; r < SHARE_DOT_ROWS; r++) {
+          for (let c = 0; c < g.cols; c++) {
+            if (!((g.rows[r] >> (g.cols - 1 - c)) & 1)) continue;
+            const x = x0 + (col + c) * pitch;
+            const y = top + r * pitch;
+            if (sticker) {
+              ctx.fillStyle = "rgba(0,0,0,0.55)";
+              ctx.fillRect(x - 2, y - 1, size + 4, size + 4);
+            }
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(x, y, size, size);
+          }
+        }
+        col += g.cols;
+      }
+    }
+
+    async function ensureShareFonts() {
+      if (!document.fonts || !document.fonts.load) return;
+      await Promise.all([
+        document.fonts.load("600 28px Archivo"),
+        document.fonts.load("650 40px Archivo"),
+        document.fonts.load("850 84px Archivo")
+      ]).catch(() => {});
+    }
+
+    function renderSharePng(stats, points, mode) {
+      const sticker = mode === "sticker";
+      const canvas = document.createElement("canvas");
+      canvas.width = SHARE_W;
+      canvas.height = SHARE_H;
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, SHARE_W, SHARE_H);
+      if (!sticker) {
+        ctx.fillStyle = "#000000";
+        ctx.fillRect(0, 0, SHARE_W, SHARE_H);
+      }
+
+      const rows = shareStatRows(stats);
+      const labelSize = 36;
+      const valueSize = SHARE_DOT_HEIGHT;
+      const labelToValue = 24;
+      const rowGap = 64;
+      let y = 150;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      for (const row of rows) {
+        ctx.font = "650 " + labelSize + "px Archivo";
+        if (sticker) paintShareText(ctx, row.label, SHARE_W / 2, y, true);
+        else {
+          ctx.fillStyle = "rgba(255,255,255,0.55)";
+          ctx.fillText(row.label, SHARE_W / 2, y);
+        }
+        y += labelSize + labelToValue;
+        paintShareDotText(ctx, row.value, SHARE_W / 2, y, sticker);
+        y += valueSize + rowGap;
+      }
+
+      const brandBlockH = 160;
+      const brandBottom = SHARE_H - 90;
+      const routeTop = Math.max(y + 24, 780);
+      const routeBottom = brandBottom - brandBlockH - 40;
+      const routePadX = 120;
+      const routeH = Math.max(120, routeBottom - routeTop);
+      if (points && points.length >= 2 && routeH >= 120) {
+        const projected = projectRoute(points, routePadX, routeTop, SHARE_W - routePadX * 2, routeH);
+        if (projected) {
+          ctx.beginPath();
+          ctx.moveTo(projected[0][0], projected[0][1]);
+          for (let i = 1; i < projected.length; i++) ctx.lineTo(projected[i][0], projected[i][1]);
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth = 7;
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          if (sticker) {
+            ctx.save();
+            ctx.shadowColor = "rgba(0,0,0,0.7)";
+            ctx.shadowBlur = 10;
+            ctx.shadowOffsetY = 2;
+            ctx.stroke();
+            ctx.restore();
+          } else {
+            ctx.stroke();
+          }
+        }
+      }
+
+      // Brand: "captured with" sized to match OBJECT width, then a larger wordmark.
+      if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0.06em";
+      const objectSize = 84;
+      ctx.font = "850 " + objectSize + "px Archivo";
+      const objectW = ctx.measureText("OBJECT").width;
+      if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0.08em";
+      let capSize = 32;
+      ctx.font = "600 " + capSize + "px Archivo";
+      let capW = ctx.measureText("captured with").width;
+      if (capW > 0) {
+        capSize = Math.max(16, Math.min(38, Math.round(capSize * (objectW / capW))));
+        ctx.font = "600 " + capSize + "px Archivo";
+      }
+      const capGap = 12;
+      const brandTop = brandBottom - objectSize - capGap - capSize;
+      paintShareText(ctx, "captured with", SHARE_W / 2, brandTop, sticker);
+      if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0.06em";
+      ctx.font = "850 " + objectSize + "px Archivo";
+      paintShareText(ctx, "OBJECT", SHARE_W / 2, brandTop + capSize + capGap, sticker);
+      if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0px";
+
+      return new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("PNG failed"))), "image/png");
+      });
+    }
+
+    function shareStem(name) {
+      return String(name || "ride").replace(/\.gpx$/i, "") || "ride";
+    }
+
+    function canSharePng(file) {
+      try {
+        return !!(navigator.share && navigator.canShare && file && navigator.canShare({ files: [file] }));
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function revokeSharePreview() {
+      if (shareBlobUrl) {
+        URL.revokeObjectURL(shareBlobUrl);
+        shareBlobUrl = null;
+      }
+      shareFile = null;
+    }
+
+    async function refreshSharePreview() {
+      if (!sharePayload) return;
+      const mode = shareDialog.dataset.mode || "card";
+      const token = ++shareRenderToken;
+      sharePreviewWrap.classList.add("busy");
+      shareGo.disabled = true;
+      shareSave.disabled = true;
+      try {
+        await ensureShareFonts();
+        if (token !== shareRenderToken) return;
+        const blob = await renderSharePng(sharePayload.stats, sharePayload.points, mode);
+        if (token !== shareRenderToken) return;
+        revokeSharePreview();
+        const stem = shareStem(sharePayload.name);
+        const fname = stem + (mode === "sticker" ? "-object-sticker.png" : "-object.png");
+        shareFile = new File([blob], fname, { type: "image/png" });
+        shareBlobUrl = URL.createObjectURL(blob);
+        sharePreview.src = shareBlobUrl;
+        shareGo.classList.toggle("hide", !canSharePng(shareFile));
+        shareGo.disabled = false;
+        shareSave.disabled = false;
+      } catch (e) {
+        if (token !== shareRenderToken) return;
+        setStatus("Could not build share image.", true);
+        shareGo.disabled = true;
+        shareSave.disabled = true;
+      } finally {
+        if (token === shareRenderToken) sharePreviewWrap.classList.remove("busy");
+      }
+    }
+
+    function closeShareSheet() {
+      shareRenderToken++;
+      if (shareDialog.open) shareDialog.close();
+      sharePayload = null;
+      revokeSharePreview();
+      sharePreview.removeAttribute("src");
+    }
+
+    function openShareSheet(payload) {
+      sharePayload = payload;
+      shareDialog.dataset.mode = "card";
+      const cardRadio = shareDialog.querySelector('input[name="share-mode"][value="card"]');
+      if (cardRadio) cardRadio.checked = true;
+      const ride = rides.find((r) => r.name === payload.name) || { name: payload.name, size: 0 };
+      const view = describeRide(ride);
+      shareTitle.textContent = view.title || payload.name;
+      shareGo.classList.add("hide");
+      if (typeof shareDialog.showModal === "function") shareDialog.showModal();
+      else return;
+      refreshSharePreview();
+    }
+
+    function downloadSharePng() {
+      if (!shareBlobUrl || !shareFile) return;
+      const a = document.createElement("a");
+      a.href = shareBlobUrl;
+      a.download = shareFile.name;
+      a.click();
+    }
+
+    async function shareSharePng() {
+      if (!shareFile || !canSharePng(shareFile)) return;
+      try {
+        await navigator.share({ files: [shareFile], title: "OBJECT" });
+        closeShareSheet();
+      } catch (e) {
+        if (e && e.name === "AbortError") return;
+        downloadSharePng();
+      }
+    }
+
+    shareDialog.querySelectorAll('input[name="share-mode"]').forEach((input) => {
+      input.addEventListener("change", () => {
+        if (!input.checked) return;
+        shareDialog.dataset.mode = input.value;
+        refreshSharePreview();
+      });
+    });
+    shareGo.addEventListener("click", () => { shareSharePng(); });
+    shareSave.addEventListener("click", () => { downloadSharePng(); });
+    shareDialog.addEventListener("close", () => {
+      sharePayload = null;
+      revokeSharePreview();
+      sharePreview.removeAttribute("src");
+      shareRenderToken++;
+    });
 
     function crc32(bytes) {
       let c = 0xffffffff;
@@ -1578,15 +2029,18 @@
       a.download = fileName;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 4000);
-      try {
-        const summary = gpxStats(fileBuf);
-        if (summary) storeStats(statsKey(fileName, fileBuf.length), summary);
-      } catch (e) {}
-      const label = rideLabel(fileName);
+      let parsed = null;
+      try { parsed = gpxParse(fileBuf); } catch (e) {}
+      if (parsed) storeStats(statsKey(fileName, fileBuf.length), parsed.stats);
+      const savedName = fileName;
+      const label = rideLabel(savedName);
       setStatus("Saved " + label + ".");
       phase = "idle";
       resetTransfer();
       renderRides();
+      if (parsed && parsed.points.length >= 2) {
+        openShareSheet({ name: savedName, stats: parsed.stats, points: parsed.points });
+      }
     }
 
     function maybeFinish() {
