@@ -31,11 +31,11 @@ The trip starts with the first wheel pulse. GPS recording begins when the firmwa
 
 The portrait layout keeps current speed largest, with supporting information underneath:
 
-1. **Status bar:** battery level on the left; a satellite icon with the satellite count, or “Searching” until there is a fix, on the right.
+1. **Status bar:** battery level on the left; local time (from GPS and `timezone_offset_min`) centred; a satellite icon with the satellite count, or “Searching” until there is a fix, on the right.
 2. **Dot-matrix speed:** km/h or mph (from `units`). The line above it shows the unit and **Avg**; it also carries prompts such as “Hold for new ride” and “Press to allow”.
 3. **24-dot gauge:** normally speed, at 2 km/h per dot, so it is full from about 47 km/h. It also shows hold-to-save, phone-confirm and download progress.
 4. **Ride stats:** Distance, Time, Moving and Max. The distance and speed units sit in the labels and follow `units`. Distance switches to one decimal from 100.
-5. **Footer:** altitude as **Alt** (m or ft, `--` without a fix) and a status such as `Recording`, `Phone` or `No card`.
+5. **Footer:** altitude as **Alt** (m or ft, `--` without a fix) and a status such as `Live`, `Phone` or `No card`.
 
 **Time** is elapsed time since the trip began, including stops while powered on. Time spent powered off is not added after recovery. **Moving** is estimated from wheel pulses using `stopped_ms` (default three seconds); **Avg** divides wheel distance by that estimated moving time.
 
@@ -54,6 +54,8 @@ The top left shows a five-bar battery icon and the charge as a percentage. The p
 
 ### GPS status
 
+With a live fix and GPS time, the centre of the status bar shows the local clock as `HH:MM` using `timezone_offset_min`.
+
 | Top right | Meaning |
 | --- | --- |
 | <img src="docs/screens/status-searching.png" width="250" alt="Status bar reading Searching with a hollow ring"> | No usable fix yet, or the GPS has gone quiet for 2 seconds. Wheel stats keep working; nothing is recorded. |
@@ -68,7 +70,7 @@ Only one status shows at a time, in this order of priority:
 | --- | --- |
 | <img src="docs/screens/footer-no-card.png" width="250" alt="Footer with an exclamation badge and No card"> | No microSD card, or the card stopped responding. Stats live in memory only. |
 | <img src="docs/screens/footer-phone.png" width="250" alt="Footer reading Phone with a filled dot"> | A phone is connected and allowed. Recording carries on in the background. |
-| <img src="docs/screens/footer-recording.png" width="250" alt="Footer with Recording in a white pill"> | The ride has started and the GPS has position and time, so points are going into `CURRENT.GPX`. |
+| <img src="docs/screens/footer-recording.png" width="250" alt="Footer with Live in a white pill"> | The ride has started and the GPS has position and time, so points are going into `CURRENT.GPX`. |
 | <img src="docs/screens/footer-idle.png" width="250" alt="Footer with altitude only"> | Nothing to report: no wheel pulse yet, or no fix. |
 
 ## Animations
@@ -317,7 +319,7 @@ Ride settings live in **`CONFIG.TXT`** on the microSD card root. On first boot w
 | Key | Default | Notes |
 | --- | --- | --- |
 | `wheel_circ_mm` | `2155` | Measured rollout in mm (700 × 32C starting value). Range 1000–3000. |
-| `timezone_offset_min` | `0` | Minutes from UTC for archive filenames only. GPX timestamps stay UTC. |
+| `timezone_offset_min` | `0` | Minutes from UTC for the header clock and archive filenames. GPX timestamps stay UTC. |
 | `backlight` | `bright` | Boot level: `bright`, `dim`, or `off`. |
 | `ble_name` | `OBJECT-001` | BLE advertise name, 1–20 printable characters, no spaces. |
 | `units` | `metric` | `metric` or `imperial` (display only; trip storage stays metric). |

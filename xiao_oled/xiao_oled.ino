@@ -67,8 +67,8 @@
  * Wheel default: 700x32C (ISO 32-622) -> circumference 2155 mm.
  *
  * TFT layout (portrait 240x320), monochrome to match the OBJECT ride page:
- *   OBJECT | GPS state, km/h or mph | Avg, dot-matrix speed, 24-dot gauge,
- *   Distance / Time / Moving / Max rows, Alt | card, phone, recording.
+ *   battery | local clock | GPS state, km/h or mph | Avg, dot-matrix speed,
+ *   24-dot gauge, Distance / Time / Moving / Max rows, Alt | card, phone, live.
  * The gauge shows speed (2 km/h a dot), the new-ride hold, phone-connect
  * confirm countdown, or a phone download in progress.
  * Matrix animations (animations=on): boot self-test, wheel heartbeat, new-max
@@ -327,7 +327,9 @@ struct DotGlyph {
 
 static TextCache txtStatus;
 static TextCache txtBatt;
+static TextCache txtClock;
 static int battBarsShown = -1;
+static bool statusSlotNarrow = false;
 static TextCache txtCaption;
 static TextCache txtRow[ROW_COUNT];
 static TextCache txtFootL;
@@ -793,6 +795,7 @@ static bool gpsFrameFresh(unsigned long now) {
 }
 
 static void gpsHandleGga(const char *s) {
+  char timeBuf[16];
   char qualBuf[8];
   char satBuf[8];
   char altBuf[16];
@@ -804,6 +807,7 @@ static void gpsHandleGga(const char *s) {
   if (!nmeaField(s, 6, qualBuf, sizeof(qualBuf))) {
     return;
   }
+  nmeaField(s, 1, timeBuf, sizeof(timeBuf));
   nmeaField(s, 7, satBuf, sizeof(satBuf));
   nmeaField(s, 9, altBuf, sizeof(altBuf));
   nmeaField(s, 2, latBuf, sizeof(latBuf));
@@ -822,6 +826,21 @@ static void gpsHandleGga(const char *s) {
     gpsApplyPos(true, nmeaDmToE7(latBuf, nsBuf[0]), nmeaDmToE7(lonBuf, ewBuf[0]));
   } else {
     gpsApplyPos(false, 0, 0);
+  }
+  // GGA has UTC time-of-day but no date. Keep a prior NAV-PVT date when we
+  // have one; otherwise use a placeholder so the header clock can still run.
+  if (valid && timeBuf[0] && strlen(timeBuf) >= 6) {
+    int hour = (timeBuf[0] - '0') * 10 + (timeBuf[1] - '0');
+    int minute = (timeBuf[2] - '0') * 10 + (timeBuf[3] - '0');
+    int sec = (timeBuf[4] - '0') * 10 + (timeBuf[5] - '0');
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59
+        && sec >= 0 && sec <= 60) {
+      uint16_t year = gps.timeKnown ? gps.year : 2020;
+      uint8_t month = gps.timeKnown ? gps.month : 1;
+      uint8_t day = gps.timeKnown ? gps.day : 1;
+      gpsApplyTime(true, year, month, day, (uint8_t)hour, (uint8_t)minute,
+                   (uint8_t)sec);
+    }
   }
 }
 
@@ -1469,12 +1488,12 @@ static int cfgMonthDays(int year, int month) {
   return (month == 2 && leap) ? 29 : kDim[month];
 }
 
-static bool tripLocalCivilFromGps(unsigned *yy, unsigned *mo, unsigned *dd,
-                                  unsigned *hh) {
+// Civil local time from GPS UTC + timezone_offset_min (clock and archive names).
+static bool gpsLocalCivil(unsigned *yy, unsigned *mo, unsigned *dd,
+                          unsigned *hh, unsigned *mm) {
   if (!gps.timeKnown) {
     return false;
   }
-  // Civil date from GPS UTC + timezone_offset_min (archive names only).
   int y = (int)gps.year;
   int m = (int)gps.month;
   int d = (int)gps.day;
@@ -1509,7 +1528,18 @@ static bool tripLocalCivilFromGps(unsigned *yy, unsigned *mo, unsigned *dd,
   *mo = (unsigned)m;
   *dd = (unsigned)d;
   *hh = (unsigned)(minutes / 60L);
+  *mm = (unsigned)(minutes % 60L);
   return true;
+}
+
+static bool tripLocalCivilFromGps(unsigned *yy, unsigned *mo, unsigned *dd,
+                                  unsigned *hh) {
+  unsigned mm;
+  return gpsLocalCivil(yy, mo, dd, hh, &mm);
+}
+
+static bool gpsLocalClockActive(unsigned long now) {
+  return gps.timeKnown && gpsIsLive(now);
 }
 
 static bool tripPickArchiveName(char *buf, size_t buflen) {
@@ -1736,8 +1766,8 @@ static const char CFG_TEXT_FORMAT[] =
     "# wheel_circ_mm: measured rollout in millimetres (700x32C ~2155)\n"
     "wheel_circ_mm=%u\n"
     "#\n"
-    "# timezone_offset_min: minutes from UTC for archive filenames only\n"
-    "# (GPX timestamps stay UTC). Example: 120 = UTC+2, -300 = UTC-5\n"
+    "# timezone_offset_min: minutes from UTC for the header clock and\n"
+    "# archive filenames (GPX timestamps stay UTC). Example: 120 = UTC+2\n"
     "timezone_offset_min=%d\n"
     "#\n"
     "# backlight at boot: bright | dim | off\n"
@@ -2247,7 +2277,8 @@ enum {
   MARK_DOT,
   MARK_ALERT,
   MARK_PILL,
-  MARK_SAT
+  MARK_SAT,
+  MARK_CENTER
 };
 
 static const int SAT_ICON_W = 17;
@@ -2264,8 +2295,14 @@ static const uint8_t SAT_ICON[] = {
   0xF8, 0x0F, 0x80,
 };
 
-static const Slot SLOT_STATUS  = {108, 4, SCREEN_W - PAD - 108, 22, 15};
-static const Slot SLOT_BATT    = {PAD + 30, 4, 108 - PAD - 30 - 4, 22, 15};
+// Header: battery (left) | HH:MM clock (true centre) | GPS (right).
+// Status uses the wide slot while Searching so the label fits; it narrows
+// when the clock is up so the two never share pixels.
+// CLOCK_X = (SCREEN_W - 56) / 2 = 92 on a 240-wide panel.
+static const Slot SLOT_CLOCK = {92, 4, 56, 22, 15};
+static const Slot SLOT_STATUS_WIDE = {108, 4, SCREEN_W - PAD - 108, 22, 15};
+static const Slot SLOT_STATUS = {152, 4, SCREEN_W - PAD - 152, 22, 15};
+static const Slot SLOT_BATT = {PAD + 30, 4, 46, 22, 15};
 static const Slot SLOT_CAPTION = {PAD, CAPTION_Y, SCREEN_W - 2 * PAD, CAPTION_H, 15};
 static const Slot SLOT_FOOT_L  = {PAD, FOOTER_Y, 122, FOOTER_H, 15};
 static const Slot SLOT_FOOT_R  = {PAD + 122, FOOTER_Y, SCREEN_W - 2 * PAD - 122, FOOTER_H, 15};
@@ -2461,7 +2498,14 @@ static void drawSlot(const Slot &s, TextCache *cache, const GFXfont *font,
   textCanvas.setTextWrap(false);
   textCanvas.setFont(font);
 
-  if (left[0]) {
+  if (left[0] && mark == MARK_CENTER) {
+    int16_t bx, by;
+    uint16_t bw, bh;
+    textCanvas.getTextBounds(left, 0, s.base, &bx, &by, &bw, &bh);
+    textCanvas.setTextColor(1);
+    textCanvas.setCursor((s.w - (int)bw) / 2 - bx, s.base);
+    textCanvas.print(left);
+  } else if (left[0]) {
     textCanvas.setTextColor(1);
     textCanvas.setCursor(0, s.base);
     textCanvas.print(left);
@@ -2682,6 +2726,8 @@ static void invalidateAllFields() {
   invalidateText(&txtBatt);
   battBarsShown = -1;
   invalidateText(&txtStatus);
+  invalidateText(&txtClock);
+  statusSlotNarrow = false;
   invalidateText(&txtCaption);
   for (int i = 0; i < ROW_COUNT; i++) {
     invalidateText(&txtRow[i]);
@@ -3347,17 +3393,37 @@ static void animCompose(unsigned long now, float speedKmh, uint8_t ovl, bool sen
 }
 
 static void paintStatus(unsigned long now) {
+  const bool narrow = gpsLocalClockActive(now);
+  if (narrow != statusSlotNarrow) {
+    // Clear the wide band so a long "Searching" does not ghost under the clock.
+    display.fillRect(SLOT_STATUS_WIDE.x, SLOT_STATUS_WIDE.y,
+                     SLOT_STATUS_WIDE.w, SLOT_STATUS_WIDE.h, COL_BG);
+    invalidateText(&txtStatus);
+    invalidateText(&txtClock);
+    statusSlotNarrow = narrow;
+  }
+  const Slot &slot = narrow ? SLOT_STATUS : SLOT_STATUS_WIDE;
+
   char buf[20];
   if (gpsIsLive(now)) {
     if (gps.satsKnown) {
       snprintf(buf, sizeof(buf), "%u", (unsigned)gps.sats);
-      drawSlot(SLOT_STATUS, &txtStatus, &FreeSans9pt7b, "", buf, MARK_SAT, COL_FG);
+      drawSlot(slot, &txtStatus, &FreeSans9pt7b, "", buf, MARK_SAT, COL_FG);
     } else {
-      drawSlot(SLOT_STATUS, &txtStatus, &FreeSans9pt7b, "", "GPS", MARK_DOT, COL_FG);
+      drawSlot(slot, &txtStatus, &FreeSans9pt7b, "", "GPS", MARK_DOT, COL_FG);
     }
   } else {
-    drawSlot(SLOT_STATUS, &txtStatus, &FreeSans9pt7b, "", "Searching", MARK_RING, COL_DIM);
+    drawSlot(slot, &txtStatus, &FreeSans9pt7b, "", "Searching", MARK_RING, COL_DIM);
   }
+}
+
+static void paintClock(unsigned long now) {
+  char buf[8] = "";
+  unsigned yy, mo, dd, hh, mm;
+  if (gpsLocalClockActive(now) && gpsLocalCivil(&yy, &mo, &dd, &hh, &mm)) {
+    snprintf(buf, sizeof(buf), "%02u:%02u", hh, mm);
+  }
+  drawSlot(SLOT_CLOCK, &txtClock, &FreeSans9pt7b, buf, "", MARK_CENTER, COL_FG);
 }
 
 static int battPercent(float v) {
@@ -3423,7 +3489,7 @@ static void paintFooter(unsigned long now) {
   } else if (blePhoneConnected()) {
     drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSans9pt7b, "", "Phone", MARK_DOT, COL_FG);
   } else if (tripStarted && live && gps.posKnown && gps.timeKnown) {
-    drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSans9pt7b, "", "Recording", MARK_PILL, COL_FG);
+    drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSans9pt7b, "", "Live", MARK_PILL, COL_FG);
   } else {
     drawSlot(SLOT_FOOT_R, &txtFootR, &FreeSans9pt7b, "", "", MARK_NONE, COL_DIM);
   }
@@ -3504,6 +3570,7 @@ static void drawRideScreen(float speedKmh, float distanceKm, float avgSpeedKmh,
 
   paintBattery();
   paintStatus(now);
+  paintClock(now);
   paintFooter(now);
 }
 

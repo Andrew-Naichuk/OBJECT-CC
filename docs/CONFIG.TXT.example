@@ -5,8 +5,8 @@
 # wheel_circ_mm: measured rollout in millimetres (700x32C ~2155)
 wheel_circ_mm=2155
 #
-# timezone_offset_min: minutes from UTC for archive filenames only
-# (GPX timestamps stay UTC). Example: 120 = UTC+2, -300 = UTC-5
+# timezone_offset_min: minutes from UTC for the header clock and
+# archive filenames (GPX timestamps stay UTC). Example: 120 = UTC+2
 timezone_offset_min=0
 #
 # backlight at boot: bright | dim | off
