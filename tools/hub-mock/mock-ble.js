@@ -144,6 +144,7 @@
       await writeQueue;
     }
     async writeValueWithoutResponse(buf) { return this.writeValue(buf); }
+    async writeValueWithResponse(buf) { return this.writeValue(buf); }
     emit(bytes) {
       if (!this.gatt.connected) return;
       this.value = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

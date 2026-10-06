@@ -1036,6 +1036,7 @@
     let fwReadyWait = null;   // resolve when META_FW_READY arrives
     let fwDoneWait = null;    // resolve when META_FW_DONE arrives
     let fwProgressWait = null; // resolve when META_FW_PROGRESS arrives
+    let fwWaitFail = null;    // reject the in-flight fwWaitMeta
 
     const DOWN_ICON = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M10 3v10M5.5 8.5 10 13l4.5-4.5M4 17h12"/></svg>';
     const DEL_ICON = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M4 6h12M8 6V4h4v2M7 6v10h6V6"/></svg>';
@@ -1756,7 +1757,11 @@
 
     async function writeCmd(bytes) {
       if (bytes[0] !== OP_ABORT) cancelling = false;
-      await cmdChar.writeValue(bytes);
+      if (typeof cmdChar.writeValueWithResponse === "function") {
+        await cmdChar.writeValueWithResponse(bytes);
+      } else {
+        await cmdChar.writeValue(bytes);
+      }
     }
 
     async function cancelDownload() {
@@ -2179,6 +2184,7 @@
       fwReadyWait = null;
       fwDoneWait = null;
       fwProgressWait = null;
+      fwWaitFail = null;
       phase = "idle";
       hideProgress();
       const msg = (err && err.message) || "The update failed.";
@@ -2186,6 +2192,7 @@
       fwGoAction = null;
       fwSheet("Update failed", msg, "", "Close");
       renderSettings();
+      if (cmdChar) writeCmd(new Uint8Array([OP_ABORT])).catch(() => {});
     }
 
     async function fwFetchBytes(url) {
@@ -2216,10 +2223,18 @@
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           setter(null);
+          fwWaitFail = null;
           reject(new Error("OBJECT stopped answering during the update."));
         }, ms || 20000);
+        fwWaitFail = (msg) => {
+          clearTimeout(timer);
+          setter(null);
+          fwWaitFail = null;
+          reject(new Error(msg || "OBJECT disconnected during the update."));
+        };
         setter(() => {
           clearTimeout(timer);
+          fwWaitFail = null;
           resolve();
         });
       });
@@ -2261,7 +2276,7 @@
           const pkt = new Uint8Array(1 + (end - sent));
           pkt[0] = OP_FW_DATA;
           pkt.set(fwImage.bin.subarray(sent, end), 1);
-          const progress = fwWaitMeta((fn) => { fwProgressWait = fn; }, 15000);
+          const progress = fwWaitMeta((fn) => { fwProgressWait = fn; }, 20000);
           await writeCmd(pkt);
           await progress;
           sent = end;
@@ -2473,14 +2488,21 @@
       disconnectBtn.disabled = true;
       connectBtn.textContent = timedOut ? "Try again" : "Connect";
       if (fwBusy) {
-        setStatus("OBJECT restarted for the update");
-        fwBusy = false;
-        phase = "idle";
-        hideProgress();
         if (fwDoneWait) {
+          setStatus("OBJECT restarted for the update");
+          fwBusy = false;
+          phase = "idle";
+          hideProgress();
           const done = fwDoneWait;
           fwDoneWait = null;
           done();
+        } else if (fwWaitFail) {
+          fwWaitFail("OBJECT disconnected during the update.");
+        } else {
+          fwBusy = false;
+          phase = "idle";
+          hideProgress();
+          setStatus("OBJECT disconnected during the update.", true);
         }
       } else if (timedOut) {
         setStatus("Not allowed in time. Tap Try again, then press the button on OBJECT.", true);

@@ -9,11 +9,13 @@
 #define CHR_PROPS_NOTIFY 0x10
 #define SECMODE_NO_ACCESS 0
 #define SECMODE_OPEN 1
+#define MS100TO125(ms100) (((ms100)*4)/5)
 
 class BLEConnection {
  public:
   bool requestMtuExchange(uint16_t) { return true; }
   bool requestPHY(uint8_t) { return true; }
+  bool requestConnectionParameter(uint16_t, uint16_t = 0, uint16_t = 0) { return true; }
   uint16_t getMtu() { return 247; }
 };
 
@@ -60,6 +62,7 @@ struct EmuPeriph {
   void setConnectCallback(void (*f)(uint16_t)) { g_ble.onConnect = f; }
   void setDisconnectCallback(void (*f)(uint16_t, uint8_t)) { g_ble.onDisconnect = f; }
   void setConnIntervalMS(int, int) {}
+  void setConnSupervisionTimeoutMS(int) {}
 };
 
 class EmuBluefruit {

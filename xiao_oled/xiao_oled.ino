@@ -82,6 +82,10 @@
 #include <SPI.h>
 #include <SdFat.h>
 #include <bluefruit.h>
+#if defined(NRF52840_XXAA)
+#include <InternalFileSystem.h>
+#include "flash/flash_nrf5x.h"
+#endif
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
 #include <Fonts/FreeSans9pt7b.h>
@@ -3609,7 +3613,7 @@ enum {
 };
 
 static BLEService bleSvc(BLE_RIDE_SVC_UUID);
-static BLECharacteristic bleCmd(BLE_RIDE_CMD_UUID, CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP, BLE_CMD_MAX);
+static BLECharacteristic bleCmd(BLE_RIDE_CMD_UUID, CHR_PROPS_WRITE, BLE_CMD_MAX);
 static BLECharacteristic bleMeta(BLE_RIDE_META_UUID, CHR_PROPS_NOTIFY, 1 + BLE_CFG_LEN);
 static BLECharacteristic bleData(BLE_RIDE_DATA_UUID, CHR_PROPS_NOTIFY, 244);
 
@@ -4194,41 +4198,22 @@ static void bleBeginCfgSet(const uint8_t *body, uint16_t len) {
 }
 
 #if defined(NRF52840_XXAA)
-static bool otaFlashWait(void) {
-  for (;;) {
-    uint32_t evt = 0;
-    uint32_t err = sd_evt_get(&evt);
-    if (err == NRF_ERROR_NOT_FOUND) {
-      yield();
-      continue;
-    }
-    if (err != NRF_SUCCESS) {
-      return false;
-    }
-    if (evt == NRF_EVT_FLASH_OPERATION_SUCCESS) {
-      return true;
-    }
-    if (evt == NRF_EVT_FLASH_OPERATION_ERROR) {
-      return false;
-    }
-  }
-}
-
-static bool otaFlashErasePage(uint32_t addr) {
-  if (sd_flash_page_erase(addr / OTA_PAGE) != NRF_SUCCESS) {
-    return false;
-  }
-  return otaFlashWait();
-}
-
+// Bluefruit's SOC task already calls sd_evt_get() and forwards flash
+// completion to flash_nrf5x_event_cb. Waiting on sd_evt_get() here races
+// that task: the first 4 KB page flush never returns, loop() stalls, and a
+// retry cannot even begin. S140 also asserts on a whole-page sd_flash_write;
+// flash_nrf5x writes half-pages and waits on the same callback.
+// Do not erase here — flush() erases once if the page differs. A second
+// erase doubles the radio-blocked window and trips the 2 s BLE timeout.
 static bool otaFlashWritePage(uint32_t addr, const uint8_t *data) {
   if (((uint32_t)data & 3u) != 0) {
     return false;
   }
-  if (sd_flash_write((uint32_t *)addr, (const uint32_t *)data, OTA_PAGE / 4) != NRF_SUCCESS) {
+  if (flash_nrf5x_write(addr, data, OTA_PAGE) != (int)OTA_PAGE) {
     return false;
   }
-  return otaFlashWait();
+  flash_nrf5x_flush();
+  return true;
 }
 
 // Runs from RAM after SoftDevice is off: copy staged image onto the app and reset.
@@ -4262,7 +4247,6 @@ static void otaCopyAndReset(uint32_t src, uint32_t dst, uint32_t len) {
   NVIC_SystemReset();
 }
 #else
-static bool otaFlashErasePage(uint32_t) { return true; }
 static bool otaFlashWritePage(uint32_t, const uint8_t *) { return true; }
 static void otaCopyAndReset(uint32_t, uint32_t, uint32_t) {}
 #endif
@@ -4289,9 +4273,6 @@ static bool otaFlushPage(bool pad) {
   while (otaPageUsed < OTA_PAGE) {
     otaPage[otaPageUsed++] = 0xFF;
   }
-  if (!otaFlashErasePage(otaPageAddr)) {
-    return false;
-  }
   if (!otaFlashWritePage(otaPageAddr, otaPage)) {
     return false;
   }
@@ -4300,11 +4281,26 @@ static bool otaFlushPage(bool pad) {
   return true;
 }
 
+static void otaTuneLink(void) {
+  BLEConnection *conn = Bluefruit.Connection(Bluefruit.connHandle());
+  if (!conn) {
+    return;
+  }
+  // Flash holds the radio for tens of ms. The default 2 s supervision
+  // timeout drops the phone around 90% of a ~200 KB image; 8 s covers a
+  // stalled page. 40 ms interval leaves bigger gaps for sd_flash_*.
+  conn->requestConnectionParameter(MS100TO125(40), 0, 800);
+}
+
 static bool otaBegin(uint32_t size, uint32_t crc) {
   if (size < 256 || size > OTA_BANK_MAX || (size & 3u) != 0) {
     return false;
   }
+#if defined(NRF52840_XXAA)
+  flash_nrf5x_flush();
+#endif
   otaCancel();
+  otaTuneLink();
   otaActive = true;
   otaSize = size;
   otaCrcExpect = crc;
@@ -4504,7 +4500,7 @@ static bool bleService() {
     bleBeginAuthWait(now);
     Serial.println("BLE connected — waiting for confirm");
   }
-  if (bleLinkLost || (bleJob != BLE_JOB_IDLE && !Bluefruit.connected())) {
+  if (bleLinkLost || ((bleJob != BLE_JOB_IDLE || otaActive) && !Bluefruit.connected())) {
     bleLinkLost = 0;
     noInterrupts();
     bleCmdPending = 0;
@@ -4750,6 +4746,7 @@ static void bleStart() {
   Bluefruit.Periph.setConnectCallback(bleOnConnect);
   Bluefruit.Periph.setDisconnectCallback(bleOnDisconnect);
   Bluefruit.Periph.setConnIntervalMS(15, 30);
+  Bluefruit.Periph.setConnSupervisionTimeoutMS(8000);
 
   bleCmd.setPermission(SECMODE_NO_ACCESS, SECMODE_OPEN);
   bleCmd.setWriteCallback(bleOnWrite, true);
@@ -4921,12 +4918,13 @@ void loop() {
     elapsedMs = elapsedBaseMs + (now - elapsedAnchorMs);
   }
 
-  tripLogGps(now, (uint32_t)revCount, (uint32_t)elapsedMs);
-  tripMaybeSave(now, (uint32_t)revCount, (uint32_t)elapsedMs);
-
-  drawRideScreen(speedKmh, distanceKm, avgSpeedKmh, maxSpeedKmh, elapsedMs, movingMs, now,
-                 lastPulseMs, revCount);
-  gpsDrain();
+  if (!otaActive) {
+    tripLogGps(now, (uint32_t)revCount, (uint32_t)elapsedMs);
+    tripMaybeSave(now, (uint32_t)revCount, (uint32_t)elapsedMs);
+    drawRideScreen(speedKmh, distanceKm, avgSpeedKmh, maxSpeedKmh, elapsedMs, movingMs, now,
+                   lastPulseMs, revCount);
+    gpsDrain();
+  }
 
   digitalWrite(LED_BUILTIN, (speedKmh > 0.05f) ? LOW : HIGH);
 
@@ -4936,7 +4934,9 @@ void loop() {
     otaApply((uint32_t)revCount, (uint32_t)elapsedMs);
     return;  // not reached: the board resets into the new image
   }
-  if (bleSent) {
+  if (otaActive) {
+    yield();
+  } else if (bleSent) {
     gpsDrain();
   } else if (bleActive()) {
     gpsWait(5);
