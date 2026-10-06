@@ -1353,12 +1353,22 @@
       return 12742000 * Math.asin(Math.min(1, Math.sqrt(h)));
     }
 
-    // Distance, elapsed time and climb from the track points. GPS altitude is
-    // noisy: median-smooth, then only count climbs that clear CLIMB_STEP from the
-    // last turn (~Strava's GPS-only threshold; they also remap via a basemap).
-    const STATS_VERSION = 2;
+    // Distance, moving time and climb from the track points. Gaps longer than
+    // MOVING_GAP_S are pauses. GPS altitude is noisy: median-smooth, then only
+    // count climbs that clear CLIMB_STEP from the last turn. When online, climb
+    // is remapped via EU-DEM 25 m (OpenTopoData, no API key): median-smooth
+    // then a 3 m step. If that API has no CORS, batches go through a public
+    // proxy. GPS altitude is the offline fallback.
+    const STATS_VERSION = 5;
     const CLIMB_STEP = 10;
+    const CLIMB_STEP_DEM = 3;
     const ELE_SMOOTH = 5;
+    const MOVING_GAP_S = 10;
+    const DEM_SAMPLE_M = 90;
+    const DEM_MAX_SAMPLES = 1000;
+    const DEM_BATCH = 100;
+    const DEM_BATCH_GAP_MS = 1100;
+    const DEM_TIMEOUT_MS = 35000;
 
     function smoothElevations(eles) {
       const n = eles.length;
@@ -1374,12 +1384,13 @@
       return out;
     }
 
-    function climbGain(eles) {
+    function climbGain(eles, step) {
+      const thr = step == null ? CLIMB_STEP : step;
       let gain = null, ref = null;
       for (const e of eles) {
         if (ref === null) { ref = e; gain = 0; }
-        else if (e >= ref + CLIMB_STEP) { gain += e - ref; ref = e; }
-        else if (e <= ref - CLIMB_STEP) ref = e;
+        else if (e >= ref + thr) { gain += e - ref; ref = e; }
+        else if (e <= ref - thr) ref = e;
       }
       return gain;
     }
@@ -1537,7 +1548,7 @@
     function gpxParse(bytes) {
       const text = new TextDecoder().decode(bytes);
       const re = /<trkpt\b([^>]*)>([\s\S]*?)<\/trkpt>/g;
-      let dist = 0, first = null, last = null;
+      let dist = 0, moving = 0, first = null;
       let lat0 = null, lon0 = null, t0 = null, count = 0;
       const eles = [];
       const raw = [];
@@ -1552,7 +1563,11 @@
         if (lat0 !== null) {
           const d = haversine(lat0, lon0, lat, lon);
           const dt = Number.isFinite(t) && t0 !== null ? (t - t0) / 1000 : 0;
-          if (!(dt > 0 && d / dt > 70)) dist += d;
+          const teleport = dt > 0 && d / dt > 70;
+          if (!teleport) {
+            dist += d;
+            if (dt > 0 && dt <= MOVING_GAP_S) moving += dt;
+          }
         }
         lat0 = lat;
         lon0 = lon;
@@ -1560,7 +1575,6 @@
         if (Number.isFinite(t)) {
           t0 = t;
           if (first === null) first = t;
-          last = t;
         }
         if (eleM) {
           const e = Number(eleM[1]);
@@ -1573,17 +1587,123 @@
         stats: {
           v: STATS_VERSION,
           dist,
-          secs: first !== null ? (last - first) / 1000 : null,
+          secs: first !== null ? moving : null,
           gain: climbGain(smoothElevations(eles)),
           start: first
         },
-        points: prepareShareTrack(raw)
+        points: prepareShareTrack(raw),
+        track: raw
       };
     }
 
     function gpxStats(bytes) {
       const parsed = gpxParse(bytes);
       return parsed ? parsed.stats : null;
+    }
+
+    function sampleTrackForDem(pts) {
+      if (!pts || !pts.length) return [];
+      const out = [pts[0]];
+      let acc = 0;
+      for (let i = 1; i < pts.length; i++) {
+        const d = haversine(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]);
+        acc += d;
+        if (acc >= DEM_SAMPLE_M) {
+          out.push(pts[i]);
+          acc = 0;
+        }
+      }
+      const last = pts[pts.length - 1];
+      if (out[out.length - 1] !== last) out.push(last);
+      if (out.length <= DEM_MAX_SAMPLES) return out;
+      const stride = (out.length - 1) / (DEM_MAX_SAMPLES - 1);
+      const capped = [];
+      for (let i = 0; i < DEM_MAX_SAMPLES; i++) capped.push(out[Math.round(i * stride)]);
+      capped[capped.length - 1] = last;
+      return capped;
+    }
+
+    function sleep(ms, signal) {
+      return new Promise((resolve, reject) => {
+        const t = setTimeout(resolve, ms);
+        if (!signal) return;
+        const onAbort = () => {
+          clearTimeout(t);
+          reject(new DOMException("Aborted", "AbortError"));
+        };
+        if (signal.aborted) { onAbort(); return; }
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+    }
+
+    function otdUrl(batch) {
+      const locs = batch.map((p) => p[0].toFixed(5) + "," + p[1].toFixed(5)).join("|");
+      return "https://api.opentopodata.org/v1/eudem25m?locations=" + encodeURIComponent(locs) + "&interpolation=bilinear";
+    }
+
+    function parseOtdElevations(json, n) {
+      if (!json || json.status !== "OK" || !Array.isArray(json.results) || json.results.length !== n) return null;
+      const eles = [];
+      for (const row of json.results) {
+        const e = row && row.elevation;
+        if (!Number.isFinite(e)) return null;
+        eles.push(e);
+      }
+      return eles;
+    }
+
+    async function fetchOtdBatch(batch, signal, proxy) {
+      const direct = otdUrl(batch);
+      const url = proxy ? ("https://api.allorigins.win/raw?url=" + encodeURIComponent(direct)) : direct;
+      const res = await fetch(url, { signal });
+      if (!res.ok) throw new Error("dem");
+      const eles = parseOtdElevations(await res.json(), batch.length);
+      if (!eles) throw new Error("dem");
+      return eles;
+    }
+
+    async function fetchDemElevations(samples) {
+      if (!samples.length) return null;
+      if (typeof navigator !== "undefined" && navigator.onLine === false) return null;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), DEM_TIMEOUT_MS);
+      try {
+        const batches = [];
+        for (let i = 0; i < samples.length; i += DEM_BATCH) {
+          batches.push(samples.slice(i, i + DEM_BATCH));
+        }
+        let proxy = false;
+        let first = null;
+        try {
+          first = await fetchOtdBatch(batches[0], ctrl.signal, false);
+        } catch (e) {
+          proxy = true;
+        }
+        const parts = await Promise.all(batches.map(async (batch, idx) => {
+          if (!proxy && idx === 0) return first;
+          if (idx) await sleep(idx * DEM_BATCH_GAP_MS, ctrl.signal);
+          return fetchOtdBatch(batch, ctrl.signal, proxy);
+        }));
+        const eles = [];
+        for (const part of parts) eles.push(...part);
+        return eles;
+      } catch (e) {
+        return null;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    async function enrichClimbFromDem(parsed) {
+      if (!parsed || !parsed.stats || !parsed.track || parsed.track.length < 2) return parsed && parsed.stats;
+      const samples = sampleTrackForDem(parsed.track);
+      if (samples.length < 2) return parsed.stats;
+      const eles = await fetchDemElevations(samples);
+      if (!eles) return parsed.stats;
+      const gain = climbGain(smoothElevations(eles), CLIMB_STEP_DEM);
+      if (gain == null) return parsed.stats;
+      parsed.stats.gain = gain;
+      return parsed.stats;
     }
 
     function rideStats(ride) {
@@ -2186,7 +2306,7 @@
       hideProgress();
     }
 
-    function saveFile() {
+    async function saveFile() {
       const crc = crc32(fileBuf);
       if (crc !== doneCrc) {
         setStatus("CRC mismatch for " + fileName + ". File not saved.", true);
@@ -2204,13 +2324,19 @@
       setTimeout(() => URL.revokeObjectURL(url), 4000);
       let parsed = null;
       try { parsed = gpxParse(fileBuf); } catch (e) {}
-      if (parsed) storeStats(statsKey(fileName, fileBuf.length), parsed.stats);
       const savedName = fileName;
+      const savedSize = fileBuf.length;
       const label = rideLabel(savedName);
-      setStatus("Saved " + label + ".");
       phase = "idle";
       resetTransfer();
       renderRides();
+      if (parsed) {
+        setStatus("Working out elev…");
+        try { await enrichClimbFromDem(parsed); } catch (e) {}
+        storeStats(statsKey(savedName, savedSize), parsed.stats);
+        renderRides();
+      }
+      setStatus("Saved " + label + ".");
       if (parsed && parsed.points.length >= 2) {
         openShareSheet({ name: savedName, stats: parsed.stats, points: parsed.points });
       }
