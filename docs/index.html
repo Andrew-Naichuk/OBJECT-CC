@@ -1222,14 +1222,16 @@
     }
 
     function fmtDuration(s) {
-      const min = Math.round(s / 60);
-      return Math.floor(min / 60) + ":" + pad2(min % 60);
+      const total = Math.max(0, Math.round(s));
+      const h = Math.floor(total / 3600);
+      const m = Math.floor((total % 3600) / 60);
+      return pad2(h) + ":" + pad2(m) + ":" + pad2(total % 60);
     }
 
     // How a ride reads in the list: title, start time and stats when known.
     function describeRide(ride) {
       const info = parseRide(ride.name);
-      const st = stats.get(statsKey(ride.name, ride.size));
+      const st = rideStats(ride);
       const start = st && st.start ? new Date(st.start) : null;
       const view = { info, title: info.stem, time: "", spokenDay: "", label: "", group: "", stats: [] };
       if (info.kind === KIND_CURRENT) {
@@ -1272,13 +1274,42 @@
     }
 
     // Distance, elapsed time and climb from the track points. GPS altitude is
-    // noisy, so climb only counts once it moves CLIMB_STEP away from the last turn.
-    const CLIMB_STEP = 4;
+    // noisy: median-smooth, then only count climbs that clear CLIMB_STEP from the
+    // last turn (~Strava's GPS-only threshold; they also remap via a basemap).
+    const STATS_VERSION = 2;
+    const CLIMB_STEP = 10;
+    const ELE_SMOOTH = 5;
+
+    function smoothElevations(eles) {
+      const n = eles.length;
+      if (n < 3) return eles.slice();
+      const half = (ELE_SMOOTH - 1) >> 1;
+      const out = new Array(n);
+      for (let i = 0; i < n; i++) {
+        const lo = Math.max(0, i - half);
+        const hi = Math.min(n - 1, i + half);
+        const win = eles.slice(lo, hi + 1).sort((a, b) => a - b);
+        out[i] = win[win.length >> 1];
+      }
+      return out;
+    }
+
+    function climbGain(eles) {
+      let gain = null, ref = null;
+      for (const e of eles) {
+        if (ref === null) { ref = e; gain = 0; }
+        else if (e >= ref + CLIMB_STEP) { gain += e - ref; ref = e; }
+        else if (e <= ref - CLIMB_STEP) ref = e;
+      }
+      return gain;
+    }
+
     function gpxStats(bytes) {
       const text = new TextDecoder().decode(bytes);
       const re = /<trkpt\b([^>]*)>([\s\S]*?)<\/trkpt>/g;
-      let dist = 0, gain = null, ref = null, first = null, last = null;
+      let dist = 0, first = null, last = null;
       let lat0 = null, lon0 = null, t0 = null, points = 0;
+      const eles = [];
       let m;
       while ((m = re.exec(text))) {
         const lat = Number((/\blat="([^"]+)"/.exec(m[1]) || [])[1]);
@@ -1301,16 +1332,23 @@
         }
         if (eleM) {
           const e = Number(eleM[1]);
-          if (Number.isFinite(e)) {
-            if (ref === null) { ref = e; gain = 0; }
-            else if (e >= ref + CLIMB_STEP) { gain += e - ref; ref = e; }
-            else if (e <= ref - CLIMB_STEP) ref = e;
-          }
+          if (Number.isFinite(e)) eles.push(e);
         }
         points++;
       }
       if (!points) return null;
-      return { dist, secs: first !== null ? (last - first) / 1000 : null, gain, start: first };
+      return {
+        v: STATS_VERSION,
+        dist,
+        secs: first !== null ? (last - first) / 1000 : null,
+        gain: climbGain(smoothElevations(eles)),
+        start: first
+      };
+    }
+
+    function rideStats(ride) {
+      const st = stats.get(statsKey(ride.name, ride.size));
+      return st && st.v === STATS_VERSION ? st : null;
     }
 
     // Ride stats worked out from downloaded GPX files, kept in IndexedDB.
