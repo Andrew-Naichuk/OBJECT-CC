@@ -1,10 +1,10 @@
 {
-  "version": "2026.10.06-4b97d0b",
-  "built": "2026-10-06T11:16:23Z",
-  "commit": "4b97d0b",
-  "notes": "HUB ui updates for BLE",
+  "version": "2026.10.06-7272535",
+  "built": "2026-10-06T14:58:53Z",
+  "commit": "7272535",
+  "notes": "rides meta update",
   "board": "Seeed XIAO nRF52840 Sense",
-  "size": 217672,
+  "size": 218608,
   "bin": "firmware.bin",
   "dat": "firmware.dat"
 }
