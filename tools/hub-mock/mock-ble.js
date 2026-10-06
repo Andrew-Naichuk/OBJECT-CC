@@ -29,14 +29,24 @@
     const head = '<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="OBJECT"><trk><trkseg>\n';
     const m = /^(\d\d)(\d\d)(\d\d)(\d\d)\./.exec(name);
     const end = m ? new Date(2000 + +m[1], m[2] - 1, +m[3], Math.min(+m[4], 23), 40).getTime() : Date.now();
-    const points = Math.floor((size - head.length) / 125);
+    const points = Math.max(40, Math.floor((size - head.length) / 125));
+    // Recognisable loop (rounded rectangle) so share-card routes aren't identical circles.
+    const lat0 = 50.450 + (seed % 7) * 0.002;
+    const lon0 = 30.520 + (seed % 5) * 0.003;
+    const latSpan = 0.018 + (seed % 3) * 0.004;  // ~2–3 km north
+    const lonSpan = 0.012 + (seed % 4) * 0.003;  // shorter east span
     let s = head;
     for (let i = 0; i < points; i++) {
-      const lat = (50.45 + Math.sin((i + seed) / 50) * 0.01).toFixed(6);
-      const lon = (30.52 + Math.cos((i + seed) / 50) * 0.01).toFixed(6);
-      const ele = (170 + 25 * Math.sin((i + seed) / 90) + (i % 3) * 0.4).toFixed(1);
-      const t = new Date(end - (points - i) * 2000).toISOString().replace(/\.\d+Z$/, "Z");
-      s += '<trkpt lat="' + lat + '" lon="' + lon + '"><ele>' + ele + "</ele><time>" + t + "</time></trkpt>\n";
+      const t = (i / Math.max(1, points - 1)) * Math.PI * 2;
+      // Squircle-ish loop: |cos|^0.5 / |sin|^0.5 keeps flat sides + rounded corners.
+      const cx = Math.sign(Math.cos(t)) * Math.pow(Math.abs(Math.cos(t)), 0.55);
+      const cy = Math.sign(Math.sin(t)) * Math.pow(Math.abs(Math.sin(t)), 0.55);
+      const wobble = Math.sin(t * 3 + seed) * 0.00035;
+      const lat = (lat0 + cy * latSpan * 0.5 + wobble).toFixed(6);
+      const lon = (lon0 + cx * lonSpan * 0.5 + wobble * 0.6).toFixed(6);
+      const ele = (170 + 35 * Math.max(0, cy) + (i % 3) * 0.4).toFixed(1);
+      const ts = new Date(end - (points - i) * 2000).toISOString().replace(/\.\d+Z$/, "Z");
+      s += '<trkpt lat="' + lat + '" lon="' + lon + '"><ele>' + ele + "</ele><time>" + ts + "</time></trkpt>\n";
     }
     return new TextEncoder().encode(s + "</trkseg></trk></gpx>\n");
   }

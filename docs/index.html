@@ -1385,15 +1385,152 @@
     }
 
     // Share cards keep a thinned polyline; IndexedDB still only stores the summary.
-    const MAX_SHARE_POINTS = 600;
+    const MAX_SHARE_POINTS = 800;
+    const SHARE_RDP_EPS_M = 12;       // keep corners; drop GPS jitter
+    const SHARE_JUMP_M = 120;         // break the stroke across teleports
+    const SHARE_MIN_STEP_M = 1.5;     // drop near-duplicate fixes
+    const SHARE_SPIKE_M = 2000;       // drop single-fix teleports (e.g. 0,0)
+    const SHARE_MEDIAN_MAX_M = 200000; // drop points absurdly far from the ride
 
-    function downsamplePoints(raw) {
-      const n = raw.length;
-      if (n <= MAX_SHARE_POINTS) return raw;
-      const out = new Array(MAX_SHARE_POINTS);
-      const stride = (n - 1) / (MAX_SHARE_POINTS - 1);
-      for (let i = 0; i < MAX_SHARE_POINTS; i++) out[i] = raw[Math.round(i * stride)];
-      out[MAX_SHARE_POINTS - 1] = raw[n - 1];
+    function isPlausibleFix(lat, lon) {
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+      if (lat === 0 && lon === 0) return false; // Null Island — common GPS fail
+      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return false;
+      return true;
+    }
+
+    // Remove one-point teleports: far from both neighbours while neighbours stay close.
+    function removeTrackSpikes(pts) {
+      if (pts.length < 3) return pts;
+      const out = [pts[0]];
+      for (let i = 1; i < pts.length - 1; i++) {
+        const prev = pts[i - 1], cur = pts[i], next = pts[i + 1];
+        const dPrev = haversine(prev[0], prev[1], cur[0], cur[1]);
+        const dNext = haversine(cur[0], cur[1], next[0], next[1]);
+        const dSkip = haversine(prev[0], prev[1], next[0], next[1]);
+        if (dPrev > SHARE_SPIKE_M && dNext > SHARE_SPIKE_M && dSkip < SHARE_SPIKE_M) continue;
+        out.push(cur);
+      }
+      out.push(pts[pts.length - 1]);
+      return out;
+    }
+
+    function filterTrackPoints(raw) {
+      const pts = raw.filter((p) => isPlausibleFix(p[0], p[1]));
+      if (pts.length < 2) return pts;
+      const lats = pts.map((p) => p[0]).sort((a, b) => a - b);
+      const lons = pts.map((p) => p[1]).sort((a, b) => a - b);
+      const mlat = lats[lats.length >> 1], mlon = lons[lons.length >> 1];
+      const near = pts.filter((p) => haversine(mlat, mlon, p[0], p[1]) <= SHARE_MEDIAN_MAX_M);
+      return removeTrackSpikes(near.length >= 2 ? near : pts);
+    }
+
+    function shareMidLat(points) {
+      let minLat = Infinity, maxLat = -Infinity;
+      for (const p of points) {
+        minLat = Math.min(minLat, p[0]);
+        maxLat = Math.max(maxLat, p[0]);
+      }
+      return (minLat + maxLat) / 2;
+    }
+
+    // Local equirectangular meters around the ride — same shape you'd see on a map.
+    function shareMetersPerDeg(midLat) {
+      const latRad = midLat * Math.PI / 180;
+      return {
+        // WGS84 meters-per-degree approximations at mid-latitude
+        east: 111412.84 * Math.cos(latRad) - 93.5 * Math.cos(3 * latRad),
+        north: 111132.92 - 559.82 * Math.cos(2 * latRad)
+      };
+    }
+
+    function shareToLocalMeters(points, midLat) {
+      const { east, north } = shareMetersPerDeg(midLat);
+      const lat0 = points[0][0], lon0 = points[0][1];
+      return points.map(([lat, lon]) => [
+        (lon - lon0) * east,
+        (lat - lat0) * north
+      ]);
+    }
+
+    function rdpSimplifyIndexes(pts, eps) {
+      const n = pts.length;
+      if (n < 3) return n < 2 ? [] : [0, n - 1];
+      const keep = new Uint8Array(n);
+      keep[0] = 1;
+      keep[n - 1] = 1;
+      const stack = [[0, n - 1]];
+      const eps2 = eps * eps;
+      while (stack.length) {
+        const [start, end] = stack.pop();
+        const ax = pts[start][0], ay = pts[start][1];
+        const bx = pts[end][0], by = pts[end][1];
+        const dx = bx - ax, dy = by - ay;
+        const len2 = dx * dx + dy * dy;
+        let maxDist2 = -1, maxIdx = -1;
+        for (let i = start + 1; i < end; i++) {
+          const px = pts[i][0], py = pts[i][1];
+          let dist2;
+          if (len2 === 0) {
+            const ex = px - ax, ey = py - ay;
+            dist2 = ex * ex + ey * ey;
+          } else {
+            let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+            if (t < 0) t = 0;
+            else if (t > 1) t = 1;
+            const qx = ax + t * dx - px, qy = ay + t * dy - py;
+            dist2 = qx * qx + qy * qy;
+          }
+          if (dist2 > maxDist2) {
+            maxDist2 = dist2;
+            maxIdx = i;
+          }
+        }
+        if (maxIdx >= 0 && maxDist2 > eps2) {
+          keep[maxIdx] = 1;
+          if (maxIdx - start > 1) stack.push([start, maxIdx]);
+          if (end - maxIdx > 1) stack.push([maxIdx, end]);
+        }
+      }
+      const idx = [];
+      for (let i = 0; i < n; i++) if (keep[i]) idx.push(i);
+      return idx;
+    }
+
+    // Clean GPS track → drawable lat/lon polyline with real-world proportions.
+    function prepareShareTrack(raw) {
+      if (!raw || raw.length < 2) return [];
+      const filtered = filterTrackPoints(raw);
+      if (filtered.length < 2) return [];
+      const cleaned = [filtered[0]];
+      for (let i = 1; i < filtered.length; i++) {
+        const prev = cleaned[cleaned.length - 1];
+        const d = haversine(prev[0], prev[1], filtered[i][0], filtered[i][1]);
+        if (d < SHARE_MIN_STEP_M) continue;
+        cleaned.push(filtered[i]);
+      }
+      if (cleaned.length < 2) return filtered.slice(0, Math.min(2, filtered.length));
+
+      let sampled = cleaned;
+      if (cleaned.length > MAX_SHARE_POINTS * 4) {
+        const stride = (cleaned.length - 1) / (MAX_SHARE_POINTS * 4 - 1);
+        sampled = [];
+        for (let i = 0; i < MAX_SHARE_POINTS * 4; i++) sampled.push(cleaned[Math.round(i * stride)]);
+        sampled[sampled.length - 1] = cleaned[cleaned.length - 1];
+      }
+
+      const midLat = shareMidLat(sampled);
+      const meters = shareToLocalMeters(sampled, midLat);
+      const idx = rdpSimplifyIndexes(meters, SHARE_RDP_EPS_M);
+      let out = idx.map((i) => sampled[i]);
+      if (out.length < 2) out = sampled;
+      if (out.length > MAX_SHARE_POINTS) {
+        const stride = (out.length - 1) / (MAX_SHARE_POINTS - 1);
+        const capped = [];
+        for (let i = 0; i < MAX_SHARE_POINTS; i++) capped.push(out[Math.round(i * stride)]);
+        capped[capped.length - 1] = out[out.length - 1];
+        return capped;
+      }
       return out;
     }
 
@@ -1408,7 +1545,7 @@
       while ((m = re.exec(text))) {
         const lat = Number((/\blat="([^"]+)"/.exec(m[1]) || [])[1]);
         const lon = Number((/\blon="([^"]+)"/.exec(m[1]) || [])[1]);
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        if (!isPlausibleFix(lat, lon)) continue;
         const eleM = /<ele>([^<]+)<\/ele>/.exec(m[2]);
         const timeM = /<time>([^<]+)<\/time>/.exec(m[2]);
         const t = timeM ? Date.parse(timeM[1]) : NaN;
@@ -1440,7 +1577,7 @@
           gain: climbGain(smoothElevations(eles)),
           start: first
         },
-        points: downsamplePoints(raw)
+        points: prepareShareTrack(raw)
       };
     }
 
@@ -1536,29 +1673,61 @@
       return rows;
     }
 
+    // Fit lat/lon into a rect with true ground proportions and padding.
+    // Returns { points: [[x,y],...], breaks: bool[] } where breaks[i] means
+    // start a new subpath at i (teleport / GPS jump).
     function projectRoute(points, x, y, w, h) {
-      let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
-      for (const p of points) {
-        minLat = Math.min(minLat, p[0]);
-        maxLat = Math.max(maxLat, p[0]);
-        minLon = Math.min(minLon, p[1]);
-        maxLon = Math.max(maxLon, p[1]);
+      if (!points || points.length < 2) return null;
+      const midLat = shareMidLat(points);
+      const { east, north } = shareMetersPerDeg(midLat);
+      if (!(Math.abs(east) > 1) || !(north > 1)) return null;
+
+      const local = [];
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (let i = 0; i < points.length; i++) {
+        const eastM = (points[i][1] - points[0][1]) * east;
+        const northM = (points[i][0] - points[0][0]) * north;
+        local.push([eastM, northM]);
+        minX = Math.min(minX, eastM);
+        maxX = Math.max(maxX, eastM);
+        minY = Math.min(minY, northM);
+        maxY = Math.max(maxY, northM);
       }
-      const midLat = (minLat + maxLat) / 2;
-      const cos = Math.max(0.2, Math.cos(midLat * Math.PI / 180));
-      let minX = minLon * cos, maxX = maxLon * cos;
-      let minY = -maxLat, maxY = -minLat;
+
       let dx = maxX - minX, dy = maxY - minY;
       if (!(dx > 0) && !(dy > 0)) return null;
-      if (!(dx > 0)) dx = dy * 0.01;
-      if (!(dy > 0)) dy = dx * 0.01;
-      const scale = Math.min(w / dx, h / dy);
-      const cx = x + w / 2, cy = y + h / 2;
-      const midX = (minX + maxX) / 2, midY = (minY + maxY) / 2;
-      return points.map(([lat, lon]) => [
-        cx + (lon * cos - midX) * scale,
-        cy + (-lat - midY) * scale
-      ]);
+      if (!(dx > 0)) dx = dy * 0.02;
+      if (!(dy > 0)) dy = dx * 0.02;
+
+      const pad = Math.min(w, h) * 0.08;
+      const innerW = Math.max(1, w - pad * 2);
+      const innerH = Math.max(1, h - pad * 2);
+      const scale = Math.min(innerW / dx, innerH / dy);
+      const drawW = dx * scale, drawH = dy * scale;
+      const originX = x + (w - drawW) / 2;
+      const originY = y + (h - drawH) / 2;
+
+      const out = new Array(local.length);
+      const breaks = new Array(local.length);
+      breaks[0] = true;
+      // After RDP, consecutive points can be hundreds of metres apart on a
+      // straight road — only break on outliers vs the ride's own step size.
+      const steps = [];
+      for (let i = 1; i < local.length; i++) {
+        steps.push(Math.hypot(local[i][0] - local[i - 1][0], local[i][1] - local[i - 1][1]));
+      }
+      const sorted = steps.slice().sort((a, b) => a - b);
+      const medianStep = sorted.length ? sorted[sorted.length >> 1] : 0;
+      const jumpThresh = Math.max(SHARE_JUMP_M, medianStep * 8);
+      for (let i = 0; i < local.length; i++) {
+        // east → right, north → up (canvas Y grows down)
+        out[i] = [
+          originX + (local[i][0] - minX) * scale,
+          originY + (maxY - local[i][1]) * scale
+        ];
+        if (i > 0) breaks[i] = steps[i - 1] > jumpThresh;
+      }
+      return { points: out, breaks };
     }
 
     function paintShareText(ctx, text, x, y, sticker) {
@@ -1698,10 +1867,14 @@
       const routeH = Math.max(120, routeBottom - routeTop);
       if (points && points.length >= 2 && routeH >= 120) {
         const projected = projectRoute(points, routePadX, routeTop, SHARE_W - routePadX * 2, routeH);
-        if (projected) {
+        if (projected && projected.points.length >= 2) {
+          const pts = projected.points;
+          const breaks = projected.breaks;
           ctx.beginPath();
-          ctx.moveTo(projected[0][0], projected[0][1]);
-          for (let i = 1; i < projected.length; i++) ctx.lineTo(projected[i][0], projected[i][1]);
+          for (let i = 0; i < pts.length; i++) {
+            if (breaks[i] || i === 0) ctx.moveTo(pts[i][0], pts[i][1]);
+            else ctx.lineTo(pts[i][0], pts[i][1]);
+          }
           ctx.strokeStyle = "#ffffff";
           ctx.lineWidth = 7;
           ctx.lineCap = "round";
