@@ -1155,7 +1155,7 @@
     const STALL_MS = 15000;
     const AUTH_MS = 10000;
     const BUSY = ["listing", "downloading", "deleting", "reading", "saving", "updating"];
-    const FW_CHUNK = 244;
+    const FW_CHUNK = 240;
 
     // Builds published by .github/workflows/firmware.yml. The URL is absolute
     // so the update works from any copy of this page.
@@ -3116,7 +3116,7 @@
     // bootloader DFU UUID, so AdaDFU cannot be used from the browser).
 
     function fwUpdateAvailable() {
-      return !!(fwLatest && fwInstalled && fwLatest.version !== fwInstalled);
+      return !!(fwLatest && fwInstalled && fwInstalled !== "dev" && fwLatest.version !== fwInstalled);
     }
 
     function renderFirmware() {
@@ -3132,6 +3132,8 @@
         note = "";
       } else if (fwInstalled === "") {
         note = "This OBJECT's firmware is older than this page. Flash it once over USB, and later updates can come over Bluetooth.";
+      } else if (fwInstalled === "dev") {
+        note = "This OBJECT is running a USB build. Air updates appear after that build is published.";
       } else if (!fwInstalled || !fwLatest) {
         note = !fwLatest && fwInstalled
           ? "Could not reach the list of published builds. Check the connection and try again."
@@ -3280,7 +3282,7 @@
         const timer = setTimeout(() => {
           setter(null);
           fwWaitFail = null;
-          reject(new Error("OBJECT stopped answering during the update."));
+          reject(new Error("OBJECT stopped answering during the update. Reset it. If the screen stays frozen, flash over USB."));
         }, ms || 20000);
         fwWaitFail = (msg) => {
           clearTimeout(timer);
@@ -3333,7 +3335,7 @@
           const pkt = new Uint8Array(1 + (end - sent));
           pkt[0] = OP_FW_DATA;
           pkt.set(fwImage.bin.subarray(sent, end), 1);
-          const progress = fwWaitMeta((fn) => { fwProgressWait = fn; }, 20000);
+          const progress = fwWaitMeta((fn) => { fwProgressWait = fn; }, 45000);
           await writeCmd(pkt);
           await progress;
           sent = end;

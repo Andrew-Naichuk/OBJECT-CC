@@ -3656,6 +3656,8 @@ enum {
 //   12 ble_name length, 13-32 ble_name, 33 animations (0 off, 1 on).
 static const uint8_t BLE_CFG_VERSION = 2;
 static const uint16_t BLE_CFG_LEN = 34;
+// Characteristic holds 1 opcode + 244 data so the published hub's 244-byte
+// chunks still fit. The hub now sends 240 so the write stays within MTU 247.
 static const uint16_t BLE_FW_CHUNK = 244;
 static const uint16_t BLE_CMD_MAX = 1 + BLE_FW_CHUNK;
 
@@ -3731,9 +3733,14 @@ static uint32_t otaGot = 0;
 static uint32_t otaPageAddr = 0;
 static uint16_t otaPageUsed = 0;
 static uint8_t otaPage[OTA_PAGE] __attribute__((aligned(4)));
-static uint8_t otaFwChunk[BLE_FW_CHUNK];
-static uint16_t otaFwChunkLen = 0;
-static volatile uint8_t otaChunkPending = 0;
+static uint8_t otaFwChunk[2][BLE_FW_CHUNK];
+static uint16_t otaFwChunkLen[2];
+static volatile uint8_t otaQHead = 0;
+static volatile uint8_t otaQTail = 0;
+static volatile uint8_t otaQCount = 0;
+#if defined(NRF52840_XXAA)
+static bool otaWdtOn = false;
+#endif
 
 static bool blePhoneConnected() {
   return bleReady && bleAuthState == BLE_AUTH_OK && Bluefruit.connected() > 0;
@@ -4272,18 +4279,46 @@ static void bleBeginCfgSet(const uint8_t *body, uint16_t len) {
 // flash_nrf5x writes half-pages and waits on the same callback.
 // Do not erase here — flush() erases once if the page differs. A second
 // erase doubles the radio-blocked window and trips the 2 s BLE timeout.
+// After flush, compare with flash so a silent program failure cannot be
+// installed over the running sketch.
 static bool otaFlashWritePage(uint32_t addr, const uint8_t *data) {
   if (((uint32_t)data & 3u) != 0) {
+    return false;
+  }
+  if (addr < OTA_BANK_ADDR || (addr + OTA_PAGE) > (OTA_BANK_ADDR + OTA_BANK_MAX)) {
     return false;
   }
   if (flash_nrf5x_write(addr, data, OTA_PAGE) != (int)OTA_PAGE) {
     return false;
   }
   flash_nrf5x_flush();
-  return true;
+  return memcmp((const void *)addr, data, OTA_PAGE) == 0;
 }
 
-// Runs from RAM after SoftDevice is off: copy staged image onto the app and reset.
+static void otaWdtPet(void) {
+  if (otaWdtOn) {
+    NRF_WDT->RR[0] = 0x6E524635UL;
+  }
+}
+
+static void otaWdtArm(void) {
+  if (otaWdtOn) {
+    otaWdtPet();
+    return;
+  }
+  // Once started the nRF WDT cannot be stopped. 8 s covers a stuck page
+  // flush and then resets instead of leaving the board frozen.
+  NRF_WDT->CONFIG = 1;
+  NRF_WDT->CRV = 32768UL * 8UL - 1UL;
+  NRF_WDT->RREN = 1;
+  NRF_WDT->TASKS_START = 1;
+  otaWdtOn = true;
+  otaWdtPet();
+}
+
+// Lives in RAM so erasing the app at 0x27000 cannot fetch the next
+// instruction from the page we just wiped.
+__attribute__((noinline, used, long_call, section(".data")))
 static void otaCopyAndReset(uint32_t src, uint32_t dst, uint32_t len) {
   __disable_irq();
   for (uint32_t off = 0; off < len; off += OTA_PAGE) {
@@ -4316,12 +4351,19 @@ static void otaCopyAndReset(uint32_t src, uint32_t dst, uint32_t len) {
 #else
 static bool otaFlashWritePage(uint32_t, const uint8_t *) { return true; }
 static void otaCopyAndReset(uint32_t, uint32_t, uint32_t) {}
+static void otaWdtPet(void) {}
+static void otaWdtArm(void) {}
 #endif
+
+static void otaQueueClear(void) {
+  otaQCount = 0;
+  otaQHead = 0;
+  otaQTail = 0;
+}
 
 static void otaCancel(void) {
   otaActive = false;
-  otaChunkPending = 0;
-  otaFwChunkLen = 0;
+  otaQueueClear();
   otaPageUsed = 0;
   bleFwReadyPending = 0;
   bleFwDonePending = 0;
@@ -4341,6 +4383,8 @@ static bool otaFlushPage(bool pad) {
     otaPage[otaPageUsed++] = 0xFF;
   }
   if (!otaFlashWritePage(otaPageAddr, otaPage)) {
+    Serial.print("OTA flash failed at ");
+    Serial.println(otaPageAddr, HEX);
     return false;
   }
   otaPageAddr += OTA_PAGE;
@@ -4363,10 +4407,16 @@ static bool otaBegin(uint32_t size, uint32_t crc) {
   if (size < 256 || size > OTA_BANK_MAX || (size & 3u) != 0) {
     return false;
   }
+  otaCancel();
+  otaWdtArm();
 #if defined(NRF52840_XXAA)
   flash_nrf5x_flush();
+  // First erase creates flash_nrf5x's completion semaphore. Without it a
+  // later flush can wait forever if InternalFS has not yet touched flash.
+  if (!flash_nrf5x_erase(OTA_BANK_ADDR)) {
+    return false;
+  }
 #endif
-  otaCancel();
   otaTuneLink();
   otaActive = true;
   otaSize = size;
@@ -4438,12 +4488,8 @@ static void otaApply(uint32_t revCount, uint32_t elapsedMsNow) {
     delay(200);
   }
   sd_softdevice_disable();
-  static uint8_t ramFn[512];
-  uint32_t srcFn = (uint32_t)&otaCopyAndReset;
-  memcpy(ramFn, (const void *)(srcFn & ~1u), sizeof(ramFn));
-  typedef void (*ota_fn_t)(uint32_t, uint32_t, uint32_t);
-  ota_fn_t fn = (ota_fn_t)(((uint32_t)ramFn) | 1u);
-  fn(OTA_BANK_ADDR, OTA_APP_ADDR, otaSize);
+  static void (*volatile copyFn)(uint32_t, uint32_t, uint32_t) = otaCopyAndReset;
+  copyFn(OTA_BANK_ADDR, OTA_APP_ADDR, otaSize);
 #else
   (void)revCount;
   (void)elapsedMsNow;
@@ -4539,7 +4585,7 @@ static void bleTakeCommand() {
 
 static bool bleActive() {
   return bleReady && (bleJob != BLE_JOB_IDLE || bleErrorPending != 0 || bleDeletedPending != 0 ||
-                      otaActive || otaChunkPending);
+                      otaActive || otaQCount);
 }
 
 // Percent of the file sent to the phone, while a download runs.
@@ -4571,7 +4617,7 @@ static bool bleService() {
     bleLinkLost = 0;
     noInterrupts();
     bleCmdPending = 0;
-    otaChunkPending = 0;
+    otaQueueClear();
     interrupts();
     bleErrorPending = 0;
     bleDeletedPending = 0;
@@ -4618,17 +4664,20 @@ static bool bleService() {
     bleTakeCommand();
     return true;
   }
-  if (otaChunkPending) {
+  if (otaQCount) {
     uint8_t chunk[BLE_FW_CHUNK];
     uint16_t n;
     noInterrupts();
-    n = otaFwChunkLen;
-    memcpy(chunk, otaFwChunk, n);
-    otaChunkPending = 0;
+    uint8_t slot = otaQTail;
+    n = otaFwChunkLen[slot];
+    memcpy(chunk, otaFwChunk[slot], n);
+    otaQTail = (uint8_t)(slot ^ 1);
+    otaQCount--;
     interrupts();
     if (!otaAcceptChunk(chunk, n)) {
       otaCancel();
       bleQueueError(BLE_ERR_FW);
+      Serial.println("BLE firmware chunk failed");
     } else {
       bleFwProgressPending = 1;
     }
@@ -4755,15 +4804,25 @@ static void bleOnWrite(uint16_t conn_hdl, BLECharacteristic *chr, uint8_t *data,
   // Queue one chunk for loop(). SoftDevice flash APIs must not run inside
   // the BLE write callback.
   if (op == BLE_OP_FW_DATA) {
-    if (!otaActive || len < 2 || otaChunkPending) {
+    uint16_t n = (uint16_t)(len - 1);
+    if (!otaActive || len < 2 || n > BLE_FW_CHUNK) {
       otaCancel();
       bleErrorPending = BLE_ERR_FW;
       return;
     }
-    uint16_t n = (uint16_t)(len - 1);
-    memcpy(otaFwChunk, data + 1, n);
-    otaFwChunkLen = n;
-    otaChunkPending = 1;
+    noInterrupts();
+    if (otaQCount >= 2) {
+      interrupts();
+      otaCancel();
+      bleErrorPending = BLE_ERR_FW;
+      return;
+    }
+    uint8_t slot = otaQHead;
+    memcpy(otaFwChunk[slot], data + 1, n);
+    otaFwChunkLen[slot] = n;
+    otaQHead = (uint8_t)(slot ^ 1);
+    otaQCount++;
+    interrupts();
     return;
   }
   uint16_t bodyLen = 0;
@@ -4905,6 +4964,7 @@ void setup() {
 }
 
 void loop() {
+  otaWdtPet();
   gpsPoll();
 
   // Snapshot ISR-owned state with interrupts briefly off (avoid torn reads).
