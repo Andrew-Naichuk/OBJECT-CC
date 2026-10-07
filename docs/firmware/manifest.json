@@ -1,10 +1,10 @@
 {
-  "version": "2026.10.06-7272535",
-  "built": "2026-10-06T14:58:53Z",
-  "commit": "7272535",
-  "notes": "rides meta update",
+  "version": "2026.10.07-f573f4e",
+  "built": "2026-10-07T20:29:44Z",
+  "commit": "f573f4e",
+  "notes": "updates fix",
   "board": "Seeed XIAO nRF52840 Sense",
-  "size": 218608,
+  "size": 219012,
   "bin": "firmware.bin",
   "dat": "firmware.dat"
 }
