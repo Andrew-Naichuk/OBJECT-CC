@@ -686,12 +686,29 @@
 
     /* Post-download share sheet */
     #share-dialog { max-width: 22rem; }
+    #share-dialog form { position: relative; }
     #share-dialog .eyebrow { color: var(--quiet); }
-    #share-dialog h2 { margin-bottom: 1rem; }
-    #share-dialog .seg { margin: 0 0 1rem; }
+    #share-carousel {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: 100%;
+      margin: 0 0 0.85rem;
+      overflow-x: auto;
+      overscroll-behavior-x: contain;
+      scroll-snap-type: x mandatory;
+      scroll-behavior: smooth;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+      touch-action: pan-x;
+    }
+    #share-carousel::-webkit-scrollbar { display: none; }
+    #share-carousel .share-slide {
+      scroll-snap-align: center;
+      scroll-snap-stop: always;
+    }
     #share-dialog .preview-wrap {
       position: relative;
-      margin: 0 auto 1.15rem;
+      margin: 0 auto;
       width: min(100%, calc(42vh * 9 / 16));
       aspect-ratio: 9 / 16;
       max-height: 42vh;
@@ -699,7 +716,8 @@
       overflow: hidden;
       background: #000;
     }
-    #share-dialog[data-mode="sticker"] .preview-wrap {
+    #share-dialog .share-slide[data-mode="sticker"] .preview-wrap,
+    #share-dialog .share-slide[data-mode="sticker-stats"] .preview-wrap {
       background-color: #c8c8c8;
       background-image:
         linear-gradient(45deg, #a8a8a8 25%, transparent 25%),
@@ -709,16 +727,76 @@
       background-size: 16px 16px;
       background-position: 0 0, 0 8px, 8px -8px, -8px 0;
     }
-    #share-preview {
+    #share-dialog .preview-wrap img {
       display: block;
       width: 100%;
       height: 100%;
       object-fit: contain;
       background: transparent;
+      pointer-events: none;
+      user-select: none;
+      -webkit-user-drag: none;
     }
-    #share-dialog .preview-wrap.busy #share-preview { opacity: 0.35; }
+    #share-carousel.busy .preview-wrap img { opacity: 0.35; }
+    #share-dots {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 0.55rem;
+      margin: 0 0 1.15rem;
+      min-height: 1.25rem;
+    }
+    #share-dots .share-dot {
+      width: 0.5rem;
+      height: 0.5rem;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: var(--rule);
+      transition: background 0.15s ease, transform 0.15s ease;
+    }
+    #share-dots .share-dot[aria-selected="true"] {
+      background: var(--ink);
+      transform: scale(1.2);
+    }
+    #share-dialog .share-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+    #share-dialog .share-head .eyebrow { margin-bottom: 0.35rem; }
+    #share-dialog .share-head h2 {
+      margin: 0;
+      padding-bottom: 0;
+      border-bottom: 0;
+    }
+    #share-dialog #share-dismiss {
+      flex: none;
+      width: 2.5rem;
+      height: 2.5rem;
+      display: grid;
+      place-items: center;
+      margin: -0.35rem -0.35rem 0 0;
+      padding: 0;
+      border: 1.5px solid var(--rule);
+      border-radius: 10px;
+      background: transparent;
+      transition: background-color 0.15s ease;
+    }
+    #share-dialog #share-dismiss svg {
+      width: 1.05rem;
+      height: 1.05rem;
+      display: block;
+    }
+    @media (hover: hover) {
+      #share-dialog #share-dismiss:hover { background: var(--wash); }
+    }
+    #share-dialog #share-dismiss:active { background: var(--wash); }
     #share-dialog .share-actions { display: grid; gap: 0.5rem; }
-    #share-dialog #share-go {
+    #share-dialog #share-go,
+    #share-dialog #share-save {
       height: 3.25rem;
       border: 0;
       border-radius: 12px;
@@ -727,10 +805,36 @@
       font-weight: 650;
       transition: transform 0.12s ease;
     }
-    #share-dialog #share-go:active { transform: scale(0.985); }
-    #share-dialog #share-go:disabled { opacity: 0.4; }
-    #share-dialog .choices { grid-template-columns: 1fr 1fr; }
-    #share-dialog .choices .cancel { border: 1.5px solid var(--rule); background: transparent; }
+    #share-dialog #share-go:active,
+    #share-dialog #share-save:active { transform: scale(0.985); }
+    #share-dialog #share-go:disabled,
+    #share-dialog #share-save:disabled { opacity: 0.4; }
+    #share-toast {
+      position: absolute;
+      left: 50%;
+      top: 42%;
+      z-index: 5;
+      margin: 0;
+      padding: 0.7rem 1.1rem;
+      border-radius: 999px;
+      background: var(--ink);
+      color: var(--paper);
+      font-size: 0.9375rem;
+      font-weight: 650;
+      letter-spacing: 0.01em;
+      white-space: nowrap;
+      pointer-events: none;
+      opacity: 0;
+      visibility: hidden;
+      transform: translate(-50%, -50%) scale(0.96);
+      box-shadow: var(--drop);
+      transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s;
+    }
+    #share-toast.show {
+      opacity: 1;
+      visibility: visible;
+      transform: translate(-50%, -50%) scale(1);
+    }
 
     /* Delete confirmation */
     .sheet {
@@ -968,28 +1072,48 @@
   </dialog>
   <dialog class="sheet" id="share-dialog" data-mode="card" aria-labelledby="share-title">
     <form method="dialog">
-      <p class="eyebrow">Share</p>
-      <h2 id="share-title"></h2>
-      <div class="seg" role="radiogroup" aria-label="Share style">
-        <label>
-          <input type="radio" name="share-mode" value="card" checked>
-          <span>Card</span>
-        </label>
-        <label>
-          <input type="radio" name="share-mode" value="sticker">
-          <span>Sticker</span>
-        </label>
+      <div class="share-head">
+        <div>
+          <p class="eyebrow">Share</p>
+          <h2 id="share-title"></h2>
+        </div>
+        <button type="submit" value="cancel" id="share-dismiss" aria-label="Close">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M5 5l10 10M15 5 5 15"/></svg>
+        </button>
       </div>
-      <div class="preview-wrap" id="share-preview-wrap">
-        <img id="share-preview" alt="Ride share preview">
+      <div id="share-carousel" tabindex="0" aria-roledescription="carousel" aria-label="Share style">
+        <div class="share-slide" data-mode="card">
+          <div class="preview-wrap">
+            <img id="share-preview-card" alt="Card preview">
+          </div>
+        </div>
+        <div class="share-slide" data-mode="card-stats">
+          <div class="preview-wrap">
+            <img id="share-preview-card-stats" alt="Card with stats preview">
+          </div>
+        </div>
+        <div class="share-slide" data-mode="sticker">
+          <div class="preview-wrap">
+            <img id="share-preview-sticker" alt="Sticker preview">
+          </div>
+        </div>
+        <div class="share-slide" data-mode="sticker-stats">
+          <div class="preview-wrap">
+            <img id="share-preview-sticker-stats" alt="Sticker with stats preview">
+          </div>
+        </div>
+      </div>
+      <div id="share-dots" role="tablist" aria-label="Share style">
+        <button type="button" class="share-dot" data-mode="card" role="tab" aria-label="Card" aria-selected="true"></button>
+        <button type="button" class="share-dot" data-mode="card-stats" role="tab" aria-label="Card with stats" aria-selected="false"></button>
+        <button type="button" class="share-dot" data-mode="sticker" role="tab" aria-label="Sticker" aria-selected="false"></button>
+        <button type="button" class="share-dot" data-mode="sticker-stats" role="tab" aria-label="Sticker with stats" aria-selected="false"></button>
       </div>
       <div class="share-actions">
         <button type="button" id="share-go">Share</button>
-        <div class="choices">
-          <button type="button" class="cancel" id="share-save">Save image</button>
-          <button type="submit" class="cancel" value="cancel" id="share-dismiss">Not now</button>
-        </div>
+        <button type="button" id="share-save">Save image</button>
       </div>
+      <p id="share-toast" role="status" aria-live="polite"></p>
     </form>
   </dialog>
   <script>
@@ -1078,10 +1202,11 @@
     const delDialog = $("del-dialog");
     const shareDialog = $("share-dialog");
     const shareTitle = $("share-title");
-    const sharePreview = $("share-preview");
-    const sharePreviewWrap = $("share-preview-wrap");
+    const shareCarousel = $("share-carousel");
+    const shareDots = $("share-dots");
     const shareGo = $("share-go");
     const shareSave = $("share-save");
+    const shareToast = $("share-toast");
     const fwDialog = $("fw-dialog");
     const fwInstalledEl = $("fw-installed");
     const fwLatestEl = $("fw-latest");
@@ -1297,8 +1422,8 @@
       return rideUnits() === 1 ? (m / 1609.344).toFixed(1) + " mi" : (m / 1000).toFixed(1) + " km";
     }
 
-    function fmtClimb(m) {
-      return "↑ " + (rideUnits() === 1 ? Math.round(m * 3.28084) + " ft" : Math.round(m) + " m");
+    function fmtMaxElev(m) {
+      return rideUnits() === 1 ? Math.round(m * 3.28084) + " ft" : Math.round(m) + " m";
     }
 
     function fmtDuration(s) {
@@ -1334,7 +1459,7 @@
       if (st) {
         view.stats.push(fmtDistance(st.dist));
         if (st.secs) view.stats.push(fmtDuration(st.secs));
-        if (st.gain !== null) view.stats.push(fmtClimb(st.gain));
+        if (st.maxEle !== null) view.stats.push(fmtMaxElev(st.maxEle));
       }
       return view;
     }
@@ -1353,46 +1478,20 @@
       return 12742000 * Math.asin(Math.min(1, Math.sqrt(h)));
     }
 
-    // Distance, moving time and climb from the track points. Gaps longer than
-    // MOVING_GAP_S are pauses. GPS altitude is noisy: median-smooth, then only
-    // count climbs that clear CLIMB_STEP from the last turn. When online, climb
-    // is remapped via EU-DEM 25 m (OpenTopoData, no API key): median-smooth
-    // then a 3 m step. If that API has no CORS, batches go through a public
-    // proxy. GPS altitude is the offline fallback.
-    const STATS_VERSION = 5;
-    const CLIMB_STEP = 10;
-    const CLIMB_STEP_DEM = 3;
-    const ELE_SMOOTH = 5;
+    // Distance, moving time, max elevation, speeds and mean |accel| from the
+    // track points. Gaps longer than MOVING_GAP_S are pauses. Elevation is the
+    // highest GPS altitude in the GPX — no network lookup.
+    const STATS_VERSION = 7;
     const MOVING_GAP_S = 10;
-    const DEM_SAMPLE_M = 90;
-    const DEM_MAX_SAMPLES = 1000;
-    const DEM_BATCH = 100;
-    const DEM_BATCH_GAP_MS = 1100;
-    const DEM_TIMEOUT_MS = 35000;
+    const STATS_TELEPORT_MPS = 70;
+    const G_MPS2 = 9.80665;
 
-    function smoothElevations(eles) {
-      const n = eles.length;
-      if (n < 3) return eles.slice();
-      const half = (ELE_SMOOTH - 1) >> 1;
-      const out = new Array(n);
-      for (let i = 0; i < n; i++) {
-        const lo = Math.max(0, i - half);
-        const hi = Math.min(n - 1, i + half);
-        const win = eles.slice(lo, hi + 1).sort((a, b) => a - b);
-        out[i] = win[win.length >> 1];
-      }
-      return out;
-    }
-
-    function climbGain(eles, step) {
-      const thr = step == null ? CLIMB_STEP : step;
-      let gain = null, ref = null;
+    function maxElevation(eles) {
+      let max = null;
       for (const e of eles) {
-        if (ref === null) { ref = e; gain = 0; }
-        else if (e >= ref + thr) { gain += e - ref; ref = e; }
-        else if (e <= ref - thr) ref = e;
+        if (max === null || e > max) max = e;
       }
-      return gain;
+      return max;
     }
 
     // Share cards keep a thinned polyline; IndexedDB still only stores the summary.
@@ -1550,6 +1649,8 @@
       const re = /<trkpt\b([^>]*)>([\s\S]*?)<\/trkpt>/g;
       let dist = 0, moving = 0, first = null;
       let lat0 = null, lon0 = null, t0 = null, count = 0;
+      let maxSpeed = 0, prevV = null, prevVt = null;
+      let accelSum = 0, accelN = 0;
       const eles = [];
       const raw = [];
       let m;
@@ -1563,10 +1664,29 @@
         if (lat0 !== null) {
           const d = haversine(lat0, lon0, lat, lon);
           const dt = Number.isFinite(t) && t0 !== null ? (t - t0) / 1000 : 0;
-          const teleport = dt > 0 && d / dt > 70;
+          const teleport = dt > 0 && d / dt > STATS_TELEPORT_MPS;
           if (!teleport) {
             dist += d;
-            if (dt > 0 && dt <= MOVING_GAP_S) moving += dt;
+            if (dt > 0 && dt <= MOVING_GAP_S) {
+              moving += dt;
+              const v = d / dt;
+              if (v > maxSpeed) maxSpeed = v;
+              if (prevV !== null && prevVt !== null && Number.isFinite(t)) {
+                const adt = (t - prevVt) / 1000;
+                if (adt > 0 && adt <= MOVING_GAP_S) {
+                  accelSum += Math.abs(v - prevV) / adt;
+                  accelN++;
+                }
+              }
+              prevV = v;
+              prevVt = t;
+            } else {
+              prevV = null;
+              prevVt = null;
+            }
+          } else {
+            prevV = null;
+            prevVt = null;
           }
         }
         lat0 = lat;
@@ -1588,122 +1708,18 @@
           v: STATS_VERSION,
           dist,
           secs: first !== null ? moving : null,
-          gain: climbGain(smoothElevations(eles)),
+          maxEle: maxElevation(eles),
+          maxSpeed: maxSpeed > 0 ? maxSpeed : null,
+          avgAccel: accelN > 0 ? accelSum / accelN / G_MPS2 : null,
           start: first
         },
-        points: prepareShareTrack(raw),
-        track: raw
+        points: prepareShareTrack(raw)
       };
     }
 
     function gpxStats(bytes) {
       const parsed = gpxParse(bytes);
       return parsed ? parsed.stats : null;
-    }
-
-    function sampleTrackForDem(pts) {
-      if (!pts || !pts.length) return [];
-      const out = [pts[0]];
-      let acc = 0;
-      for (let i = 1; i < pts.length; i++) {
-        const d = haversine(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]);
-        acc += d;
-        if (acc >= DEM_SAMPLE_M) {
-          out.push(pts[i]);
-          acc = 0;
-        }
-      }
-      const last = pts[pts.length - 1];
-      if (out[out.length - 1] !== last) out.push(last);
-      if (out.length <= DEM_MAX_SAMPLES) return out;
-      const stride = (out.length - 1) / (DEM_MAX_SAMPLES - 1);
-      const capped = [];
-      for (let i = 0; i < DEM_MAX_SAMPLES; i++) capped.push(out[Math.round(i * stride)]);
-      capped[capped.length - 1] = last;
-      return capped;
-    }
-
-    function sleep(ms, signal) {
-      return new Promise((resolve, reject) => {
-        const t = setTimeout(resolve, ms);
-        if (!signal) return;
-        const onAbort = () => {
-          clearTimeout(t);
-          reject(new DOMException("Aborted", "AbortError"));
-        };
-        if (signal.aborted) { onAbort(); return; }
-        signal.addEventListener("abort", onAbort, { once: true });
-      });
-    }
-
-    function otdUrl(batch) {
-      const locs = batch.map((p) => p[0].toFixed(5) + "," + p[1].toFixed(5)).join("|");
-      return "https://api.opentopodata.org/v1/eudem25m?locations=" + encodeURIComponent(locs) + "&interpolation=bilinear";
-    }
-
-    function parseOtdElevations(json, n) {
-      if (!json || json.status !== "OK" || !Array.isArray(json.results) || json.results.length !== n) return null;
-      const eles = [];
-      for (const row of json.results) {
-        const e = row && row.elevation;
-        if (!Number.isFinite(e)) return null;
-        eles.push(e);
-      }
-      return eles;
-    }
-
-    async function fetchOtdBatch(batch, signal, proxy) {
-      const direct = otdUrl(batch);
-      const url = proxy ? ("https://api.allorigins.win/raw?url=" + encodeURIComponent(direct)) : direct;
-      const res = await fetch(url, { signal });
-      if (!res.ok) throw new Error("dem");
-      const eles = parseOtdElevations(await res.json(), batch.length);
-      if (!eles) throw new Error("dem");
-      return eles;
-    }
-
-    async function fetchDemElevations(samples) {
-      if (!samples.length) return null;
-      if (typeof navigator !== "undefined" && navigator.onLine === false) return null;
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), DEM_TIMEOUT_MS);
-      try {
-        const batches = [];
-        for (let i = 0; i < samples.length; i += DEM_BATCH) {
-          batches.push(samples.slice(i, i + DEM_BATCH));
-        }
-        let proxy = false;
-        let first = null;
-        try {
-          first = await fetchOtdBatch(batches[0], ctrl.signal, false);
-        } catch (e) {
-          proxy = true;
-        }
-        const parts = await Promise.all(batches.map(async (batch, idx) => {
-          if (!proxy && idx === 0) return first;
-          if (idx) await sleep(idx * DEM_BATCH_GAP_MS, ctrl.signal);
-          return fetchOtdBatch(batch, ctrl.signal, proxy);
-        }));
-        const eles = [];
-        for (const part of parts) eles.push(...part);
-        return eles;
-      } catch (e) {
-        return null;
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-
-    async function enrichClimbFromDem(parsed) {
-      if (!parsed || !parsed.stats || !parsed.track || parsed.track.length < 2) return parsed && parsed.stats;
-      const samples = sampleTrackForDem(parsed.track);
-      if (samples.length < 2) return parsed.stats;
-      const eles = await fetchDemElevations(samples);
-      if (!eles) return parsed.stats;
-      const gain = climbGain(smoothElevations(eles), CLIMB_STEP_DEM);
-      if (gain == null) return parsed.stats;
-      parsed.stats.gain = gain;
-      return parsed.stats;
     }
 
     function rideStats(ride) {
@@ -1765,10 +1781,44 @@
     // —— Post-download share PNGs (solid card + transparent sticker) ——
     const SHARE_W = 1080;
     const SHARE_H = 1920;
+    const SHARE_MODES = ["card", "card-stats", "sticker", "sticker-stats"];
     let sharePayload = null;
-    let shareBlobUrl = null;
+    let shareUrls = { card: null, "card-stats": null, sticker: null, "sticker-stats": null };
+    let shareFiles = { card: null, "card-stats": null, sticker: null, "sticker-stats": null };
     let shareFile = null;
     let shareRenderToken = 0;
+    let shareSnapTimer = 0;
+    let shareToastTimer = 0;
+
+    function isShareSticker(mode) {
+      return mode === "sticker" || mode === "sticker-stats";
+    }
+
+    function isShareStats(mode) {
+      return mode === "card-stats" || mode === "sticker-stats";
+    }
+
+    function sharePreviewImg(mode) {
+      return shareCarousel.querySelector('.share-slide[data-mode="' + mode + '"] img');
+    }
+
+    function clearSharePreviews() {
+      for (const mode of SHARE_MODES) {
+        const img = sharePreviewImg(mode);
+        if (img) img.removeAttribute("src");
+      }
+    }
+
+    function shareFileName(stem, mode) {
+      if (mode === "sticker") return stem + "-object-sticker.png";
+      if (mode === "sticker-stats") return stem + "-object-sticker-stats.png";
+      if (mode === "card-stats") return stem + "-object-stats.png";
+      return stem + "-object.png";
+    }
+
+    function shareSavedToast(mode) {
+      return isShareSticker(mode) ? "Sticker saved" : "Card saved";
+    }
 
     function fmtDurationShort(s) {
       const total = Math.max(0, Math.round(s));
@@ -1782,15 +1832,44 @@
       return (total % 60) + "s";
     }
 
-    function fmtClimbPlain(m) {
-      return rideUnits() === 1 ? Math.round(m * 3.28084) + " ft" : Math.round(m) + " m";
-    }
-
     function shareStatRows(stats) {
       const rows = [{ label: "Distance", value: fmtDistance(stats.dist) }];
       if (stats.secs != null && stats.secs > 0) rows.push({ label: "Time", value: fmtDurationShort(stats.secs) });
-      if (stats.gain != null) rows.push({ label: "Elev Gain", value: fmtClimbPlain(stats.gain) });
+      if (stats.maxEle != null) rows.push({ label: "Max Elev", value: fmtMaxElev(stats.maxEle) });
       return rows;
+    }
+
+    // Six cells for the dense share layouts: value is the hero figure, unit is
+    // a quiet caption under it (duration already encodes its own units).
+    function shareStatGrid(stats) {
+      const imperial = rideUnits() === 1;
+      const avgSpeed = stats.secs > 0 && stats.dist > 0 ? stats.dist / stats.secs : null;
+      const dist = stats.dist > 0
+        ? { value: imperial ? (stats.dist / 1609.344).toFixed(1) : (stats.dist / 1000).toFixed(1), unit: imperial ? "mi" : "km" }
+        : { value: "-", unit: "" };
+      const elev = stats.maxEle != null
+        ? { value: String(imperial ? Math.round(stats.maxEle * 3.28084) : Math.round(stats.maxEle)), unit: imperial ? "ft" : "m" }
+        : { value: "-", unit: "" };
+      const maxSp = stats.maxSpeed > 0
+        ? { value: imperial ? (stats.maxSpeed * 2.23693629).toFixed(1) : (stats.maxSpeed * 3.6).toFixed(1), unit: imperial ? "mph" : "kmh" }
+        : { value: "-", unit: "" };
+      const avgSp = avgSpeed > 0
+        ? { value: imperial ? (avgSpeed * 2.23693629).toFixed(1) : (avgSpeed * 3.6).toFixed(1), unit: imperial ? "mph" : "kmh" }
+        : { value: "-", unit: "" };
+      const dur = stats.secs != null && stats.secs > 0
+        ? { value: fmtDurationShort(stats.secs), unit: "" }
+        : { value: "-", unit: "" };
+      const accel = stats.avgAccel != null
+        ? { value: stats.avgAccel.toFixed(2), unit: "g" }
+        : { value: "-", unit: "" };
+      return [
+        { label: "Distance", ...dist },
+        { label: "Max Elev", ...elev },
+        { label: "Max Speed", ...maxSp },
+        { label: "Avg Speed", ...avgSp },
+        { label: "Duration", ...dur },
+        { label: "Avg Accel", ...accel }
+      ];
     }
 
     // Fit lat/lon into a rect with true ground proportions and padding.
@@ -1890,7 +1969,9 @@
       "h": { cols: 5, rows: [0x10, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x11] },
       "s": { cols: 5, rows: [0x0E, 0x11, 0x10, 0x0E, 0x01, 0x11, 0x0E] },
       "f": { cols: 5, rows: [0x07, 0x08, 0x08, 0x1C, 0x08, 0x08, 0x08] },
-      "t": { cols: 5, rows: [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x06] }
+      "t": { cols: 5, rows: [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x06] },
+      "p": { cols: 5, rows: [0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10] },
+      "g": { cols: 5, rows: [0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0E] }
     };
     const SHARE_DOT_PITCH = 16;
     const SHARE_DOT_SIZE = 12;
@@ -1910,11 +1991,18 @@
       return cols;
     }
 
-    function paintShareDotText(ctx, text, cx, top, sticker) {
+    function shareDotMetrics(scale) {
+      const s = scale == null ? 1 : scale;
+      const pitch = Math.max(2, Math.round(SHARE_DOT_PITCH * s));
+      const size = Math.max(1, Math.round(SHARE_DOT_SIZE * s));
+      return { pitch, size, height: SHARE_DOT_ROWS * pitch - (pitch - size) };
+    }
+
+    function paintShareDotText(ctx, text, cx, top, sticker, scale) {
       const cols = shareDotTextCols(text);
       if (!cols) return;
-      const pitch = SHARE_DOT_PITCH;
-      const size = SHARE_DOT_SIZE;
+      const { pitch, size } = shareDotMetrics(scale);
+      const halo = Math.max(1, Math.round(2 * (scale == null ? 1 : scale)));
       const totalW = cols * pitch - (pitch - size);
       const x0 = Math.round(cx - totalW / 2);
       let col = 0;
@@ -1928,7 +2016,7 @@
             const y = top + r * pitch;
             if (sticker) {
               ctx.fillStyle = "rgba(0,0,0,0.55)";
-              ctx.fillRect(x - 2, y - 1, size + 4, size + 4);
+              ctx.fillRect(x - halo, y - Math.max(1, halo - 1), size + halo * 2, size + halo * 2);
             }
             ctx.fillStyle = "#ffffff";
             ctx.fillRect(x, y, size, size);
@@ -1947,18 +2035,62 @@
       ]).catch(() => {});
     }
 
-    function renderSharePng(stats, points, mode) {
-      const sticker = mode === "sticker";
-      const canvas = document.createElement("canvas");
-      canvas.width = SHARE_W;
-      canvas.height = SHARE_H;
-      const ctx = canvas.getContext("2d");
-      ctx.clearRect(0, 0, SHARE_W, SHARE_H);
-      if (!sticker) {
-        ctx.fillStyle = "#000000";
-        ctx.fillRect(0, 0, SHARE_W, SHARE_H);
+    function paintShareRoute(ctx, points, routeTop, routeBottom, sticker) {
+      const routePadX = 120;
+      const routeH = Math.max(120, routeBottom - routeTop);
+      if (!points || points.length < 2 || routeH < 120) return;
+      const projected = projectRoute(points, routePadX, routeTop, SHARE_W - routePadX * 2, routeH);
+      if (!projected || projected.points.length < 2) return;
+      const pts = projected.points;
+      const breaks = projected.breaks;
+      ctx.beginPath();
+      for (let i = 0; i < pts.length; i++) {
+        if (breaks[i] || i === 0) ctx.moveTo(pts[i][0], pts[i][1]);
+        else ctx.lineTo(pts[i][0], pts[i][1]);
       }
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 7;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      if (sticker) {
+        ctx.save();
+        ctx.shadowColor = "rgba(0,0,0,0.7)";
+        ctx.shadowBlur = 10;
+        ctx.shadowOffsetY = 2;
+        ctx.stroke();
+        ctx.restore();
+      } else {
+        ctx.stroke();
+      }
+    }
 
+    function paintShareBrand(ctx, brandBottom, sticker) {
+      // Brand: "captured with" sized to match OBJECT width, then a larger wordmark.
+      if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0.06em";
+      const objectSize = 84;
+      ctx.font = "850 " + objectSize + "px Archivo";
+      const objectW = ctx.measureText("OBJECT").width;
+      if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0.08em";
+      let capSize = 32;
+      ctx.font = "600 " + capSize + "px Archivo";
+      const capW = ctx.measureText("captured with").width;
+      if (capW > 0) {
+        capSize = Math.max(16, Math.min(38, Math.round(capSize * (objectW / capW))));
+        ctx.font = "600 " + capSize + "px Archivo";
+      }
+      const capGap = 12;
+      const brandTop = brandBottom - objectSize - capGap - capSize;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      paintShareText(ctx, "captured with", SHARE_W / 2, brandTop, sticker);
+      if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0.06em";
+      ctx.font = "850 " + objectSize + "px Archivo";
+      paintShareText(ctx, "OBJECT", SHARE_W / 2, brandTop + capSize + capGap, sticker);
+      if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0px";
+      return brandTop;
+    }
+
+    function paintShareSimpleStats(ctx, stats, sticker) {
       const rows = shareStatRows(stats);
       const labelSize = 36;
       const valueSize = SHARE_DOT_HEIGHT;
@@ -1978,60 +2110,73 @@
         paintShareDotText(ctx, row.value, SHARE_W / 2, y, sticker);
         y += valueSize + rowGap;
       }
+      return y;
+    }
 
-      const brandBlockH = 160;
-      const brandBottom = SHARE_H - 90;
-      const routeTop = Math.max(y + 24, 780);
-      const routeBottom = brandBottom - brandBlockH - 40;
-      const routePadX = 120;
-      const routeH = Math.max(120, routeBottom - routeTop);
-      if (points && points.length >= 2 && routeH >= 120) {
-        const projected = projectRoute(points, routePadX, routeTop, SHARE_W - routePadX * 2, routeH);
-        if (projected && projected.points.length >= 2) {
-          const pts = projected.points;
-          const breaks = projected.breaks;
-          ctx.beginPath();
-          for (let i = 0; i < pts.length; i++) {
-            if (breaks[i] || i === 0) ctx.moveTo(pts[i][0], pts[i][1]);
-            else ctx.lineTo(pts[i][0], pts[i][1]);
-          }
-          ctx.strokeStyle = "#ffffff";
-          ctx.lineWidth = 7;
-          ctx.lineCap = "round";
-          ctx.lineJoin = "round";
-          if (sticker) {
-            ctx.save();
-            ctx.shadowColor = "rgba(0,0,0,0.7)";
-            ctx.shadowBlur = 10;
-            ctx.shadowOffsetY = 2;
-            ctx.stroke();
-            ctx.restore();
-          } else {
-            ctx.stroke();
+    function paintShareGridStats(ctx, stats, sticker) {
+      const cells = shareStatGrid(stats);
+      const padX = 72;
+      const colW = (SHARE_W - padX * 2) / 3;
+      const labelSize = 26;
+      const unitSize = 24;
+      const dotScale = 0.55;
+      const valueH = shareDotMetrics(dotScale).height;
+      const labelToValue = 16;
+      const valueToUnit = 14;
+      const rowGap = 48;
+      const cellH = labelSize + labelToValue + valueH + valueToUnit + unitSize;
+      let y = 120;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      for (let i = 0; i < cells.length; i++) {
+        const col = i % 3;
+        const row = Math.floor(i / 3);
+        const cx = padX + colW * col + colW / 2;
+        const top = y + row * (cellH + rowGap);
+        const cell = cells[i];
+        ctx.font = "650 " + labelSize + "px Archivo";
+        if (sticker) paintShareText(ctx, cell.label, cx, top, true);
+        else {
+          ctx.fillStyle = "rgba(255,255,255,0.55)";
+          ctx.fillText(cell.label, cx, top);
+        }
+        paintShareDotText(ctx, cell.value, cx, top + labelSize + labelToValue, sticker, dotScale);
+        if (cell.unit) {
+          const unitY = top + labelSize + labelToValue + valueH + valueToUnit;
+          ctx.font = "600 " + unitSize + "px Archivo";
+          if (sticker) paintShareText(ctx, cell.unit, cx, unitY, true);
+          else {
+            ctx.fillStyle = "rgba(255,255,255,0.45)";
+            ctx.fillText(cell.unit, cx, unitY);
           }
         }
       }
+      return y + 2 * (cellH + rowGap) - rowGap;
+    }
 
-      // Brand: "captured with" sized to match OBJECT width, then a larger wordmark.
-      if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0.06em";
-      const objectSize = 84;
-      ctx.font = "850 " + objectSize + "px Archivo";
-      const objectW = ctx.measureText("OBJECT").width;
-      if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0.08em";
-      let capSize = 32;
-      ctx.font = "600 " + capSize + "px Archivo";
-      let capW = ctx.measureText("captured with").width;
-      if (capW > 0) {
-        capSize = Math.max(16, Math.min(38, Math.round(capSize * (objectW / capW))));
-        ctx.font = "600 " + capSize + "px Archivo";
+    function renderSharePng(stats, points, mode) {
+      const sticker = isShareSticker(mode);
+      const dense = isShareStats(mode);
+      const canvas = document.createElement("canvas");
+      canvas.width = SHARE_W;
+      canvas.height = SHARE_H;
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, SHARE_W, SHARE_H);
+      if (!sticker) {
+        ctx.fillStyle = "#000000";
+        ctx.fillRect(0, 0, SHARE_W, SHARE_H);
       }
-      const capGap = 12;
-      const brandTop = brandBottom - objectSize - capGap - capSize;
-      paintShareText(ctx, "captured with", SHARE_W / 2, brandTop, sticker);
-      if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0.06em";
-      ctx.font = "850 " + objectSize + "px Archivo";
-      paintShareText(ctx, "OBJECT", SHARE_W / 2, brandTop + capSize + capGap, sticker);
-      if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0px";
+
+      const statsBottom = dense
+        ? paintShareGridStats(ctx, stats, sticker)
+        : paintShareSimpleStats(ctx, stats, sticker);
+
+      const brandBlockH = 160;
+      const brandBottom = SHARE_H - 90;
+      const routeTop = Math.max(statsBottom + 24, dense ? 560 : 780);
+      const routeBottom = brandBottom - brandBlockH - 40;
+      paintShareRoute(ctx, points, routeTop, routeBottom, sticker);
+      paintShareBrand(ctx, brandBottom, sticker);
 
       return new Promise((resolve, reject) => {
         canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("PNG failed"))), "image/png");
@@ -2051,78 +2196,144 @@
     }
 
     function revokeSharePreview() {
-      if (shareBlobUrl) {
-        URL.revokeObjectURL(shareBlobUrl);
-        shareBlobUrl = null;
+      for (const mode of SHARE_MODES) {
+        if (shareUrls[mode]) {
+          URL.revokeObjectURL(shareUrls[mode]);
+          shareUrls[mode] = null;
+        }
+        shareFiles[mode] = null;
       }
       shareFile = null;
     }
 
+    function shareModeFromScroll() {
+      const w = shareCarousel.clientWidth || 1;
+      const idx = Math.round(shareCarousel.scrollLeft / w);
+      return SHARE_MODES[Math.max(0, Math.min(SHARE_MODES.length - 1, idx))] || "card";
+    }
+
+    function applyShareMode(mode, opts) {
+      const next = SHARE_MODES.includes(mode) ? mode : "card";
+      const changed = shareDialog.dataset.mode !== next;
+      shareDialog.dataset.mode = next;
+      shareDots.querySelectorAll(".share-dot").forEach((dot) => {
+        dot.setAttribute("aria-selected", dot.dataset.mode === next ? "true" : "false");
+      });
+      shareFile = shareFiles[next] || null;
+      shareGo.classList.toggle("hide", !(shareFile && canSharePng(shareFile)));
+      shareGo.disabled = !shareFile;
+      shareSave.disabled = !shareFile;
+      if (opts && opts.scroll) {
+        const idx = SHARE_MODES.indexOf(next);
+        const left = idx * (shareCarousel.clientWidth || 0);
+        if (opts.instant) shareCarousel.style.scrollBehavior = "auto";
+        shareCarousel.scrollTo({ left, behavior: opts.instant ? "auto" : "smooth" });
+        if (opts.instant) {
+          requestAnimationFrame(() => { shareCarousel.style.scrollBehavior = ""; });
+        }
+      }
+      return changed;
+    }
+
     async function refreshSharePreview() {
       if (!sharePayload) return;
-      const mode = shareDialog.dataset.mode || "card";
       const token = ++shareRenderToken;
-      sharePreviewWrap.classList.add("busy");
+      shareCarousel.classList.add("busy");
       shareGo.disabled = true;
       shareSave.disabled = true;
       try {
         await ensureShareFonts();
         if (token !== shareRenderToken) return;
-        const blob = await renderSharePng(sharePayload.stats, sharePayload.points, mode);
+        const stem = shareStem(sharePayload.name);
+        const blobs = await Promise.all(SHARE_MODES.map((mode) =>
+          renderSharePng(sharePayload.stats, sharePayload.points, mode)
+        ));
         if (token !== shareRenderToken) return;
         revokeSharePreview();
-        const stem = shareStem(sharePayload.name);
-        const fname = stem + (mode === "sticker" ? "-object-sticker.png" : "-object.png");
-        shareFile = new File([blob], fname, { type: "image/png" });
-        shareBlobUrl = URL.createObjectURL(blob);
-        sharePreview.src = shareBlobUrl;
-        shareGo.classList.toggle("hide", !canSharePng(shareFile));
-        shareGo.disabled = false;
-        shareSave.disabled = false;
+        SHARE_MODES.forEach((mode, i) => {
+          const blob = blobs[i];
+          shareFiles[mode] = new File([blob], shareFileName(stem, mode), { type: "image/png" });
+          shareUrls[mode] = URL.createObjectURL(blob);
+          const img = sharePreviewImg(mode);
+          if (img) img.src = shareUrls[mode];
+        });
+        applyShareMode(shareDialog.dataset.mode || "card");
       } catch (e) {
         if (token !== shareRenderToken) return;
         setStatus("Could not build share image.", true);
         shareGo.disabled = true;
         shareSave.disabled = true;
       } finally {
-        if (token === shareRenderToken) sharePreviewWrap.classList.remove("busy");
+        if (token === shareRenderToken) shareCarousel.classList.remove("busy");
       }
     }
 
     function closeShareSheet() {
       shareRenderToken++;
+      hideShareToast();
       if (shareDialog.open) shareDialog.close();
       sharePayload = null;
       revokeSharePreview();
-      sharePreview.removeAttribute("src");
+      clearSharePreviews();
     }
 
     function openShareSheet(payload) {
       sharePayload = payload;
-      shareDialog.dataset.mode = "card";
-      const cardRadio = shareDialog.querySelector('input[name="share-mode"][value="card"]');
-      if (cardRadio) cardRadio.checked = true;
+      hideShareToast();
       const ride = rides.find((r) => r.name === payload.name) || { name: payload.name, size: 0 };
       const view = describeRide(ride);
       shareTitle.textContent = view.title || payload.name;
       shareGo.classList.add("hide");
+      clearSharePreviews();
       if (typeof shareDialog.showModal === "function") shareDialog.showModal();
       else return;
+      requestAnimationFrame(() => {
+        applyShareMode("card", { scroll: true, instant: true });
+      });
       refreshSharePreview();
     }
 
+    function showShareToast(msg) {
+      clearTimeout(shareToastTimer);
+      shareToast.textContent = msg;
+      shareToast.classList.remove("show");
+      // Reflow so the enter transition still runs if we re-show quickly.
+      void shareToast.offsetWidth;
+      shareToast.classList.add("show");
+      shareToastTimer = setTimeout(() => {
+        shareToast.classList.remove("show");
+      }, 2200);
+    }
+
+    function hideShareToast() {
+      clearTimeout(shareToastTimer);
+      shareToast.classList.remove("show");
+      shareToast.textContent = "";
+    }
+
     function downloadSharePng() {
-      if (!shareBlobUrl || !shareFile) return;
+      const mode = shareDialog.dataset.mode || "card";
+      const file = shareFiles[mode];
+      const url = shareUrls[mode];
+      if (!file || !url) return;
       const a = document.createElement("a");
-      a.href = shareBlobUrl;
-      a.download = shareFile.name;
+      a.href = url;
+      a.download = file.name;
+      a.rel = "noopener";
+      document.body.appendChild(a);
       a.click();
+      a.remove();
+      const msg = shareSavedToast(mode);
+      showShareToast(msg);
+      setStatus(msg);
     }
 
     async function shareSharePng() {
-      if (!shareFile || !canSharePng(shareFile)) return;
+      const mode = shareDialog.dataset.mode || "card";
+      const file = shareFiles[mode];
+      if (!file || !canSharePng(file)) return;
       try {
-        await navigator.share({ files: [shareFile], title: "OBJECT" });
+        await navigator.share({ files: [file], title: "OBJECT" });
         closeShareSheet();
       } catch (e) {
         if (e && e.name === "AbortError") return;
@@ -2130,19 +2341,37 @@
       }
     }
 
-    shareDialog.querySelectorAll('input[name="share-mode"]').forEach((input) => {
-      input.addEventListener("change", () => {
-        if (!input.checked) return;
-        shareDialog.dataset.mode = input.value;
-        refreshSharePreview();
+    function onShareCarouselSettled() {
+      applyShareMode(shareModeFromScroll());
+    }
+
+    shareCarousel.addEventListener("scroll", () => {
+      clearTimeout(shareSnapTimer);
+      shareSnapTimer = setTimeout(onShareCarouselSettled, 80);
+    }, { passive: true });
+    shareCarousel.addEventListener("scrollend", onShareCarouselSettled);
+    shareCarousel.addEventListener("keydown", (event) => {
+      const idx = SHARE_MODES.indexOf(shareDialog.dataset.mode || "card");
+      if (event.key === "ArrowRight" && idx < SHARE_MODES.length - 1) {
+        event.preventDefault();
+        applyShareMode(SHARE_MODES[idx + 1], { scroll: true });
+      } else if (event.key === "ArrowLeft" && idx > 0) {
+        event.preventDefault();
+        applyShareMode(SHARE_MODES[idx - 1], { scroll: true });
+      }
+    });
+    shareDots.querySelectorAll(".share-dot").forEach((dot) => {
+      dot.addEventListener("click", () => {
+        applyShareMode(dot.dataset.mode, { scroll: true });
       });
     });
     shareGo.addEventListener("click", () => { shareSharePng(); });
     shareSave.addEventListener("click", () => { downloadSharePng(); });
     shareDialog.addEventListener("close", () => {
+      hideShareToast();
       sharePayload = null;
       revokeSharePreview();
-      sharePreview.removeAttribute("src");
+      clearSharePreviews();
       shareRenderToken++;
     });
 
@@ -2259,7 +2488,7 @@
         const icon = document.createElement("span");
         icon.innerHTML = DOWN_ICON;
 
-        const spoken = [view.spokenDay || view.title, view.time, ...view.stats.map((s) => s.replace("↑ ", "climb "))]
+        const spoken = [view.spokenDay || view.title, view.time, ...view.stats]
           .filter(Boolean).join(", ");
         btn.setAttribute("aria-label", "Save " + spoken + ", " + formatSize(ride.size));
         btn.append(text, size, icon);
@@ -2306,7 +2535,7 @@
       hideProgress();
     }
 
-    async function saveFile() {
+    function saveFile() {
       const crc = crc32(fileBuf);
       if (crc !== doneCrc) {
         setStatus("CRC mismatch for " + fileName + ". File not saved.", true);
@@ -2331,8 +2560,6 @@
       resetTransfer();
       renderRides();
       if (parsed) {
-        setStatus("Working out elev…");
-        try { await enrichClimbFromDem(parsed); } catch (e) {}
         storeStats(statsKey(savedName, savedSize), parsed.stats);
         renderRides();
       }

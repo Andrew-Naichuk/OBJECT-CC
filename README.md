@@ -170,8 +170,8 @@ The track in `CURRENT.GPX` is renamed to a dated archive such as `26100115.GPX`,
 2. Open the [OBJECT HUB](https://andrew-naichuk.github.io/OBJECT-CC/).
 3. Tap **Connect**, choose the **OBJECT** device (name from `ble_name`, default `OBJECT-001`).
 4. On OBJECT, press the button within **10 seconds** when it shows **Press to allow**. If you miss the window, the link drops and no files are listed — connect again.
-5. Tap a ride to download its GPX file. Rides are listed by date under month headings. After a download, the hub remembers the ride's distance, moving time (gaps longer than about 10 s are dropped) and climb, and shows them in the list. Climb uses map elevation (EU-DEM 25 m) when the phone is online, and GPS altitude otherwise.
-6. Right after a successful download, the hub offers a **Share** sheet: pick **Card** (solid black story image) or **Sticker** (transparent PNG for layering on a photo), then **Share** or **Save image**. The GPX is already saved if you dismiss the sheet.
+5. Tap a ride to download its GPX file. Rides are listed by date under month headings. After a download, the hub remembers the ride's distance, moving time (gaps longer than about 10 s are dropped) and max elevation from the GPX altitudes, and shows them in the list.
+6. Right after a successful download, the hub offers a **Share** sheet: swipe the preview to choose **Card** or **Sticker** (simple distance / time / max elev), or the matching **stats** variants (2×3 grid: distance, max elev, max speed, avg speed, duration, avg accel in g). Card is a solid black story image; sticker is a transparent PNG for layering on a photo. Then **Share** or **Save image**. The GPX is already saved if you dismiss the sheet.
 7. Delete archived rides with the trash control when you want to free card space. `CURRENT.GPX` cannot be deleted while it is the live recording.
 
 <table>
