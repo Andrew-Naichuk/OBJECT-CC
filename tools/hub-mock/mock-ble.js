@@ -5,6 +5,7 @@
 //   ?mock=manual   do not connect on load; press Connect
 //   ?mock=deny     never allowed; drops the link after the 10 s window
 //   ?mock=latest   already runs the published firmware, so no update is offered
+//   ?mock=dev      USB build; the page should still offer the published image
 //   ?mock=old      firmware from before the version command
 (() => {
   const mode = new URLSearchParams(location.search).get("mock") || "";
@@ -63,7 +64,7 @@
   // Stands in for docs/firmware/, which the page would fetch from GitHub
   // Pages. A short image keeps the fake transfer quick.
   const published = "2026.10.05-a6e3bc5";
-  const fwVersion = mode === "latest" ? published : "2026.09.20-1f2a3b4";
+  const fwVersion = mode === "latest" ? published : (mode === "dev" ? "dev" : "2026.09.20-1f2a3b4");
   const fwImage = new Uint8Array(24 * 1024);
   for (let i = 0; i < fwImage.length; i++) fwImage[i] = (i * 31 + (i >> 8)) & 0xff;
   window.objectMockManifest = {
