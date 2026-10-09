@@ -1,10 +1,10 @@
 {
-  "version": "2026.10.07-f573f4e",
-  "built": "2026-10-07T20:29:44Z",
-  "commit": "f573f4e",
-  "notes": "updates fix",
+  "version": "2026.10.09-e1b5894",
+  "built": "2026-10-09T20:58:01Z",
+  "commit": "e1b5894",
+  "notes": "gps zero point fix",
   "board": "Seeed XIAO nRF52840 Sense",
-  "size": 219012,
+  "size": 219092,
   "bin": "firmware.bin",
   "dat": "firmware.dat"
 }
