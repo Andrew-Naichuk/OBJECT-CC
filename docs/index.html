@@ -1971,6 +1971,10 @@
     // —— Post-download share PNGs (solid card + transparent sticker) ——
     const SHARE_W = 1080;
     const SHARE_H = 1920;
+    // Instagram Stories chrome: progress/profile at top, reply/actions at bottom.
+    // Keep every painted element inside this band on the 1080×1920 canvas.
+    const SHARE_SAFE_TOP = 280;
+    const SHARE_SAFE_BOTTOM = 360;
     const SHARE_MODES = ["card", "card-stats", "sticker", "sticker-stats"];
     let sharePayload = null;
     let shareUrls = { card: null, "card-stats": null, sticker: null, "sticker-stats": null };
@@ -2219,9 +2223,9 @@
     async function ensureShareFonts() {
       if (!document.fonts || !document.fonts.load) return;
       await Promise.all([
-        document.fonts.load("600 28px Archivo"),
+        document.fonts.load("600 18px Archivo"),
         document.fonts.load("650 40px Archivo"),
-        document.fonts.load("850 84px Archivo")
+        document.fonts.load("850 40px Archivo")
       ]).catch(() => {});
     }
 
@@ -2254,28 +2258,36 @@
       }
     }
 
-    function paintShareBrand(ctx, brandBottom, sticker) {
-      // Brand: "captured with" sized to match OBJECT width, then a larger wordmark.
+    function shareBrandLayout(ctx) {
+      // Quiet footer mark: OBJECT + "captured with" scaled to the same width.
       if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0.06em";
-      const objectSize = 84;
+      const objectSize = 40;
       ctx.font = "850 " + objectSize + "px Archivo";
       const objectW = ctx.measureText("OBJECT").width;
       if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0.08em";
-      let capSize = 32;
+      let capSize = 16;
       ctx.font = "600 " + capSize + "px Archivo";
       const capW = ctx.measureText("captured with").width;
       if (capW > 0) {
-        capSize = Math.max(16, Math.min(38, Math.round(capSize * (objectW / capW))));
+        capSize = Math.max(11, Math.min(18, Math.round(capSize * (objectW / capW))));
         ctx.font = "600 " + capSize + "px Archivo";
       }
-      const capGap = 12;
-      const brandTop = brandBottom - objectSize - capGap - capSize;
+      const capGap = 6;
+      if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0px";
+      return { objectSize, capSize, capGap, height: objectSize + capGap + capSize };
+    }
+
+    function paintShareBrand(ctx, brandBottom, sticker) {
+      const layout = shareBrandLayout(ctx);
+      const brandTop = brandBottom - layout.height;
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
+      if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0.08em";
+      ctx.font = "600 " + layout.capSize + "px Archivo";
       paintShareText(ctx, "captured with", SHARE_W / 2, brandTop, sticker);
       if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0.06em";
-      ctx.font = "850 " + objectSize + "px Archivo";
-      paintShareText(ctx, "OBJECT", SHARE_W / 2, brandTop + capSize + capGap, sticker);
+      ctx.font = "850 " + layout.objectSize + "px Archivo";
+      paintShareText(ctx, "OBJECT", SHARE_W / 2, brandTop + layout.capSize + layout.capGap, sticker);
       if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0px";
       return brandTop;
     }
@@ -2286,7 +2298,7 @@
       const valueSize = SHARE_DOT_HEIGHT;
       const labelToValue = 24;
       const rowGap = 64;
-      let y = 150;
+      let y = SHARE_SAFE_TOP;
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
       for (const row of rows) {
@@ -2315,7 +2327,7 @@
       const valueToUnit = 14;
       const rowGap = 48;
       const cellH = labelSize + labelToValue + valueH + valueToUnit + unitSize;
-      let y = 120;
+      let y = SHARE_SAFE_TOP;
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
       for (let i = 0; i < cells.length; i++) {
@@ -2361,10 +2373,10 @@
         ? paintShareGridStats(ctx, stats, sticker)
         : paintShareSimpleStats(ctx, stats, sticker);
 
-      const brandBlockH = 160;
-      const brandBottom = SHARE_H - 90;
-      const routeTop = Math.max(statsBottom + 24, dense ? 560 : 780);
-      const routeBottom = brandBottom - brandBlockH - 40;
+      const brandBottom = SHARE_H - SHARE_SAFE_BOTTOM;
+      const brandTop = brandBottom - shareBrandLayout(ctx).height;
+      const routeTop = Math.max(statsBottom + 32, SHARE_SAFE_TOP);
+      const routeBottom = brandTop - 48;
       paintShareRoute(ctx, points, routeTop, routeBottom, sticker);
       paintShareBrand(ctx, brandBottom, sticker);
 

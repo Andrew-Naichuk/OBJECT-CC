@@ -144,7 +144,11 @@ export function initDeviceHero(root) {
   }
 
   function settingsAnimActive() {
-    return settingsPreviewActive() && document.body.dataset.cfgAnimations === "1" && !REDUCED;
+    // Firmware pauses animations while the backlight is off.
+    return settingsPreviewActive()
+      && document.body.dataset.cfgAnimations === "1"
+      && Number(document.body.dataset.cfgBacklight) !== 2
+      && !REDUCED;
   }
 
   function cfgBacklightAlpha() {
@@ -156,6 +160,26 @@ export function initDeviceHero(root) {
       return 0.25 + t * 0.6;
     }
     return 1;
+  }
+
+  /** Dim the painted OLED toward black (PWM backlight), not material alpha. */
+  function applyBacklightVeil(ctx) {
+    const a = cfgBacklightAlpha();
+    if (a >= 0.999) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "rgba(0,0,0," + (1 - a) + ")";
+    ctx.fillRect(0, 0, OLED_W, OLED_H);
+  }
+
+  function setDisplayOpacity(opacity, transparent) {
+    if (!displayMat) return;
+    displayMat.opacity = opacity;
+    if (displayMat.transparent !== transparent) {
+      displayMat.transparent = transparent;
+      // Chrome keeps the opaque program unless the material is recompiled.
+      displayMat.needsUpdate = true;
+    }
   }
 
   function cfgImperial() {
@@ -388,9 +412,12 @@ export function initDeviceHero(root) {
     oledTex.minFilter = THREE.LinearMipmapLinearFilter;
     oledTex.magFilter = THREE.LinearFilter;
 
+    // transparent starts false; pairing toggles it via setDisplayOpacity (needsUpdate).
     displayMat = new THREE.MeshBasicMaterial({
       map: oledTex,
-      toneMapped: false
+      toneMapped: false,
+      transparent: false,
+      opacity: 1
     });
     mesh.material = displayMat;
   }
@@ -651,7 +678,9 @@ export function initDeviceHero(root) {
       ctx.fillText(label, OLED_W - PAD, altBase);
     }
 
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    // Backlight PWM: veil toward black on the texture (material opacity is a no-op
+    // on Chrome's opaque MeshBasic program, and would also punch through the panel).
+    applyBacklightVeil(ctx);
     oledTex.needsUpdate = true;
     needFrame();
   }
@@ -773,16 +802,11 @@ export function initDeviceHero(root) {
       buttonGroup.scale.setScalar(s);
     }
     if (displayMat) {
-      if (settingsPreviewActive()) {
-        const a = cfgBacklightAlpha();
-        displayMat.opacity = a;
-        displayMat.transparent = a < 0.999;
-      } else if (document.body.dataset.phase === "pairing" && !REDUCED) {
-        displayMat.opacity = 0.34 + Math.sin(breathe * 2.2) * 0.18;
-        displayMat.transparent = true;
+      // Settings backlight is painted into the OLED texture; only pairing uses material alpha.
+      if (document.body.dataset.phase === "pairing" && !REDUCED) {
+        setDisplayOpacity(0.34 + Math.sin(breathe * 2.2) * 0.18, true);
       } else {
-        displayMat.opacity = 1;
-        displayMat.transparent = false;
+        setDisplayOpacity(1, false);
       }
     }
     const busy = document.body.dataset.phase;

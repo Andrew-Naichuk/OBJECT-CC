@@ -1,5 +1,5 @@
 // Offline shell for the hub. Bump CACHE when the list below changes.
-const CACHE = "object-hub-v7";
+const CACHE = "object-hub-v8";
 const SHELL = [
   "./",
   "./manifest.webmanifest",
