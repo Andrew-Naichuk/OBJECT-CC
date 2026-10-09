@@ -1670,11 +1670,15 @@
 
     // Distance, moving time, max elevation, speeds and mean |accel| from the
     // track points. Gaps longer than MOVING_GAP_S are pauses. Elevation is the
-    // highest GPS altitude in the GPX — no network lookup.
+    // highest GPS altitude in the GPX — no network lookup. Max speed is the
+    // fastest pace across five successive moving hops with the quickest hop
+    // left out: one GPS fix can jump several metres and read 45 km/h for a
+    // single second, and that extra length only ever adds distance.
     const STATS_VERSION = 7;
     const MOVING_GAP_S = 10;
     const STATS_TELEPORT_MPS = 70;
     const G_MPS2 = 9.80665;
+    const MAX_SPEED_HOPS = 5;
 
     function maxElevation(eles) {
       let max = null;
@@ -1682,6 +1686,47 @@
         if (max === null || e > max) max = e;
       }
       return max;
+    }
+
+    // Metres per second. `runs` are continuous moving hops {d, dt}. A full
+    // window drops its fastest hop so one noisy fix cannot set the max.
+    // Shorter recordings are used only when nothing else is long enough,
+    // and still drop that hop when there is more than one.
+    function sustainedMaxSpeed(runs) {
+      const pace = (hops, drop) => {
+        let d = 0, t = 0;
+        for (let k = 0; k < hops.length; k++) {
+          if (k === drop) continue;
+          d += hops[k].d;
+          t += hops[k].dt;
+        }
+        return t > 0 ? d / t : 0;
+      };
+      const fastest = (hops) => {
+        let drop = 0;
+        for (let k = 1; k < hops.length; k++) {
+          if (hops[k].d / hops[k].dt > hops[drop].d / hops[drop].dt) drop = k;
+        }
+        return drop;
+      };
+      let best = 0;
+      let shortBest = 0;
+      let anyFull = false;
+      for (const hops of runs) {
+        if (hops.length >= MAX_SPEED_HOPS) {
+          anyFull = true;
+          for (let i = MAX_SPEED_HOPS; i <= hops.length; i++) {
+            const window = hops.slice(i - MAX_SPEED_HOPS, i);
+            const v = pace(window, fastest(window));
+            if (v > best) best = v;
+          }
+        } else if (hops.length) {
+          const drop = hops.length > 1 ? fastest(hops) : -1;
+          const v = pace(hops, drop);
+          if (v > shortBest) shortBest = v;
+        }
+      }
+      return anyFull ? best : shortBest;
     }
 
     // Share cards keep a thinned polyline; IndexedDB still only stores the summary.
@@ -1843,6 +1888,12 @@
       let accelSum = 0, accelN = 0;
       const eles = [];
       const raw = [];
+      const speedRuns = [];
+      let speedRun = null;
+      const endSpeedRun = () => {
+        if (speedRun && speedRun.length) speedRuns.push(speedRun);
+        speedRun = null;
+      };
       let m;
       while ((m = re.exec(text))) {
         const lat = Number((/\blat="([^"]+)"/.exec(m[1]) || [])[1]);
@@ -1860,7 +1911,8 @@
             if (dt > 0 && dt <= MOVING_GAP_S) {
               moving += dt;
               const v = d / dt;
-              if (v > maxSpeed) maxSpeed = v;
+              if (!speedRun) speedRun = [];
+              speedRun.push({ d, dt });
               if (prevV !== null && prevVt !== null && Number.isFinite(t)) {
                 const adt = (t - prevVt) / 1000;
                 if (adt > 0 && adt <= MOVING_GAP_S) {
@@ -1871,10 +1923,12 @@
               prevV = v;
               prevVt = t;
             } else {
+              endSpeedRun();
               prevV = null;
               prevVt = null;
             }
           } else {
+            endSpeedRun();
             prevV = null;
             prevVt = null;
           }
@@ -1892,6 +1946,8 @@
         }
         count++;
       }
+      endSpeedRun();
+      maxSpeed = sustainedMaxSpeed(speedRuns);
       if (!count) return null;
       return {
         stats: {

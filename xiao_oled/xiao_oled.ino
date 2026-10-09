@@ -766,8 +766,14 @@ static void gpsApplyFix(bool valid, bool satsKnown, uint8_t sats,
   gps.lastFrameMs = millis();
 }
 
+// Exactly 0°N 0°E is what the receiver emits with no real fix. A track point
+// there lands in the Gulf of Guinea and makes the file unusable in viewers.
+static bool gpsPosReal(int32_t latE7, int32_t lonE7) {
+  return latE7 != 0 || lonE7 != 0;
+}
+
 static void gpsApplyPos(bool valid, int32_t latE7, int32_t lonE7) {
-  if (valid) {
+  if (valid && gpsPosReal(latE7, lonE7)) {
     gps.posKnown = true;
     gps.latE7 = latE7;
     gps.lonE7 = lonE7;
@@ -1313,6 +1319,9 @@ static bool gpxFinalize() {
 
 static bool gpxAppendPoint() {
   if (!sdReady || !gpxFile.isOpen()) {
+    return false;
+  }
+  if (!gpsPosReal(gps.latE7, gps.lonE7)) {
     return false;
   }
 

@@ -224,7 +224,7 @@ Each push that changes the firmware produces a new build. Local USB flashes repo
 | `YYMMDDnn.GPX` | Collision fallback; the final pair is a sequence, not necessarily an hour           |
 | `RIDEnnnn.GPX` | Numbered fallback when a date-based name is unavailable                             |
 
-Points are attempted no more frequently than once per second, after the trip starts, when GPS data passes the current checks. Subsequent points also require advancing GPS time and a coordinate change of at least `0.000018°` on either latitude or longitude. That is about 2 m in latitude; it is not a fixed travel-distance threshold.
+Points are attempted no more frequently than once per second, after the trip starts, when GPS data passes the current checks. A position of exactly 0°N 0°E is never written. Subsequent points also require advancing GPS time and a coordinate change of at least `0.000018°` on either latitude or longitude. That is about 2 m in latitude; it is not a fixed travel-distance threshold.
 
 GPX exports contain coordinates, timestamps and altitude when available - to make a smooth import to Strava app. **They do not preserve the wheel-derived ride summary**, so another app's calculated distance and moving time may slightly differ from the device's readings.
 
