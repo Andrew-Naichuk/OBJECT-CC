@@ -1,5 +1,5 @@
 // Offline shell for the hub. Bump CACHE when the list below changes.
-const CACHE = "object-hub-v1";
+const CACHE = "object-hub-v7";
 const SHELL = [
   "./",
   "./manifest.webmanifest",
@@ -10,7 +10,12 @@ const SHELL = [
   "./fonts/archivo-latin.woff2",
   "./fonts/archivo-latin-ext.woff2",
   "./fonts/doto-latin.woff2",
-  "./fonts/doto-latin-ext.woff2"
+  "./fonts/doto-latin-ext.woff2",
+  // Hero posters for first paint offline; the GLB is cache-first after
+  // the first online load and is intentionally not in the install shell.
+  "./object-poster-light.webp",
+  "./object-poster-dark.webp",
+  "./device-hero.mjs"
 ];
 
 self.addEventListener("install", (event) => {

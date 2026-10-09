@@ -9,10 +9,36 @@
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <meta name="apple-mobile-web-app-title" content="OBJECT">
-  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" id="theme-color" content="#ffffff">
   <link rel="preload" href="fonts/archivo-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/doto-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="object-poster-light.webp" as="image">
+  <link rel="preload" href="object-poster-dark.webp" as="image">
+  <script>
+    // Apply stored/system theme before paint so the first frame matches preference.
+    (function () {
+      var theme = "light";
+      try {
+        var stored = localStorage.getItem("object-hub-theme");
+        if (stored === "light" || stored === "dark") theme = stored;
+        else if (matchMedia("(prefers-color-scheme: dark)").matches) theme = "dark";
+      } catch (e) {
+        if (matchMedia("(prefers-color-scheme: dark)").matches) theme = "dark";
+      }
+      document.documentElement.setAttribute("data-theme", theme);
+      document.documentElement.style.colorScheme = theme;
+      var meta = document.getElementById("theme-color");
+      if (meta) meta.content = theme === "dark" ? "#000000" : "#ffffff";
+    })();
+  </script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
   <style>
     @font-face {
       font-family: "Archivo";
@@ -49,7 +75,7 @@
       unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
     }
     :root {
-      color-scheme: light dark;
+      color-scheme: light;
       --paper: #ffffff;
       --ink: #000000;
       --quiet: #6f6f6f;
@@ -67,20 +93,19 @@
       --sans: "Archivo", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
       --dots: "Doto", "Archivo", system-ui, sans-serif;
     }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --paper: #000000;
-        --ink: #ffffff;
-        --quiet: #8f8f8f;
-        --rule: #232323;
-        --wash: #0f0f0f;
-        --danger: #ffffff;
-        --danger-wash: rgba(255, 69, 58, 0.12);
-        --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23ffffff' stroke-width='1.75' stroke-linecap='square'%3E%3Cpath d='M5.5 8 10 12.5 14.5 8'/%3E%3C/svg%3E");
-        --shell: #141414;
-        --shell-edge: #333333;
-        --drop: none;
-      }
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --paper: #000000;
+      --ink: #ffffff;
+      --quiet: #8f8f8f;
+      --rule: #232323;
+      --wash: #0f0f0f;
+      --danger: #ffffff;
+      --danger-wash: rgba(255, 69, 58, 0.12);
+      --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23ffffff' stroke-width='1.75' stroke-linecap='square'%3E%3Cpath d='M5.5 8 10 12.5 14.5 8'/%3E%3C/svg%3E");
+      --shell: #141414;
+      --shell-edge: #333333;
+      --drop: none;
     }
 
     * { box-sizing: border-box; }
@@ -143,44 +168,104 @@
       transition: background-color 0.15s ease;
     }
     .actions svg { width: 1.15rem; height: 1.15rem; display: block; }
+    #theme-toggle .theme-icon-sun { display: none; }
+    html[data-theme="dark"] #theme-toggle .theme-icon-moon { display: none; }
+    html[data-theme="dark"] #theme-toggle .theme-icon-sun { display: block; }
     @media (hover: hover) {
       .actions button:not(:disabled):hover { background: var(--wash); }
     }
     .actions button:active:not(:disabled) { background: var(--wash); }
     .actions button:disabled { opacity: 0.4; }
 
-    /* The object: a drawing of the computer, its screen mirrors the device */
+    /* The object: studio 3D enclosure; HTML .screen sits on the display mesh */
     .device {
       position: relative;
-      margin: 0 0 1.75rem;
-      padding: 14px;
-      border-radius: 30px;
-      background: var(--shell);
-      box-shadow: inset 0 0 0 1px var(--shell-edge), var(--drop);
+      margin: 0 0 1.5rem;
     }
-    .device::before,
-    .device::after {
-      content: "";
+    .device-stage {
+      position: relative;
+      height: clamp(21rem, 72vw, 25rem);
+      border-radius: 20px;
+      overflow: hidden;
+      background: var(--paper);
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .device-poster {
       position: absolute;
-      right: -3px;
-      width: 3px;
-      height: 13%;
-      border-radius: 0 3px 3px 0;
-      background: var(--shell-edge);
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      object-position: center 55%;
+      pointer-events: none;
+      transition: opacity 0.45s ease;
     }
-    .device::before { top: 26%; }
-    .device::after { top: 46%; }
+    .device-poster[data-scheme="dark"] { display: none; }
+    html[data-theme="dark"] .device-poster[data-scheme="light"] { display: none; }
+    html[data-theme="dark"] .device-poster[data-scheme="dark"] { display: block; }
+    .device-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      opacity: 0;
+      transition: opacity 0.45s ease;
+    }
+    .device-stage.is-ready .device-canvas { opacity: 1; }
+    .device-stage.is-ready .device-poster { opacity: 0; }
+    .device-stage.is-fallback .device-canvas { display: none; }
+    .device-stage.is-fallback .device-poster { opacity: 1; }
 
     .screen {
-      aspect-ratio: 2 / 1;
+      position: absolute;
+      left: 0;
+      top: 0;
+      z-index: 2;
+      container-type: size;
       display: grid;
       grid-template-rows: auto 1fr auto;
-      padding: 0.8rem 0.95rem 0.85rem;
-      border-radius: 10px;
+      padding: 8% 9% 9%;
+      border-radius: 3px;
       background: #000;
       color: var(--px);
       overflow: hidden;
-      box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.9);
+      box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.85);
+      will-change: transform;
+      pointer-events: none; /* tilt/drag goes to the stage */
+      /* Fallback layout before / without projection: portrait OLED over the poster */
+      width: 34%;
+      aspect-ratio: 486 / 764;
+      height: auto;
+      left: 33%;
+      top: 14%;
+      transform: none;
+    }
+    /* OLED is on the mesh; keep HTML .screen for a11y + no-WebGL fallback */
+    .device-stage.is-ready .screen.is-mesh-screen {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      border: 0;
+      opacity: 0;
+      pointer-events: none;
+      transform: none !important;
+    }
+    .device-stage.is-fallback .screen {
+      left: 33%;
+      top: 14%;
+      width: 34%;
+      aspect-ratio: 486 / 764;
+      height: auto;
+      transform: none !important;
+      opacity: 1;
+      clip: auto;
     }
     .screen > * { transition: opacity 0.5s ease; }
     body[data-link="off"] .screen > * { opacity: 0.34; }
@@ -188,16 +273,18 @@
 
     .screen-top {
       display: flex;
-      justify-content: space-between;
-      gap: 1rem;
-      font-size: 0.8125rem;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.2em;
+      text-align: center;
+      font-size: clamp(0.5rem, 5.5cqi, 0.78rem);
       font-weight: 600;
-      line-height: 1.2;
+      line-height: 1.15;
       color: var(--px-dim);
       font-variant-numeric: tabular-nums;
     }
-    .screen-top span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .screen-top span + span { flex: none; }
+    .screen-top span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+    #progress-label:empty { display: none; }
     #caption {
       white-space: normal;
       display: -webkit-box;
@@ -211,38 +298,54 @@
 
     .figure {
       display: flex;
+      flex-direction: column;
       justify-content: center;
       align-items: center;
+      gap: 0.55em;
       min-height: 0;
+    }
+    .figure-main {
+      display: flex;
+      justify-content: center;
+      align-items: center;
     }
     #value {
       font-family: var(--dots);
       font-weight: 900;
-      font-size: clamp(6rem, 35vw, 9.25rem);
-      line-height: 0.74;
+      font-size: clamp(2.8rem, 22cqi, 5.2rem);
+      line-height: 0.78;
       letter-spacing: -0.01em;
       font-variant-numeric: tabular-nums;
     }
     #unit {
       align-self: flex-start;
-      margin: 0.35rem 0 0 0.35rem;
+      margin: 0.2rem 0 0 0.15rem;
       font-family: var(--dots);
       font-weight: 900;
-      font-size: clamp(2.6rem, 14vw, 3.6rem);
+      font-size: clamp(1.1rem, 8cqi, 1.9rem);
       line-height: 1;
     }
     #unit:empty { display: none; }
+    #figure-label {
+      margin-top: 0.15em;
+      font-size: clamp(0.45rem, 5cqi, 0.7rem);
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      color: var(--px);
+      line-height: 1;
+    }
+    #figure-label:empty { display: none; }
 
     .gauge {
       --p: 0;
       position: relative;
-      height: 6px;
-      background: radial-gradient(circle at 3px 3px, var(--px-off) 2.2px, transparent 2.7px) 0 0 / 9px 6px repeat-x;
+      height: 5px;
+      background: radial-gradient(circle at 2.5px 2.5px, var(--px-off) 1.8px, transparent 2.2px) 0 0 / 7px 5px repeat-x;
     }
     .gauge .fill {
       position: absolute;
       inset: 0;
-      background: radial-gradient(circle at 3px 3px, var(--px) 2.2px, transparent 2.7px) 0 0 / 9px 6px repeat-x;
+      background: radial-gradient(circle at 2.5px 2.5px, var(--px) 1.8px, transparent 2.2px) 0 0 / 7px 5px repeat-x;
       clip-path: inset(0 calc(100% - var(--p) * 100%) 0 0);
       transition: clip-path 0.25s linear;
     }
@@ -905,23 +1008,35 @@
       <div class="brand">
         <h1 class="mark">OBJECT HUB</h1>
       </div>
-      <div class="actions when-on">
-        <button id="refresh" type="button" aria-label="Refresh list" title="Refresh list" disabled><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M16 10a6 6 0 1 1-1.8-4.3M16.5 3v3.5H13"/></svg></button>
-        <button id="disconnect" type="button" aria-label="Disconnect" title="Disconnect" disabled><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M8.5 5.5 10.6 3.4a3 3 0 0 1 4.2 0l1.8 1.8a3 3 0 0 1 0 4.2l-2.1 2.1M11.5 14.5 9.4 16.6a3 3 0 0 1-4.2 0l-1.8-1.8a3 3 0 0 1 0-4.2l2.1-2.1M3 3l14 14"/></svg></button>
+      <div class="actions">
+        <button id="theme-toggle" type="button" aria-label="Switch to dark theme" title="Switch to dark theme">
+          <svg class="theme-icon-moon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M16.2 11.6A6.5 6.5 0 1 1 8.4 3.8 5 5 0 0 0 16.2 11.6z"/></svg>
+          <svg class="theme-icon-sun" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><circle cx="10" cy="10" r="3.25"/><path d="M10 2.75v1.5M10 15.75v1.5M2.75 10h1.5M15.75 10h1.5M4.85 4.85l1.06 1.06M14.09 14.09l1.06 1.06M4.85 15.15l1.06-1.06M14.09 5.91l1.06-1.06"/></svg>
+        </button>
+        <button id="refresh" class="when-on" type="button" aria-label="Refresh list" title="Refresh list" disabled><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M16 10a6 6 0 1 1-1.8-4.3M16.5 3v3.5H13"/></svg></button>
+        <button id="disconnect" class="when-on" type="button" aria-label="Disconnect" title="Disconnect" disabled><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" aria-hidden="true"><path d="M8.5 5.5 10.6 3.4a3 3 0 0 1 4.2 0l1.8 1.8a3 3 0 0 1 0 4.2l-2.1 2.1M11.5 14.5 9.4 16.6a3 3 0 0 1-4.2 0l-1.8-1.8a3 3 0 0 1 0-4.2l2.1-2.1M3 3l14 14"/></svg></button>
       </div>
     </header>
 
-    <section class="device" aria-label="OBJECT display">
-      <div class="screen">
-        <div class="screen-top">
-          <span id="caption" role="status">Wake OBJECT and keep it close, then connect</span>
-          <span id="progress-label"></span>
-        </div>
-        <div class="figure" aria-hidden="true">
-          <span id="value">--</span><span id="unit"></span>
-        </div>
-        <div class="gauge" id="progress" role="progressbar" aria-label="Transfer progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-          <span class="fill"></span>
+    <section class="device" aria-label="OBJECT">
+      <div class="device-stage">
+        <img class="device-poster" data-scheme="light" src="object-poster-light.webp" width="860" height="620" alt="" decoding="async" fetchpriority="high">
+        <img class="device-poster" data-scheme="dark" src="object-poster-dark.webp" width="860" height="620" alt="" decoding="async">
+        <canvas class="device-canvas" hidden aria-hidden="true"></canvas>
+        <div class="screen">
+          <div class="screen-top">
+            <span id="caption" role="status">Wake OBJECT and keep it close, then connect</span>
+            <span id="progress-label"></span>
+          </div>
+          <div class="figure" aria-hidden="true">
+            <div class="figure-main">
+              <span id="value">--</span><span id="unit"></span>
+            </div>
+            <span id="figure-label"></span>
+          </div>
+          <div class="gauge" id="progress" role="progressbar" aria-label="Transfer progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <span class="fill"></span>
+          </div>
         </div>
       </div>
     </section>
@@ -1172,13 +1287,59 @@
     };
 
     const connectBtn = document.getElementById("connect");
+    const themeToggleBtn = document.getElementById("theme-toggle");
+    const themeColorMeta = document.getElementById("theme-color");
     const refreshBtn = document.getElementById("refresh");
     const disconnectBtn = document.getElementById("disconnect");
+    const THEME_KEY = "object-hub-theme";
+
+    function systemTheme() {
+      return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+
+    function storedTheme() {
+      try {
+        const t = localStorage.getItem(THEME_KEY);
+        return t === "light" || t === "dark" ? t : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function currentTheme() {
+      const attr = document.documentElement.getAttribute("data-theme");
+      if (attr === "light" || attr === "dark") return attr;
+      return storedTheme() || systemTheme();
+    }
+
+    function applyTheme(theme) {
+      document.documentElement.setAttribute("data-theme", theme);
+      document.documentElement.style.colorScheme = theme;
+      if (themeColorMeta) themeColorMeta.content = theme === "dark" ? "#000000" : "#ffffff";
+      const next = theme === "dark" ? "light" : "dark";
+      const label = next === "dark" ? "Switch to dark theme" : "Switch to light theme";
+      themeToggleBtn.setAttribute("aria-label", label);
+      themeToggleBtn.title = label;
+    }
+
+    function setTheme(theme) {
+      try { localStorage.setItem(THEME_KEY, theme); } catch (e) {}
+      applyTheme(theme);
+    }
+
+    applyTheme(currentTheme());
+    themeToggleBtn.addEventListener("click", () => {
+      setTheme(currentTheme() === "dark" ? "light" : "dark");
+    });
+    matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => {
+      if (!storedTheme()) applyTheme(systemTheme());
+    });
     const filesEl = document.getElementById("files");
     const progressEl = document.getElementById("progress");
     const progressLabel = document.getElementById("progress-label");
     const valueEl = document.getElementById("value");
     const unitEl = document.getElementById("unit");
+    const figureLabelEl = document.getElementById("figure-label");
     const captionEl = document.getElementById("caption");
     const tabRides = document.getElementById("tab-rides");
     const tabSettings = document.getElementById("tab-settings");
@@ -1282,6 +1443,7 @@
       tabRides.disabled = tabSettings.disabled = phase !== "idle";
       let value = "--";
       let unit = "";
+      let figureLabel = "";
       let right = "";
       let p = 0;
       const stored = rides.reduce((sum, r) => sum + r.size, 0);
@@ -1304,17 +1466,20 @@
         right = "Remove";
       } else if (phase === "listing") {
         value = pad2(rides.length);
+        figureLabel = "RIDES";
       } else if (phase === "awaiting" && authDeadline) {
         const left = Math.max(0, authDeadline - Date.now());
         right = Math.ceil(left / 1000) + " s";
         p = left / AUTH_MS;
       } else if (linked && phase === "idle") {
         value = pad2(rides.length);
+        figureLabel = "RIDES";
         right = cardBytes ? formatSize(stored) + " / " + formatSize(cardBytes) : (rides.length ? formatSize(stored) : "");
       }
 
       valueEl.textContent = value;
       unitEl.textContent = unit;
+      figureLabelEl.textContent = figureLabel;
       progressLabel.textContent = right;
       progressEl.style.setProperty("--p", p);
       progressEl.setAttribute("aria-valuenow", String(Math.round(p * 100)));
@@ -3621,6 +3786,16 @@
       document.body.append(mock);
     } else if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("sw.js").catch(() => {});
+    }
+  </script>
+  <script type="module">
+    const stage = document.querySelector(".device-stage");
+    try {
+      const { initDeviceHero } = await import("./device-hero.mjs");
+      initDeviceHero(document.querySelector(".device"));
+    } catch (err) {
+      console.warn("OBJECT hero unavailable", err);
+      stage?.classList.add("is-fallback");
     }
   </script>
 </body>
