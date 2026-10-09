@@ -270,6 +270,11 @@
     .screen > * { transition: opacity 0.5s ease; }
     body[data-link="off"] .screen > * { opacity: 0.34; }
     body[data-phase="pairing"] .screen > * { animation: breathe 1.6s ease-in-out infinite; }
+    /* Settings OLED preview: backlight dim/off on HTML fallback */
+    body[data-view="settings"][data-link="on"][data-phase="idle"][data-cfg="1"] .screen > * {
+      opacity: var(--cfg-screen-alpha, 1);
+      animation: none;
+    }
 
     .screen-top {
       display: flex;
@@ -1396,6 +1401,8 @@
     let currentView = location.hash === "#settings" ? "settings" : "rides";
     let cfgDevice = null;
     let cfgDraft = null;
+    let hubCaption = captionEl.textContent;
+    let hubCaptionError = false;
     let cfgCustom = false;
     let cardMissing = false;
     let cancelling = false;
@@ -1472,9 +1479,18 @@
         right = Math.ceil(left / 1000) + " s";
         p = left / AUTH_MS;
       } else if (linked && phase === "idle") {
-        value = pad2(rides.length);
-        figureLabel = "RIDES";
-        right = cardBytes ? formatSize(stored) + " / " + formatSize(cardBytes) : (rides.length ? formatSize(stored) : "");
+        if (currentView === "settings" && cfgDraft) {
+          const demo = cfgDemoSpeed(cfgDraft);
+          value = demo.value;
+          unit = demo.unit;
+          figureLabel = "";
+          right = cfgClock(cfgDraft.tz);
+          p = 0.55;
+        } else {
+          value = pad2(rides.length);
+          figureLabel = "RIDES";
+          right = cardBytes ? formatSize(stored) + " / " + formatSize(cardBytes) : (rides.length ? formatSize(stored) : "");
+        }
       }
 
       valueEl.textContent = value;
@@ -1483,6 +1499,13 @@
       progressLabel.textContent = right;
       progressEl.style.setProperty("--p", p);
       progressEl.setAttribute("aria-valuenow", String(Math.round(p * 100)));
+      if (linked && phase === "idle" && currentView === "settings" && cfgDraft) {
+        captionEl.textContent = cfgDraft.card ? (cfgDraft.name || "OBJECT") : "No card";
+        captionEl.className = "";
+      } else {
+        captionEl.textContent = hubCaption;
+        captionEl.className = hubCaptionError ? "error" : "";
+      }
       const activeSize = document.getElementById("active-size");
       if (activeSize) activeSize.textContent = phase === "downloading" ? value + "%" : "";
 
@@ -1530,8 +1553,10 @@
     }
 
     function setStatus(text, isError) {
-      captionEl.textContent = String(text).replace(/(?<!\.)\.$/, "");
-      captionEl.className = isError ? "error" : "";
+      hubCaption = String(text).replace(/(?<!\.)\.$/, "");
+      hubCaptionError = !!isError;
+      captionEl.textContent = hubCaption;
+      captionEl.className = hubCaptionError ? "error" : "";
       syncUI();
     }
 
@@ -3054,6 +3079,55 @@
       ]]
     ];
     const KMH_PER_MPH = 1.609344;
+    const DEMO_SPEED_KMH = 27.4;
+    const MPH_PER_KMH = 0.621371; // same factor as firmware cfgSpeedShown
+
+    function cfgDemoSpeed(c) {
+      if (c.units === 1) {
+        return { value: (DEMO_SPEED_KMH * MPH_PER_KMH).toFixed(1), unit: "mph" };
+      }
+      return { value: DEMO_SPEED_KMH.toFixed(1), unit: "km/h" };
+    }
+
+    function cfgClock(tzMin) {
+      const d = new Date(Date.now() + Number(tzMin) * 60000);
+      return pad2(d.getUTCHours()) + ":" + pad2(d.getUTCMinutes());
+    }
+
+    function cfgScreenAlpha(c) {
+      if (c.backlight === 2) return 0.08;
+      if (c.backlight === 1) {
+        const t = Math.max(1, Math.min(254, Number(c.dim) || 1)) / 254;
+        return 0.25 + t * 0.6;
+      }
+      return 1;
+    }
+
+    function publishCfgAttrs() {
+      const b = document.body;
+      if (!cfgDraft) {
+        delete b.dataset.cfg;
+        delete b.dataset.cfgUnits;
+        delete b.dataset.cfgBacklight;
+        delete b.dataset.cfgDim;
+        delete b.dataset.cfgAnimations;
+        delete b.dataset.cfgName;
+        delete b.dataset.cfgTz;
+        delete b.dataset.cfgCard;
+        b.style.removeProperty("--cfg-screen-alpha");
+        return;
+      }
+      const c = cfgDraft;
+      b.dataset.cfg = "1";
+      b.dataset.cfgUnits = String(c.units);
+      b.dataset.cfgBacklight = String(c.backlight);
+      b.dataset.cfgDim = String(c.dim);
+      b.dataset.cfgAnimations = String(c.animations);
+      b.dataset.cfgName = c.name || "";
+      b.dataset.cfgTz = String(c.tz);
+      b.dataset.cfgCard = c.card ? "1" : "0";
+      b.style.setProperty("--cfg-screen-alpha", String(cfgScreenAlpha(c)));
+    }
 
     function fmtOffset(min) {
       if (min === 0) return "UTC";
@@ -3170,6 +3244,7 @@
 
     // Draws the form from cfgDraft; the inputs only write back into cfgDraft.
     function renderSettings() {
+      publishCfgAttrs();
       renderFirmware();
       const ready = !!(cmdChar && authorized && cfgDraft);
       const busy = phase !== "idle";
