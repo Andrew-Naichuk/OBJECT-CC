@@ -11,6 +11,9 @@ const MODEL_URL = "./object-cc.glb";
 const MAX_DPR = 1.75;
 const TILT_MAX = 0.14; // rad ≈ 8°
 const BREATHE_AMP = 0.07; // rad ≈ 4°
+const TAB_SPIN_MS = 1100; // one full turn per tab switch
+const OLED_SWAP_MS = 500; // swap screen content while facing away mid-spin
+const TWO_PI = Math.PI * 2;
 const OLED_W = 240;
 const OLED_H = 378; // portrait ≈ 486∶764
 const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -109,6 +112,16 @@ export function initDeviceHero(root) {
   let poseTarget = { ...POSE.off, dist: fitDist };
   let startX = 0, startY = 0;
   let baseTiltX = 0, baseTiltY = 0;
+  // Tab switch flourish: Settings → left 360°, Rides → right 360°.
+  let spinYaw = 0;
+  let spinFrom = 0;
+  let spinTo = 0;
+  let spinStart = 0;
+  let spinning = false;
+  let lastView = document.body.dataset.view || "rides";
+  // OLED content lags the tab so the swap happens while the panel faces away.
+  let oledView = lastView;
+  let oledSwapTimer = 0;
   const clock = { t: performance.now() };
 
   function needFrame() {
@@ -138,9 +151,60 @@ export function initDeviceHero(root) {
     needFrame();
   }
 
+  /** One full turn: Settings left (−), Rides right (+). */
+  function triggerTabSpin(view) {
+    if (REDUCED || !loaded || destroyed) return;
+    spinFrom = spinning ? spinYaw : 0;
+    spinTo = spinFrom + (view === "settings" ? -TWO_PI : TWO_PI);
+    spinStart = performance.now();
+    spinning = true;
+    needFrame();
+  }
+
+  function updateTabSpin(now) {
+    if (!spinning) return;
+    const t = Math.min(1, (now - spinStart) / TAB_SPIN_MS);
+    // Smooth ease-in-out (cosine); full ±2π lands on the same visual pose.
+    const e = 0.5 - 0.5 * Math.cos(Math.PI * t);
+    spinYaw = spinFrom + (spinTo - spinFrom) * e;
+    if (t >= 1) {
+      spinYaw = 0;
+      spinning = false;
+    }
+  }
+
+  function scheduleOledView(view) {
+    if (oledSwapTimer) {
+      clearTimeout(oledSwapTimer);
+      oledSwapTimer = 0;
+    }
+    if (REDUCED || !loaded) {
+      oledView = view;
+      paintOled();
+      return;
+    }
+    oledSwapTimer = setTimeout(() => {
+      oledSwapTimer = 0;
+      if (destroyed) return;
+      oledView = view;
+      paintOled();
+    }, OLED_SWAP_MS);
+  }
+
+  function onBodyAttrs() {
+    const view = document.body.dataset.view || "rides";
+    if (view !== lastView && (view === "rides" || view === "settings") &&
+        (lastView === "rides" || lastView === "settings")) {
+      triggerTabSpin(view);
+      scheduleOledView(view);
+    }
+    lastView = view;
+    syncPoseFromBody();
+  }
+
   function settingsPreviewActive() {
     const d = document.body.dataset;
-    return d.view === "settings" && d.link === "on" && d.phase === "idle" && d.cfg === "1";
+    return oledView === "settings" && d.link === "on" && d.phase === "idle" && d.cfg === "1";
   }
 
   function settingsAnimActive() {
@@ -818,8 +882,11 @@ export function initDeviceHero(root) {
 
   function placeCamera() {
     if (!model) return;
-    const breatheYaw = REDUCED || pointerActive ? 0 : Math.sin(breathe) * BREATHE_AMP * (1 - pose.frontal);
-    const yaw = pose.yaw + tiltY + breatheYaw;
+    // Soften idle breathe while the tab spin owns the motion.
+    const breatheScale = spinning ? 0.15 : 1;
+    const breatheYaw = REDUCED || pointerActive ? 0
+      : Math.sin(breathe) * BREATHE_AMP * (1 - pose.frontal) * breatheScale;
+    const yaw = pose.yaw + tiltY + breatheYaw + spinYaw;
     const pitch = pose.pitch + tiltX;
     const dist = pose.dist;
 
@@ -837,10 +904,12 @@ export function initDeviceHero(root) {
     clock.t = now;
 
     const wasPointer = pointerActive;
+    updateTabSpin(now);
     updatePose(dt);
     placeCamera();
 
     const stillSettling =
+      spinning ||
       Math.abs(pose.yaw - poseTarget.yaw) > 0.001 ||
       Math.abs(pose.pitch - poseTarget.pitch) > 0.001 ||
       Math.abs(tiltX - targetTiltX) > 0.0005 ||
@@ -901,7 +970,7 @@ export function initDeviceHero(root) {
   const ro = new ResizeObserver(() => resize());
   ro.observe(stage);
 
-  const mo = new MutationObserver(() => syncPoseFromBody());
+  const mo = new MutationObserver(() => onBodyAttrs());
   mo.observe(document.body, {
     attributes: true,
     attributeFilter: ["data-link", "data-phase", "data-auth", ...CFG_ATTRS]
@@ -939,6 +1008,8 @@ export function initDeviceHero(root) {
   return {
     destroy() {
       destroyed = true;
+      if (oledSwapTimer) clearTimeout(oledSwapTimer);
+      oledSwapTimer = 0;
       if (raf) cancelAnimationFrame(raf);
       ro.disconnect();
       mo.disconnect();

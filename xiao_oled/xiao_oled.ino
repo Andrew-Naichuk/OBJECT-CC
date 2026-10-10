@@ -4273,7 +4273,6 @@ static void bleBeginCfgSet(const uint8_t *body, uint16_t len) {
     Bluefruit.setName(cfg.bleName);
     bleRenamePending = true;
   }
-  btnFlash("Settings saved", millis());
   bleCfgSavedPending = 1;
   bleCfgPending = 1;
   Serial.println("BLE settings saved");

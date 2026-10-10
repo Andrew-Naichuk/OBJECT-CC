@@ -311,7 +311,7 @@ static void phoneDisconnect() { Bluefruit.disconnect(0); }
 // Send the device's current settings back with one field changed, the way
 // the hub's Settings view does.
 static void phoneSaveSettings(void (*edit)(uint8_t *rec)) {
-  uint8_t b[BLE_CMD_MAX];
+  uint8_t b[1 + BLE_CFG_LEN];
   b[0] = BLE_OP_CFG_SET;
   bleCfgPack(b + 1);
   edit(b + 1);
@@ -556,7 +556,7 @@ static void scSettings() {
   runFor(1000);
   phoneSaveSettings([](uint8_t *rec) { rec[7] = UNITS_IMPERIAL; });
   runFor(600);
-  shot("32_flash_settings_saved", "Settings saved from the hub: units switch to imperial right away");
+  shot("32_flash_settings_saved", "Hub switched units to imperial mid-ride; the face redraws at once");
   runFor(2000);
   phoneDisconnect();
   runFor(1000);

@@ -201,9 +201,9 @@ After connecting and allowing the link, switch the hub from **Rides** to **Setti
 - **Device:** the Bluetooth name, and the time zone used to name saved rides (one tap copies the phone's).
 - **Advanced:** the speed above which wheel readings are ignored as noise.
 
-Change what you need and tap **Save**. OBJECT checks every value, rewrites `CONFIG.TXT` on the card and applies it straight away, with no reboot. A new wheel size counts only from that moment, so the distance already ridden stays correct. A new name is used from the next connection. Saving needs a card in the device.
+Change what you need: OBJECT checks every value, rewrites `CONFIG.TXT` on the card and applies it as you go, with no reboot. A new wheel size counts only from that moment, so the distance already ridden stays correct. A new name is used from the next connection. Changing settings needs a card in the device.
 
-<p align="center"><img src="docs/screens/settings-saved.png" width="180" alt="Ride screen reading Settings saved, now in mph and miles"><br><sub><b>Settings saved</b><br>switched to imperial from the hub mid-ride</sub></p>
+<p align="center"><img src="docs/screens/settings-saved.png" width="180" alt="Ride screen now in mph and miles after a mid-ride units change from the hub"><br><sub><b>Imperial from the hub</b><br>units switch mid-ride as soon as you change them</sub></p>
 
 ## Update the firmware from your phone
 

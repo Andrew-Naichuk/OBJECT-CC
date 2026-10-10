@@ -356,8 +356,7 @@
     }
     body[data-phase="listing"] .gauge .fill,
     body[data-phase="deleting"] .gauge .fill,
-    body[data-phase="reading"] .gauge .fill,
-    body[data-phase="saving"] .gauge .fill { animation: sweep 1.5s steps(24) infinite; }
+    body[data-phase="reading"] .gauge .fill { animation: sweep 1.5s steps(24) infinite; }
 
     /* Controls */
     #connect {
@@ -724,30 +723,6 @@
       letter-spacing: 0.08em;
       text-transform: uppercase;
     }
-    .savebar {
-      position: sticky;
-      bottom: calc(0.75rem + env(safe-area-inset-bottom));
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      margin-top: 1.5rem;
-      padding: 0.5rem 0.5rem 0.5rem 1rem;
-      border: 1.5px solid var(--ink);
-      border-radius: 16px;
-      background: var(--paper);
-      box-shadow: var(--drop);
-    }
-    .savebar span { flex: 1; min-width: 0; font-weight: 600; }
-    .savebar button {
-      height: 2.9rem;
-      padding: 0 1.1rem;
-      border-radius: 12px;
-      font-weight: 650;
-    }
-    #cfg-revert { border: 1.5px solid var(--rule); background: transparent; }
-    #cfg-save { border: 0; background: var(--ink); color: var(--paper); }
-    .savebar button:disabled { opacity: 0.4; }
-
     /* Firmware */
     .firmware { border-bottom: 0; }
     .firmware dl {
@@ -1142,12 +1117,6 @@
               <p class="bad hide" id="cfg-max-bad"></p>            </div>
           </details>
         </fieldset>
-
-        <div class="savebar hide" id="cfg-bar">
-          <span id="cfg-bar-label">Unsaved changes</span>
-          <button type="button" id="cfg-revert">Revert</button>
-          <button type="submit" id="cfg-save">Save</button>
-        </div>
       </form>
 
       <div class="group firmware" id="fw-group">
@@ -1274,7 +1243,8 @@
     const MAX_FILE = 16 * 1024 * 1024;
     const STALL_MS = 15000;
     const AUTH_MS = 10000;
-    const BUSY = ["listing", "downloading", "deleting", "reading", "saving", "updating"];
+    const CFG_PUSH_MS = 300;
+    const BUSY = ["listing", "downloading", "deleting", "reading", "updating"];
     const FW_CHUNK = 240;
 
     // Builds published by .github/workflows/firmware.yml. The URL is absolute
@@ -1352,10 +1322,6 @@
     const cfgForm = $("cfg-form");
     const cfgFields = $("cfg-fields");
     const cfgNotice = $("cfg-notice");
-    const cfgBar = $("cfg-bar");
-    const cfgBarLabel = $("cfg-bar-label");
-    const cfgSaveBtn = $("cfg-save");
-    const cfgRevertBtn = $("cfg-revert");
     const tyreSel = $("cfg-tyre");
     const wheelField = $("cfg-wheel-field");
     const wheelInput = $("cfg-wheel");
@@ -1401,6 +1367,9 @@
     let currentView = location.hash === "#settings" ? "settings" : "rides";
     let cfgDevice = null;
     let cfgDraft = null;
+    let cfgPushTimer = 0;
+    let cfgPushInFlight = false;
+    let cfgPushAgain = false;
     let hubCaption = captionEl.textContent;
     let hubCaptionError = false;
     let cfgCustom = false;
@@ -2671,6 +2640,13 @@
           renderRides();
           renderSettings();
         }, STALL_MS);
+      } else if (cfgPushInFlight) {
+        stallTimer = setTimeout(() => {
+          cfgPushInFlight = false;
+          cfgPushAgain = false;
+          setStatus("Transfer stalled. Move closer and try again.", true);
+          renderSettings();
+        }, STALL_MS);
       }
     }
 
@@ -2891,17 +2867,35 @@
         clearTimeout(stallTimer);
         const cfg = unpackSettings(bytes.subarray(1, 1 + CFG_LEN));
         const wasReading = phase === "reading";
-        if (phase === "reading" || phase === "saving") phase = "idle";
+        const wasPushing = cfgPushInFlight;
+        if (phase === "reading") phase = "idle";
         if (!cfg) {
+          cfgPushInFlight = false;
+          cfgPushAgain = false;
           setStatus("OBJECT sent settings this page does not understand. Update the page.", true);
           renderSettings();
           return;
         }
         cfgDevice = cfg;
-        cfgDraft = Object.assign({}, cfg);
-        cfgCustom = false;
         try { localStorage.setItem("object-hub-units", String(cfg.units)); } catch (e) {}
-        if (wasReading) setStatus(cfg.card ? "Settings loaded." : "No SD card in OBJECT.", !cfg.card);
+        if (wasReading) {
+          cfgDraft = Object.assign({}, cfg);
+          cfgCustom = false;
+          setStatus(cfg.card ? "Settings loaded." : "No SD card in OBJECT.", !cfg.card);
+        } else if (wasPushing) {
+          cfgPushInFlight = false;
+          if (!cfgDirty()) {
+            cfgDraft = Object.assign({}, cfg);
+            cfgCustom = false;
+          }
+          if (cfgPushAgain || cfgDirty()) {
+            cfgPushAgain = false;
+            scheduleSettingsPush();
+          }
+        } else if (!cfgDirty()) {
+          cfgDraft = Object.assign({}, cfg);
+          cfgCustom = false;
+        }
         renderRides();
         renderSettings();
         fwProbe();
@@ -2944,9 +2938,9 @@
       }
       if (type === META_CFG_SAVED) {
         const renamed = cfgDevice && cfgDraft && cfgDraft.name !== cfgDevice.name;
-        setStatus(renamed
-          ? "Saved. OBJECT shows up as " + cfgDraft.name + " the next time you connect."
-          : "Saved to " + (cfgDraft ? cfgDraft.name : "OBJECT") + ".");
+        if (renamed) {
+          setStatus("Saved. OBJECT shows up as " + cfgDraft.name + " the next time you connect.");
+        }
         return;
       }
       if (type === META_START && bytes.length >= 17) {
@@ -3009,8 +3003,12 @@
         }
         cancelling = false;
         const wasReading = phase === "reading";
-        const wasSaving = phase === "saving";
+        const wasPushing = cfgPushInFlight;
         const wasListing = phase === "listing";
+        cfgPushInFlight = false;
+        cfgPushAgain = false;
+        clearTimeout(cfgPushTimer);
+        cfgPushTimer = 0;
         phase = authorized ? "idle" : "awaiting";
         resetTransfer();
         if (bytes[1] === ERR_NO_SD) {
@@ -3019,7 +3017,7 @@
         }
         if (wasReading && bytes[1] === ERR_NAME) {
           setStatus("OBJECT's firmware is too old to change settings here. Update it, then try again.", true);
-        } else if (wasSaving && bytes[1] === 1) {
+        } else if (wasPushing && bytes[1] === 1) {
           setStatus("Insert a card to save settings.", true);
         } else {
           setStatus(ERRORS[bytes[1]] || "Transfer failed.", true);
@@ -3321,7 +3319,6 @@
       if (!ready) {
         cfgNotice.textContent = !cmdChar || !authorized ? "" : phase === "reading" ? "Reading settings from OBJECT…" : "Settings are not loaded yet.";
         cfgNotice.classList.toggle("hide", !cfgNotice.textContent);
-        cfgBar.classList.add("hide");
         syncUI();
         return;
       }
@@ -3376,13 +3373,6 @@
       showBad("cfg-wheel-bad", errs.wheel && custom);
       showBad("cfg-name-bad", errs.name);
       showBad("cfg-max-bad", errs.maxKmh, imperial ? "Enter 13 to 124 mph." : "Enter 20 to 200 km/h.");
-
-      const dirty = cfgDirty();
-      const invalid = errs.wheel || errs.name || errs.maxKmh;
-      cfgBar.classList.toggle("hide", !dirty && phase !== "saving");
-      cfgBarLabel.textContent = phase === "saving" ? "Saving…" : invalid ? "Fix the marked field" : "Unsaved changes";
-      cfgSaveBtn.disabled = busy || invalid || !c.card;
-      cfgRevertBtn.disabled = busy;
       syncUI();
     }
 
@@ -3390,6 +3380,31 @@
       if (!cfgDraft) return;
       Object.assign(cfgDraft, patch);
       renderSettings();
+      scheduleSettingsPush();
+    }
+
+    function canPushSettings() {
+      if (!cmdChar || !authorized || phase !== "idle") return false;
+      if (!cfgDraft || !cfgDraft.card) return false;
+      if (!cfgDirty()) return false;
+      const errs = cfgErrors(cfgDraft);
+      return !(errs.wheel || errs.name || errs.maxKmh);
+    }
+
+    function scheduleSettingsPush() {
+      clearTimeout(cfgPushTimer);
+      cfgPushTimer = 0;
+      if (!canPushSettings()) return;
+      cfgPushTimer = setTimeout(() => {
+        cfgPushTimer = 0;
+        pushSettings().catch(onSettingsError);
+      }, CFG_PUSH_MS);
+    }
+
+    function flushSettingsPush() {
+      clearTimeout(cfgPushTimer);
+      cfgPushTimer = 0;
+      if (canPushSettings()) pushSettings().catch(onSettingsError);
     }
 
     async function requestSettings() {
@@ -3401,19 +3416,30 @@
       await writeCmd(new Uint8Array([OP_CFG_GET]));
     }
 
-    async function saveSettings() {
-      if (!cmdChar || !authorized || phase !== "idle" || !cfgDirty()) return;
-      const errs = cfgErrors(cfgDraft);
-      if (errs.wheel || errs.name || errs.maxKmh) return;
-      phase = "saving";
-      setStatus("Saving settings…");
-      renderSettings();
+    async function pushSettings() {
+      if (!canPushSettings()) return;
+      if (cfgPushInFlight) {
+        cfgPushAgain = true;
+        return;
+      }
+      cfgPushInFlight = true;
+      cfgPushAgain = false;
       noteActivity();
-      await writeCmd(packSettings(cfgDraft));
+      try {
+        await writeCmd(packSettings(cfgDraft));
+      } catch (err) {
+        cfgPushInFlight = false;
+        cfgPushAgain = false;
+        throw err;
+      }
     }
 
     function onSettingsError(err) {
       phase = "idle";
+      cfgPushInFlight = false;
+      cfgPushAgain = false;
+      clearTimeout(cfgPushTimer);
+      cfgPushTimer = 0;
       setStatus(err.message || "Settings failed.", true);
       renderSettings();
     }
@@ -3710,11 +3736,12 @@
         if (!push) history.replaceState(null, "", currentView === "settings" ? "#settings" : location.pathname + location.search);
         return;
       }
+      if (currentView === "settings" && next !== "settings") flushSettingsPush();
       currentView = next;
       if (push) {
         history.pushState(null, "", next === "settings" ? "#settings" : location.pathname + location.search);
       }
-      if (currentView === "settings" && !cfgDirty()) requestSettings().catch(onSettingsError);
+      if (currentView === "settings" && !cfgDirty() && !cfgPushInFlight) requestSettings().catch(onSettingsError);
       if (currentView === "settings") fwProbe();
       renderSettings();
     }
@@ -3767,18 +3794,14 @@
         editSettings({ maxKmh: Number.isFinite(kmh) ? Math.min(Math.max(kmh, 0), 255) : NaN });
       });
       for (const input of [wheelInput, nameInput, maxInput]) {
-        input.addEventListener("blur", renderSettings);
+        input.addEventListener("blur", () => {
+          renderSettings();
+          flushSettingsPush();
+        });
       }
-      cfgRevertBtn.addEventListener("click", () => {
-        if (!cfgDevice) return;
-        cfgDraft = Object.assign({}, cfgDevice);
-        cfgCustom = false;
-        setStatus("Changes discarded.");
-        renderSettings();
-      });
       cfgForm.addEventListener("submit", (event) => {
         event.preventDefault();
-        saveSettings().catch(onSettingsError);
+        flushSettingsPush();
       });
     }
 
@@ -3833,6 +3856,10 @@
     function onDisconnected() {
       clearTimeout(stallTimer);
       clearTimeout(fwProbeTimer);
+      clearTimeout(cfgPushTimer);
+      cfgPushTimer = 0;
+      cfgPushInFlight = false;
+      cfgPushAgain = false;
       fwProbing = false;
       fwInstalled = null;
       if (delDialog.open) delDialog.close();
